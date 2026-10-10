@@ -1,49 +1,38 @@
-# 原创笔记图工作台复刻版（全栈）
+# 原创笔记图工作台复刻版
 
-本项目基于你提供的站点交互和截图风格，复刻出一套可继续开发的全栈应用骨架。
+## 当前实现
+- 前端：React + Vite
+- 后端：Express
+- 账号：固定 admin / 123456
+- AI：SenseNova API
+- 队列：Redis + BullMQ
+- 文件存储：本地自定义路径 `STORAGE_PATH`
+- 视频：本地 FFmpeg 算法运镜
+- 本地数据库：JSON 文件存储，无需额外数据库安装
 
-## 包含能力
+## 运行
+1. 准备 Redis
+2. 在 `.env` 填入 `SENSENOVA_API_KEY`
+3. 启动后端
+4. 启动队列 worker
+5. 启动前端
 
-- 前端 React + Vite 工作台 UI
-- 后端 Express + SQLite 账号体系（注册/登录/JWT/bcrypt）
-- 文件上传接口与本地文件存储
-- AI API 代理接口（OpenAI-compatible，可切换 baseUrl/apiKey）
-- 后端任务队列（BullMQ + Redis）
-- 视频任务占位接口，可继续接入 FFmpeg / API 供应商
-
-## 目录
-
-- `web/`：前端
-- `server/`：后端
-- `.env.example`：环境变量模板
-
-## 启动
-
-### 1) 后端
-
+## 快速启动
 ```bash
-cd server
-npm install
-npm run dev
-```
+# 后端
+npm --prefix server install
+npm --prefix server run dev
 
-### 2) 队列 worker
+# 队列
+npm --prefix server run queue
 
-```bash
-cd server
-npm run queue
-```
-
-### 3) 前端
-
-```bash
-cd web
-npm install
-npm run dev
+# 前端
+npm --prefix web install
+npm --prefix web run dev
 ```
 
 ## 说明
-
-- 当前账号体系是真实可用后端账号体系
-- AI 图片/文本接口已接入队列与 provider 适配层
-- 视频生成接口已提供任务队列链路，后续可补 FFmpeg 或第三方服务
+- 固定账号已写入后端初始化逻辑，不需要注册/支付
+- 图片/文案/视频任务都会进入队列
+- 本地存储目录默认在 `./storage`
+- 视频生成通过本地 FFmpeg 处理，需确保系统已安装 ffmpeg

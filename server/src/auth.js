@@ -1,11 +1,10 @@
 import jwt from 'jsonwebtoken';
-import { dbClient } from '../db.js';
 
-export const SECRET = process.env.JWT_SECRET || 'change-me-in-production';
+export const SECRET = process.env.JWT_SECRET || 'slenk-notes-local-secret';
 export const JWT_DAYS = Number(process.env.JWT_DAYS || 14);
 
 export function sign(user) {
-  return jwt.sign({ userId: user.id, email: user.email, exp: Math.floor(Date.now()/1000) + JWT_DAYS*86400 }, SECRET);
+  return jwt.sign({ userId: user.id, username: user.username, exp: Math.floor(Date.now()/1000) + JWT_DAYS*86400 }, SECRET);
 }
 
 export function verify(req, res, next) {
