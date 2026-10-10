@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>原创笔记图工作台</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>原创笔记图工作台</h1>
+        <p>AI 原创笔记图一键生成工作台，助力商家高效创作与运营！</p>
+      </div>
+      <nav class="top-actions">
+        <button class="top-btn ghost">草稿箱</button>
+        <button class="top-btn ghost">风格</button>
+        <button class="top-btn primary-light">插件</button>
+        <button class="top-btn icon-btn" title="设置">⚙</button>
+        <button class="account-pill">✓ 账号 193E · 到期 2026-11-11</button>
+        <button class="top-btn outline">修改密码</button>
+        <button class="top-btn icon-btn" title="退出">⏻</button>
+      </nav>
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="dashboard" class="tab">仪表盘</button>
+      <button data-tab="replace" class="tab">替换生图</button>
+      <button data-tab="split" class="tab active">裂变生图</button>
+      <button data-tab="video" class="tab">实况视频</button>
+      <button data-tab="download" class="tab">笔记下载</button>
+      <button data-tab="rewrite" class="tab">笔记改写</button>
+      <button data-tab="batch" class="tab">批量改写</button>
+      <button data-tab="images" class="tab">AI图片生成</button>
+      <button data-tab="transfer" class="tab">无损快传</button>
+      <button data-tab="word" class="tab">Word改写</button>
+      <button data-tab="compose" class="tab">正片叠底</button>
+      <button data-tab="layout" class="tab">排版工具</button>
+      <button data-tab="ppt" class="tab">AI PPT</button>
+      <button data-tab="product" class="tab">商品下载</button>
+      <button data-tab="subtitle" class="tab">视频去字幕</button>
+      <button data-tab="script" class="tab">视频文案提取</button>
+    </nav>
+
+    <main id="main" class="main"></main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <div class="modal" id="modalContent"></div>
+  </div>
+
+  <div class="chat-fab">🧑‍💼</div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

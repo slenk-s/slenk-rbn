@@ -1,0 +1,9 @@
+{
+  "name": "slenk-notes-clone",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "npx -y serve .",
+    "preview": "npx -y http-server . -p 3000"
+  }
+}
