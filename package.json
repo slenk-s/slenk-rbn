@@ -1,9 +1,9 @@
 {
-  "name": "slenk-notes-clone",
+  "name": "slenk-notes-monorepo",
   "private": true,
-  "version": "0.1.0",
   "scripts": {
-    "dev": "npx -y serve .",
-    "preview": "npx -y http-server . -p 3000"
+    "dev:web": "npm --prefix web run dev",
+    "dev:server": "npm --prefix server run dev",
+    "dev:queue": "npm --prefix server run queue"
   }
 }

@@ -1,32 +1,49 @@
-# 天寻AI原创笔记图工作台复刻版
+# 原创笔记图工作台复刻版（全栈）
 
-这是一个基于你提供的截图风格复刻的前端原型，包含多工具页、顶部导航、工具卡片、上传图片区域、参数滑块、笔记预览、生成弹窗和服务配置弹窗。
+本项目基于你提供的站点交互和截图风格，复刻出一套可继续开发的全栈应用骨架。
 
-## 运行方式
+## 包含能力
 
-直接打开：
-
-```bash
-index.html
-```
-
-或启动本地服务：
-
-```bash
-npx serve
-```
-
-## 功能范围
-
-- 复刻页面结构与视觉风格
-- 支持页面间切换
-- 支持图片上传区域展示
-- 支持弹窗交互
-- 支持笔记预览更新
-- 后端 API、账号、真实 AI 生成暂未接入
+- 前端 React + Vite 工作台 UI
+- 后端 Express + SQLite 账号体系（注册/登录/JWT/bcrypt）
+- 文件上传接口与本地文件存储
+- AI API 代理接口（OpenAI-compatible，可切换 baseUrl/apiKey）
+- 后端任务队列（BullMQ + Redis）
+- 视频任务占位接口，可继续接入 FFmpeg / API 供应商
 
 ## 目录
 
-- `index.html`：页面结构与样式
-- `app.js`：交互逻辑
-- `assets/`：预留静态资源目录
+- `web/`：前端
+- `server/`：后端
+- `.env.example`：环境变量模板
+
+## 启动
+
+### 1) 后端
+
+```bash
+cd server
+npm install
+npm run dev
+```
+
+### 2) 队列 worker
+
+```bash
+cd server
+npm run queue
+```
+
+### 3) 前端
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+## 说明
+
+- 当前账号体系是真实可用后端账号体系
+- AI 图片/文本接口已接入队列与 provider 适配层
+- 视频生成接口已提供任务队列链路，后续可补 FFmpeg 或第三方服务
