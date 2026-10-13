@@ -114,8 +114,10 @@ function parseNoteDetail(state) {
 
 router.post('/parse', verify, async (req, res) => {
   try {
-    const link = String(req.body?.link || '').trim();
-    if (!link) return res.status(400).json({ error: 'missing_link' });
+    const rawInput = String(req.body?.link || '').trim();
+    if (!rawInput) return res.status(400).json({ error: 'missing_link' });
+    const match = rawInput.match(/https?:\/\/[^\s，。；）)\]"']+/);
+    const link = match ? match[0] : rawInput;
     if (!/xiaohongshu\.com|xhslink\.com/i.test(link)) return res.status(400).json({ error: 'invalid_link', message: '请输入小红书笔记链接' });
     const { resp } = await resolveLink(link);
     const html = await resp.text();
