@@ -261,16 +261,6 @@ function NoteRewriteWorkspace({ token }) {
   }
   async function uploadImages(list) { if (!list?.length) return; const fd = new FormData(); Array.from(list).slice(0, 9).forEach(file => fd.append('file', file)); const r = await fetch(API + '/api/upload/files', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd }); const data = await r.json(); setImages(prev => { const next = [...prev]; data.files?.forEach(file => { if (!next.some(f => f.url === file.url)) next.push({ ...file, id: file.url || file.name + Date.now() }); }); return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 张图片已添加。'); }
   function addTags() { const next = tagInput.split(/[,，\s#]+/).map(t => t.trim()).filter(Boolean); setTags(prev => [...new Set([...prev, ...next])].slice(0, 20)); setTagInput(''); }
-  function restoreImage(e, index) {
-    e.stopPropagation();
-    setImages(prev => {
-      const next = [...prev];
-      const item = images[index];
-      const restored = { ...item, id: (item.id || 'img') + '-restore-' + Date.now() };
-      next.splice(index, 0, restored);
-      return next;
-    });
-  }
   function moveImage(from, to) { if (from === to || from < 0 || to < 0) return; setImages(prev => { const next = [...prev]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; }); }
   return (
     <section className="card note-rewrite-card">
@@ -297,9 +287,9 @@ function NoteRewriteWorkspace({ token }) {
             </div>
           </div>
           <div className="note-section images">
-            <div className="section-title"><h3>图片管理</h3><p>支持上传、下载、删除、还原；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p></div>
+            <div className="section-title"><h3>图片管理</h3><p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p></div>
             <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={resolveImageSrc(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><a href={resolveImageSrc(img.url)} download={img.name || '图片'}>下载</a><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button><button onClick={(e) => restoreImage(e, index)}>还原</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={resolveImageSrc(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><a href={resolveImageSrc(img.url)} download={img.name || '图片'}>下载</a><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         <aside className="preview-panel">

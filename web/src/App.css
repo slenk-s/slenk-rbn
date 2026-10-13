@@ -2108,8 +2108,10 @@ button:hover { transform: translateY(-1px); }
 .xhs-preview header b, .xhs-preview header small { display: block; line-height: 1.25; }
 .xhs-preview header small { color: var(--text); }
 .follow-btn { border: 0; background: #ff2442; color: white; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 800; }
-.preview-images { min-height: 220px; background: var(--code-bg); display: grid; place-items: center; padding: 10px; }
-.preview-images img { width: 100%; height: 260px; object-fit: cover; }
+.preview-images { min-height: 220px; background: var(--code-bg); display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; padding: 10px; scroll-snap-type: x mandatory; }
+.preview-images img { flex: 0 0 auto; width: 85%; height: 260px; object-fit: cover; border-radius: 10px; scroll-snap-align: start; }
+.preview-images::-webkit-scrollbar { height: 6px; }
+.preview-images::-webkit-scrollbar-thumb { background: rgba(79,70,229,0.25); border-radius: 999px; }
 .no-image { color: var(--text); font-size: 13px; }
 .xhs-preview h4 { margin: 12px 12px 6px; font-size: 15px; }
 .xhs-preview p { margin: 0 12px 10px; color: var(--text); font-size: 13px; line-height: 1.55; }
