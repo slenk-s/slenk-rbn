@@ -9,8 +9,18 @@ import { dataDir } from '../store.js';
 export const router = Router();
 const uploadDir = path.resolve(process.env.UPLOADS_PATH || path.join(dataDir, 'uploads'));
 fs.mkdirSync(uploadDir, { recursive: true });
-const upload = multer({ storage: multer.diskStorage({ destination: (req,file,cb)=>cb(null,uploadDir), filename: (req,file,cb)=>cb(null,nanoid()+path.extname(file.originalname)) }) });
+const upload = multer({ storage: multer.diskStorage({ destination: (req,file,cb)=>cb(null,uploadDir), filename: (req,file,cb)=>cb(null,nanoid()+path.extname(file.originalname)) }), limits: { fileSize: 25 * 1024 * 1024 } });
+
+function fileResponse(file) {
+  return { url: `/uploads/${file.filename}`, name: file.originalname, path: file.path, size: file.size };
+}
+
 router.post('/file', verify, upload.single('file'), (req,res)=>{
   if(!req.file) return res.status(400).json({ error: 'missing_file' });
-  res.json({ url: `/uploads/${req.file.filename}`, name: req.file.originalname, path: req.file.path });
+  res.json(fileResponse(req.file));
+});
+
+router.post('/files', verify, upload.array('file', 9), (req,res)=>{
+  if(!req.files || req.files.length === 0) return res.status(400).json({ error: 'missing_files' });
+  res.json({ files: req.files.map(fileResponse) });
 });

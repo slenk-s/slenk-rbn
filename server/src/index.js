@@ -1,16 +1,18 @@
+import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
-import dotenv from 'dotenv';
+import { fileURLToPath } from 'node:url';
 import { ensureAdmin, dataDir } from './store.js';
 import { router as authRoutes } from './routes/auth.js';
 import { router as uploadRoutes } from './routes/upload.js';
 import { router as taskRoutes } from './routes/tasks.js';
 import { router as aiRoutes } from './routes/ai.js';
+import { router as providerRoutes } from './routes/providers.js';
 
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 ensureAdmin();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.resolve(process.env.UPLOADS_PATH || path.join(dataDir, 'uploads'));
 const videosDir = path.resolve(process.env.VIDEO_OUT_PATH || path.join(dataDir, 'videos'));
 fs.mkdirSync(uploadsDir, { recursive: true });
@@ -25,6 +27,14 @@ app.use('/api/auth', authRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/providers', providerRoutes);
+
+const webDist = path.resolve(__dirname, '../../web/dist');
+if (fs.existsSync(webDist)) {
+  app.use(express.static(webDist));
+  app.get(/^(?!\/api|\/uploads|\/videos).*/, (req, res) => res.sendFile(path.join(webDist, 'index.html')));
+}
+
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: err.message || 'server_error' });

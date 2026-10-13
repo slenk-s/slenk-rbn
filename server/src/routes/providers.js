@@ -1,0 +1,150 @@
+import { Router } from 'express';
+import { verify } from '../auth.js';
+import {
+  listProviders,
+  addProvider,
+  updateProvider,
+  deleteProvider,
+  setActiveProvider,
+  getActiveProvider,
+  getActiveProviderIds,
+  getProviderById,
+  getProviderUnmaskedById
+} from '../store.js';
+
+export const router = Router();
+router.use(verify);
+
+export const PROVIDER_PRESETS = [
+  {
+    name: 'OpenAI',
+    providerType: 'openai-compatible',
+    appType: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    textModel: 'gpt-4o-mini',
+    imageModel: 'gpt-image-1'
+  },
+  {
+    name: 'OpenRouter',
+    providerType: 'openai-compatible',
+    appType: 'openai',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    textModel: 'openai/gpt-4o-mini',
+    imageModel: ''
+  },
+  {
+    name: 'DeepSeek',
+    providerType: 'openai-compatible',
+    appType: 'openai',
+    baseUrl: 'https://api.deepseek.com/v1',
+    textModel: 'deepseek-chat',
+    imageModel: ''
+  },
+  {
+    name: 'Groq',
+    providerType: 'openai-compatible',
+    appType: 'openai',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    textModel: 'llama3-70-70b-instruct',
+    imageModel: ''
+  },
+  {
+    name: 'SenseNova 开放平台',
+    providerType: 'openai-compatible',
+    appType: 'openai',
+    baseUrl: 'https://token.sensenova.cn/v1',
+    textModel: 'sensenova-6.8-flash-lite',
+    imageModel: 'sensenova-u1.5-lite'
+  }
+];
+
+router.get('/', (req,res)=> {
+  res.json({ providers: listProviders(), ...getActiveProviderIds(), presets: PROVIDER_PRESETS });
+});
+
+router.post('/', (req,res)=> {
+  const created = addProvider(req.body);
+  res.status(201).json({ provider: created, providers: listProviders(), ...getActiveProviderIds() });
+});
+
+router.put('/:id', (req,res)=> {
+  const updated = updateProvider(req.params.id, req.body);
+  if (!updated) return res.status(404).json({ error: 'provider_not_found' });
+  res.json({ provider: updated, providers: listProviders(), ...getActiveProviderIds() });
+});
+
+router.delete('/:id', (req,res)=> {
+  const removed = deleteProvider(req.params.id);
+  if (!removed) return res.status(404).json({ error: 'provider_not_found' });
+  res.json({ providers: listProviders(), ...getActiveProviderIds() });
+});
+
+// Fetch model list from an arbitrary provider endpoint.
+router.post('/_models', async (req, res) => {
+  let { baseUrl, apiKey, providerId } = req.body || {};
+  if (providerId) {
+    const existing = getProviderById(providerId);
+    if (!existing) return res.status(404).json({ error: 'provider_not_found' });
+    baseUrl = existing.baseUrl;
+    apiKey = existing.apiKey;
+  }
+  if (!baseUrl || !apiKey) return res.status(400).json({ error: 'missing baseUrl or apiKey' });
+  const normalized = baseUrl.replace(/\/+$/, '');
+  const url = normalized + '/models';
+  try {
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' }
+    });
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch (e) { return res.status(502).json({ error: 'invalid_response', upstream: text.slice(0, 200) }); }
+    if (!resp.ok) return res.status(resp.status).json({ error: 'upstream_error', status: resp.status, body: data });
+    const models = [];
+    const arr = Array.isArray(data) ? data : (data.data || data.models || data.result || []);
+    for (const m of arr) {
+      if (typeof m === 'string') models.push(m);
+      else if (m && typeof m === 'object') models.push(m.id || m.model || m.name || m.modelId || '');
+    }
+    const cleaned = Array.from(new Set(models.filter(Boolean))).sort();
+    res.json({ models: cleaned });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'fetch_failed' });
+  }
+});
+
+router.post('/:id/duplicate', (req, res) => {
+  const existing = getProviderUnmaskedById(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'provider_not_found' });
+  const baseName = existing.name || '供应商';
+  const names = new Set(listProviders().map(p => p.name));
+  let index = 1;
+  let name = baseName + '-' + index;
+  while (names.has(name)) { index += 1; name = baseName + '-' + index; }
+  const created = addProvider({
+    name,
+    providerType: existing.providerType,
+    appType: existing.appType,
+    baseUrl: existing.baseUrl,
+    apiKey: existing.apiKey,
+    mode: existing.mode,
+    textModel: existing.textModel,
+    imageModel: existing.imageModel,
+    notes: existing.notes,
+    active: false
+  });
+  res.status(201).json({ provider: created, providers: listProviders(), ...getActiveProviderIds() });
+});
+
+router.post('/:id/active', (req,res)=> {
+  const mode = (req.body && req.body.mode) || null;
+  setActiveProvider(req.params.id, mode);
+  res.json({ providers: listProviders(), ...getActiveProviderIds() });
+});
+
+router.get('/:id/api-key', (req, res) => {
+  const target = getProviderUnmaskedById(req.params.id);
+  if (!target) return res.status(404).json({ error: 'provider_not_found' });
+  res.json({ providerId: target.id, apiKey: target.apiKey || '' });
+});
+
+
