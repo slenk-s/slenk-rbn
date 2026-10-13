@@ -11,7 +11,8 @@ router.get('/', verify, async (req, res) => {
     const resp = await fetch(target, { headers: { 'Referer': 'https://www.xiaohongshu.com/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' } });
     if (!resp.ok) return res.status(502).json({ error: 'upstream_error', status: resp.status });
     const contentType = resp.headers.get('content-type') || 'application/octet-stream';
-    const ext = contentType.includes('png') ? '.png' : contentType.includes('webp') ? '.webp' : contentType.includes('mp4') ? '.mp4' : '.jpg';
+    const hasExt = /\.[a-z0-9]{2,5}$/i.test(name);
+    const ext = hasExt ? '' : (contentType.includes('mp4') ? '.mp4' : '.png');
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
     const buf = Buffer.from(await resp.arrayBuffer());
