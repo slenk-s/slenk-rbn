@@ -3,7 +3,7 @@ import { verify } from '../auth.js';
 
 export const router = Router();
 
-router.get('/', verify, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const target = String(req.query.url || '');
     if (!/^https?:\/\//.test(target)) return res.status(400).json({ error: 'invalid_url' });
@@ -13,8 +13,13 @@ router.get('/', verify, async (req, res) => {
     const contentType = resp.headers.get('content-type') || 'application/octet-stream';
     const hasExt = /\.[a-z0-9]{2,5}$/i.test(name);
     const ext = hasExt ? '' : (contentType.includes('mp4') ? '.mp4' : '.png');
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
+    if (req.query.inline === '1') {
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    } else {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
+    }
     const buf = Buffer.from(await resp.arrayBuffer());
     res.send(buf);
   } catch (err) {

@@ -99,7 +99,15 @@ function selectedModelValue(mode, providers, activeProviderId) {
   const model = mode === 'text' ? (active.textModel || '') : (active.imageModel || '');
   return active.id + '::' + model;
 }
-function resolveImageSrc(url) { const u = String(url || ''); return /^https?:\/\//.test(u) ? u : API + u; }
+function resolveImageSrc(url) {
+  const u = String(url || '');
+  if (!u) return '';
+  if (/^https?:\/\//.test(u)) {
+    if (/xhscdn\.com|xiaohongshu\.com/.test(u)) return API + '/api/download?inline=1&url=' + encodeURIComponent(u);
+    return u;
+  }
+  return API + u;
+}
 async function downloadFile(url, name) {
   try {
     const token = localStorage.getItem('token');
@@ -313,7 +321,7 @@ function NoteRewriteWorkspace({ token }) {
         </div>
         <aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
-          <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.length ? images.map((img, i) => <img key={i} src={resolveImageSrc(img.url)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
+          <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <img key={i} src={resolveImageSrc(img.url)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
           <div className="publish-actions"><button className="btn-primary" onClick={() => setStatus('当前笔记草稿已保存到前端状态：' + title + ' / ' + tags.length + ' 个标签 / ' + images.length + ' 张图片。')}>保存笔记</button><button className="btn-secondary" onClick={() => setStatus('飞书同步功能待接入当前工作台的发布 API。')}>同步飞书</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
         </aside>
       </div>
