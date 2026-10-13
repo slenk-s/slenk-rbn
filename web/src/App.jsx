@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -208,6 +209,7 @@ function NoteRewriteWorkspace({ token }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [status, setStatus] = useState('');
   const [dragIndex, setDragIndex] = useState(null);
+  const [qr, setQr] = useState(null);
   async function api(path, options = {}) {
     return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   }
@@ -226,6 +228,17 @@ function NoteRewriteWorkspace({ token }) {
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
       throw new Error('AI 生成超时');
+    } catch (err) { setStatus(err.message); }
+  }
+  async function generateQr() {
+    try {
+      setStatus('正在生成预览二维码...');
+      const res = await fetch(API + '/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ title, content, tags, images }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '生成失败');
+      const qrDataUrl = await QRCode.toDataURL(data.url, { width: 320, margin: 2 });
+      setQr({ url: data.url, image: qrDataUrl });
+      setStatus('二维码已生成，手机扫码预览笔记。');
     } catch (err) { setStatus(err.message); }
   }
   async function identifyLink() { if (!link.trim()) return setStatus('请先粘贴笔记链接。'); await aiCall({ prompt: '请识别输入的小红书笔记链接，提取标题、正文、标签和图片 URL。输出 JSON：{"title":"","content":"","tags":[],"images":[]}', source: link.trim() }, '正在智能识别链接内容...'); }
@@ -276,10 +289,21 @@ function NoteRewriteWorkspace({ token }) {
         <aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
           <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.length ? images.map((img, i) => <img key={i} src={API + img.url} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
-          <div className="publish-actions"><button className="btn-primary" onClick={() => setStatus('当前笔记草稿已保存到前端状态：' + title + ' / ' + tags.length + ' 个标签 / ' + images.length + ' 张图片。')}>保存笔记</button><button className="btn-secondary" onClick={() => setStatus('飞书同步功能待接入当前工作台的发布 API。')}>同步飞书</button><button className="btn-secondary" onClick={() => setStatus('小红书直发二维码需接入对应发布服务后生成。')}>生成小红书直发二维码</button></div>
+          <div className="publish-actions"><button className="btn-primary" onClick={() => setStatus('当前笔记草稿已保存到前端状态：' + title + ' / ' + tags.length + ' 个标签 / ' + images.length + ' 张图片。')}>保存笔记</button><button className="btn-secondary" onClick={() => setStatus('飞书同步功能待接入当前工作台的发布 API。')}>同步飞书</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
         </aside>
       </div>
       <footer className="status note-status">{status}</footer>
+      {qr && (
+        <div className="qr-backdrop" onClick={() => setQr(null)}>
+          <div className="qr-modal" onClick={e => e.stopPropagation()}>
+            <button type="button" className="qr-close" onClick={() => setQr(null)}>×</button>
+            <h3>小红书笔记预览</h3>
+            <img src={qr.image} alt="笔记预览二维码" />
+            <p className="qr-url">{qr.url}</p>
+            <p className="qr-tip">手机与电脑在同一局域网时，扫码即可打开预览</p>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -489,8 +513,33 @@ function Auth() {
     </div>
   );
 }
-export default function App() {
+function NotePreviewPage({ noteId }) {
+  const [note, setNote] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    fetch(API + '/api/notes/' + noteId).then(async r => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || '加载失败');
+      setNote(data.note);
+    }).catch(err => setError(err.message));
+  }, [noteId]);
+  if (error) return <div className="note-page"><p className="auth-error">{error}</p></div>;
+  if (!note) return <div className="note-page"><p>加载中...</p></div>;
+  return (
+    <div className="note-page">
+      <article className="note-page-card">
+        <div className="note-page-images">{note.images.map((img, i) => <img key={i} src={API + img.url} alt={img.name || ('图片 ' + (i + 1))} />)}</div>
+        <h1>{note.title || '笔记标题'}</h1>
+        <p className="note-page-content">{note.content}</p>
+        <div className="topic-tags">{note.tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div>
+      </article>
+    </div>
+  );
+}
 
+export default function App() {
+  const previewMatch = window.location.pathname.match(/^\/p\/([A-Za-z0-9_-]+)/);
+  if (previewMatch) return <NotePreviewPage noteId={previewMatch[1]} />;
   const token = localStorage.getItem('token');
   if (!token) return <Auth />;
   return <Workspace token={token} />;

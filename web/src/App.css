@@ -2131,3 +2131,18 @@ button:hover { transform: translateY(-1px); }
 .provider-manager .actions-row-bottom {
   margin-top: 8px;
 }
+
+/* QR modal + note preview page */
+.qr-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.45); display: grid; place-items: center; z-index: 60; }
+.qr-modal { position: relative; background: #fff; border-radius: 20px; padding: 24px 28px; text-align: center; box-shadow: 0 24px 60px rgba(15,23,42,0.25); max-width: 380px; }
+.qr-modal h3 { margin: 0 0 14px; font-size: 16px; }
+.qr-modal img { width: 280px; height: 280px; border-radius: 12px; }
+.qr-url { word-break: break-all; font-size: 12px; color: var(--text); background: var(--code-bg); border-radius: 8px; padding: 8px 10px; }
+.qr-tip { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+.qr-close { position: absolute; top: 10px; right: 12px; border: 0; background: transparent; font-size: 22px; cursor: pointer; color: var(--text); }
+.note-page { min-height: 100vh; background: #f6f7f9; display: grid; place-items: start center; padding: 24px; }
+.note-page-card { background: #fff; border-radius: 18px; padding: 20px; max-width: 420px; width: 100%; box-shadow: 0 12px 30px rgba(15,23,42,0.08); }
+.note-page-card h1 { font-size: 18px; margin: 12px 0 8px; }
+.note-page-content { white-space: pre-wrap; font-size: 14px; line-height: 1.7; color: var(--text-h); }
+.note-page-images { display: grid; gap: 8px; }
+.note-page-images img { width: 100%; border-radius: 12px; }

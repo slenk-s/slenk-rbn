@@ -18,7 +18,8 @@ const DEFAULT = {
   providers: [],
   activeProviderId: null,
   activeTextProviderId: null,
-  activeImageProviderId: null
+  activeImageProviderId: null,
+  notes: []
 };
 
 function read() {
@@ -200,6 +201,21 @@ function getActiveProviderIds() {
   };
 }
 
+function saveNote(note) {
+  const data = read();
+  data.notes = data.notes || [];
+  const id = uid('note');
+  const record = { id, title: note.title || '', content: note.content || '', tags: note.tags || [], images: note.images || [], createdAt: new Date().toISOString() };
+  data.notes.push(record);
+  write(data);
+  return record;
+}
+
+function getNote(id) {
+  const data = read();
+  return (data.notes || []).find(n => n.id === id) || null;
+}
+
 export {
   ensureAdmin,
   findUserByUsername,
@@ -218,5 +234,7 @@ export {
   deleteProvider,
   setActiveProvider,
   getActiveProviderIds,
+  saveNote,
+  getNote,
   dataDir
 };

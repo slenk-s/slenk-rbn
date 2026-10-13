@@ -10,6 +10,7 @@ import { router as uploadRoutes } from './routes/upload.js';
 import { router as taskRoutes } from './routes/tasks.js';
 import { router as aiRoutes } from './routes/ai.js';
 import { router as providerRoutes } from './routes/providers.js';
+import { router as noteRoutes } from './routes/notes.js';
 
 ensureAdmin();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/providers', providerRoutes);
+app.use('/api/notes', noteRoutes);
 
 const webDist = path.resolve(__dirname, '../../web/dist');
 if (fs.existsSync(webDist)) {
