@@ -100,6 +100,19 @@ function selectedModelValue(mode, providers, activeProviderId) {
   return active.id + '::' + model;
 }
 function resolveImageSrc(url) { const u = String(url || ''); return /^https?:\/\//.test(u) ? u : API + u; }
+async function downloadFile(url, name) {
+  try {
+    const token = localStorage.getItem('token');
+    const resp = await fetch(API + '/api/download?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(name || 'file'), { headers: { Authorization: 'Bearer ' + token } });
+    if (!resp.ok) throw new Error('下载失败');
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name || 'file';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { alert(e.message); }
+}
 function parseJsonText(raw) {
   if (!raw) return null;
   try {
@@ -289,7 +302,7 @@ function NoteRewriteWorkspace({ token }) {
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3><p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p></div>
             <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={resolveImageSrc(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><a href={resolveImageSrc(img.url)} download={img.name || '图片'}>下载</a><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={resolveImageSrc(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(resolveImageSrc(img.url), img.name || ('图片 ' + (index + 1))); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         <aside className="preview-panel">
