@@ -126,7 +126,7 @@ function ProviderManager({ token, activeProviderId, providers, onProviderChange,
   const [form, setForm] = useState(EMPTY_PROVIDER);
   const [editingId, setEditingId] = useState('');
   function resetForm() { setEditingId(''); setForm(EMPTY_PROVIDER); }
-  function clearForm() { setEditingId(''); setForm({ ...EMPTY_PROVIDER, providerType: '', appType: '', textModel: '', imageModel: '' }); }
+  function clearForm() { setEditingId(''); setForm({ ...EMPTY_PROVIDER, name: '', baseUrl: '', apiKey: '', textModel: '', imageModel: '', notes: '' }); }
   async function saveProvider(e) {
     e.preventDefault(); setMessage('正在保存供应商...');
     try {
