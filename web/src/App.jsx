@@ -106,9 +106,14 @@ async function downloadFile(url, name) {
     const resp = await fetch(API + '/api/download?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(name || 'file'), { headers: { Authorization: 'Bearer ' + token } });
     if (!resp.ok) throw new Error('下载失败');
     const blob = await resp.blob();
+    const mime = blob.type || '';
+    let finalName = name || 'file';
+    if (!/\.[a-z0-9]{2,5}$/i.test(finalName)) {
+      finalName += mime.includes('mp4') ? '.mp4' : mime.includes('png') ? '.png' : mime.includes('jpeg') || mime.includes('jpg') ? '.jpg' : '.png';
+    }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = name || 'file';
+    a.download = finalName;
     a.click();
     URL.revokeObjectURL(a.href);
   } catch (e) { alert(e.message); }
