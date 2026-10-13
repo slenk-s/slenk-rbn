@@ -206,7 +206,6 @@ function NoteRewriteWorkspace({ token }) {
   const [tags, setTags] = useState([]);
   const [tagInput, setTagInput] = useState('');
   const [images, setImages] = useState([]);
-  const [selectedIds, setSelectedIds] = useState([]);
   const [status, setStatus] = useState('');
   const [dragIndex, setDragIndex] = useState(null);
   const [qr, setQr] = useState(null);
@@ -254,7 +253,6 @@ function NoteRewriteWorkspace({ token }) {
       return next;
     });
   }
-  function toggleSelect(id) { setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
   function moveImage(from, to) { if (from === to || from < 0 || to < 0) return; setImages(prev => { const next = [...prev]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; }); }
   return (
     <section className="card note-rewrite-card">
@@ -282,8 +280,8 @@ function NoteRewriteWorkspace({ token }) {
           </div>
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3><p>支持上传、下载、删除、还原；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p></div>
-            <div className="image-toolbar"><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成一组适合小红书封面和内页的图片，保持风格统一。', source: title + '\n' + content }, '正在统一风格...')}>统一风格</button><span>已选 {selectedIds.length} / {images.length} 张</span><button className="btn-secondary" onClick={() => setSelectedIds(images.map(i => i.id))}>全选</button><button className="btn-secondary" onClick={() => setSelectedIds([])}>全不选</button><button className="btn-secondary" onClick={async () => { const urls = selectedIds.map(id => images.find(i => i.id === id)?.url).filter(Boolean); setStatus(urls.length ? '图片链接已复制。' : '未选择图片。'); if (urls.length) navigator.clipboard?.writeText(urls.join('\n')); }}>下载</button><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className={'image-thumb' + (selectedIds.includes(img.id) ? ' selected' : '')} draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)} onClick={() => toggleSelect(img.id)}><span className="cover-badge">封面</span><input type="checkbox" checked={selectedIds.includes(img.id)} onChange={() => toggleSelect(img.id)} /><img src={API + img.url} alt={img.name || '笔记图片'} /><figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><a href={API + img.url} download={img.name || '图片'}>下载</a><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button><button onClick={(e) => restoreImage(e, index)}>还原</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>
+            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}><span className="cover-badge">封面</span><img src={API + img.url} alt={img.name || '笔记图片'} /><figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><a href={API + img.url} download={img.name || '图片'}>下载</a><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button><button onClick={(e) => restoreImage(e, index)}>还原</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         <aside className="preview-panel">
