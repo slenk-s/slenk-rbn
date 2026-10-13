@@ -125,8 +125,20 @@ function ResultEmptyState({ tabId }) {
 function ProviderManager({ token, activeProviderId, providers, onProviderChange, setMessage }) {
   const [form, setForm] = useState(EMPTY_PROVIDER);
   const [editingId, setEditingId] = useState('');
+  const [availableModels, setAvailableModels] = useState([]);
   function resetForm() { setEditingId(''); setForm(EMPTY_PROVIDER); }
-  function clearForm() { setEditingId(''); setForm({ ...EMPTY_PROVIDER, name: '', baseUrl: '', apiKey: '', textModel: '', imageModel: '', notes: '' }); }
+  function clearForm() { setEditingId(''); setForm({ ...EMPTY_PROVIDER, name: '', baseUrl: '', apiKey: '', textModel: '', imageModel: '', notes: '' }); setAvailableModels([]); }
+  async function fetchModels() {
+    try {
+      setMessage('正在获取模型列表...');
+      const payload = editingId ? { providerId: editingId } : { baseUrl: form.baseUrl, apiKey: form.apiKey };
+      if (!editingId && (!payload.baseUrl || !payload.apiKey)) { setMessage('请先填写 API 请求地址和 API Key，再获取模型。'); return; }
+      const data = await api('/api/providers/_models', { method: 'POST', token, body: JSON.stringify(payload) });
+      const models = data.models || [];
+      setAvailableModels(models);
+      setMessage('已获取 ' + models.length + ' 个模型。');
+    } catch (err) { setMessage('获取模型失败：' + err.message); }
+  }
   async function saveProvider(e) {
     e.preventDefault(); setMessage('正在保存供应商...');
     try {
@@ -137,7 +149,7 @@ function ProviderManager({ token, activeProviderId, providers, onProviderChange,
       setMessage(editingId ? '供应商已更新。' : '供应商已添加。'); resetForm();
     } catch (err) { setMessage(err.message); }
   }
-  function editProvider(provider) { setEditingId(provider.id); setForm({ name: provider.name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: Boolean(provider.active) }); }
+  function editProvider(provider) { setEditingId(provider.id); setForm({ name: provider.name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: Boolean(provider.active) }); setAvailableModels([provider.appType === 'text' ? provider.textModel : provider.imageModel].filter(Boolean)); }
   function copyProvider(provider) { const base = provider.name || '供应商'; let index = 1; let name = base + '-' + index; while (providers.some(p => p.name === name)) { index += 1; name = base + '-' + index; } setForm({ name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: false }); setEditingId(provider.id); }
   async function refreshProviders(messageText) { const next = await api('/api/providers', { token }); await onProviderChange(next.providers, next.activeProviderId); setMessage(messageText || '已切换供应商'); }
   async function activateProvider(provider) { await api('/api/providers/' + provider.id + '/active', { method: 'POST', token, body: JSON.stringify({ mode: provider.appType === 'text' ? 'text' : 'image' }) }); await refreshProviders('已切换供应商。'); }
@@ -165,8 +177,8 @@ function ProviderManager({ token, activeProviderId, providers, onProviderChange,
           </div></div>
           <label className="field"><b>API Key</b><input type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder={editingId ? '留空则保持不变' : '填写密钥'} /></label>
           <label className="field"><b>API 请求地址</b><input type="text" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.sensenova.cn/v1" /></label>
-          <div className="model-row"><b>默认模型</b><div className="model-wrap"><select value={form.appType === 'text' ? form.textModel : form.imageModel} onChange={e => setForm(form.appType === 'text' ? { ...form, textModel: e.target.value } : { ...form, imageModel: e.target.value })}><option value="">未选择</option><option value="gpt-4o-mini">gpt-4o-mini</option><option value="gpt-image-1">gpt-image-1</option><option value="sensenova-6.8-flash-lite">sensenova-6.8-flash-lite</option><option value="sensenova-u1.5-lite">sensenova-u1.5-lite</option></select></div></div>
-          <div className="actions-row"><button type="button" className="btn-secondary" onClick={clearForm}>{editingId ? '取消编辑' : '清空'}</button><button type="button" className="btn-ghost" onClick={() => setMessage('请先在供应商配置里填写模型名称。')}>获取模型</button></div>
+          <div className="model-row"><b>默认模型</b><div className="model-wrap"><select value={form.appType === 'text' ? form.textModel : form.imageModel} onChange={e => setForm(form.appType === 'text' ? { ...form, textModel: e.target.value } : { ...form, imageModel: e.target.value })}><option value="">未选择</option>{availableModels.map(m => <option key={m} value={m}>{m}</option>)}</select></div></div>
+          <div className="actions-row"><button type="button" className="btn-secondary" onClick={clearForm}>{editingId ? '取消编辑' : '清空'}</button><button type="button" className="btn-ghost" onClick={fetchModels}>获取模型</button></div>
           <div className={editingId ? 'actions-row actions-row-bottom actions-row-edit' : 'actions-row actions-row-bottom'}><button type="submit" className="btn-primary">{editingId ? '保存修改' : '创建'}</button>{editingId && <button type="button" className="btn-ghost" onClick={duplicateProvider}>复制新增</button>}</div>
         </form>
         <div className="provider-list-block"><div className="list-head"><h3>供应商列表</h3><span className="count">{providers.length} 个</span></div><ul className="providers">{providers.map(p => <li key={p.id} className={p.id === activeProviderId ? 'active' : ''}><div className="p-name"><b>{p.name}</b><span className={"mode-tag" + (p.appType === 'text' ? '' : ' image')}>{p.appType === 'text' ? '文本' : '生图'}</span></div><div className="row-btns"><button type="button" onClick={() => editProvider(p)}>编辑</button><button type="button" className="danger" onClick={async () => { await api('/api/providers/' + p.id, { method: 'DELETE', token }); await refreshProviders('供应商已删除。'); }}>删除</button><button type="button" className={p.id === activeProviderId ? 'active' : ''} onClick={() => activateProvider(p)}>{p.id === activeProviderId ? '已启用' : '启用'}</button></div></li>)}</ul></div>
