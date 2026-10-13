@@ -8,7 +8,7 @@ router.get('/', verify, async (req, res) => {
     const target = String(req.query.url || '');
     if (!/^https?:\/\//.test(target)) return res.status(400).json({ error: 'invalid_url' });
     const name = String(req.query.name || 'image').replace(/[\\/:*?"<>|]/g, '_');
-    const resp = await fetch(target);
+    const resp = await fetch(target, { headers: { 'Referer': 'https://www.xiaohongshu.com/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' } });
     if (!resp.ok) return res.status(502).json({ error: 'upstream_error', status: resp.status });
     const contentType = resp.headers.get('content-type') || 'application/octet-stream';
     const ext = contentType.includes('png') ? '.png' : contentType.includes('webp') ? '.webp' : contentType.includes('mp4') ? '.mp4' : '.jpg';

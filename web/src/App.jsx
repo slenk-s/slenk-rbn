@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import './App.css';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API = import.meta.env.VITE_API_URL || window.location.origin;
 const GROUPS = [
   { id: 'ai', label: 'AI 生成', icon: '✦', tabs: [
     { id: 'ai-image', label: 'AI 生图', icon: '▧', description: '从零生成适合小红书笔记封面的原创图片。' },
@@ -254,6 +254,7 @@ function NoteRewriteWorkspace({ token }) {
       setStatus('二维码已生成，手机扫码预览笔记。');
     } catch (err) { setStatus(err.message); }
   }
+  function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); setStatus('已清空。'); }
   async function identifyLink() {
     const target = link.trim();
     if (!target) return setStatus('请先粘贴笔记链接。');
@@ -281,7 +282,7 @@ function NoteRewriteWorkspace({ token }) {
         <div className="note-main">
           <div className="note-section smart-link">
             <div className="note-head"><div><h2>智能识别笔记链接</h2><p>输入笔记链接，智能识别参考内容：标题、正文、标签、图片</p></div><span className="pill pill-ok">AI 提取</span></div>
-            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder="粘贴小红书笔记链接" /><button className="btn-primary" onClick={identifyLink}>智能识别</button></div>
+            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder="粘贴小红书笔记链接" /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
           </div>
           <div className="note-section fields">
             <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><button className="btn-secondary" onClick={() => aiCall({ prompt: "基于链接和正文生成 3 个小红书标题，输出 JSON titles 数组。", source: link || content }, '正在生成标题...')}>AI生成</button></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
@@ -302,7 +303,7 @@ function NoteRewriteWorkspace({ token }) {
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3><p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p></div>
             <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={resolveImageSrc(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(resolveImageSrc(img.url), img.name || ('图片 ' + (index + 1))); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?url=' + encodeURIComponent(resolveImageSrc(img.url))} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(resolveImageSrc(img.url), img.name || ('图片 ' + (index + 1))); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         <aside className="preview-panel">
