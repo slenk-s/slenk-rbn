@@ -223,7 +223,7 @@ function Dashboard({ token, activeProviderId, providers, onProviderChange, tasks
     </section>
   );
 }
-function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
+function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const isDownload = mode === 'download';
   const linkLabel = isDownload ? '商品链接' : '笔记链接';
   const resultLabel = isDownload ? '商品图片' : '图片';
@@ -290,7 +290,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
   function addTags() { const next = tagInput.split(/[,，\s#]+/).map(t => t.trim()).filter(Boolean); setTags(prev => [...new Set([...prev, ...next])].slice(0, 20)); setTagInput(''); }
   function moveImage(from, to) { if (from === to || from < 0 || to < 0) return; setImages(prev => { const next = [...prev]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; }); }
   return (
-    <section className={'card note-rewrite-card' + (isDownload ? ' is-download' : '')}>
+    <section className={'card note-rewrite-card' + (isDownload ? ' is-download' : '')} style={hidden ? { display: 'none' } : undefined} aria-hidden={hidden}>
       <div className={'note-rewrite-grid' + (isDownload ? ' is-single' : '')}>
         <div className="note-main">
           <div className="note-section smart-link">
@@ -487,11 +487,11 @@ function Workspace({ token }) {
           {GROUPS.map(group => <div key={group.id} className="tab-group"><div className="tab-group-label"><span>{group.icon}</span>{group.label}</div><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
         </aside>
         <main className="workspace">
+          <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} />
+          <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} />
           {active === 'dashboard' ? (
             <Dashboard token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={viewTask} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} />
-          ) : active === 'note-rewrite' || active === 'note-download' ? (
-            <NoteRewriteWorkspace token={token} mode={active === 'note-download' ? 'download' : 'rewrite'} />
-          ) : (
+          ) : active === 'note-rewrite' || active === 'note-download' ? null : (
             <section className={'card tool-panel layout-' + layoutVariant + ' ' + (TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default') + ' ' + (isTextFocused ? 'row-text-only' : '')}>
               <div className="panel-row"><div className="panel-cell panel-title-cell"><div className="title-row"><span className="title-label">{activeTabLabel}</span><div className="meta-chips"><span className="meta-chip">任务 {tasks.length}</span><span className="meta-chip provider-chip">{providers.find(p => p.id === selectedProviderId)?.name || '未配置供应商'}</span></div><div className="title-actions"><select className="model-select" value={selectedModel} onChange={e => setSelectedModels(prev => ({ ...prev, [active]: e.target.value }))} aria-label="本页模型">
   <option value={MODEL_EMPTY}>未选择</option>
