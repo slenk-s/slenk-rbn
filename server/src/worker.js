@@ -6,6 +6,7 @@ import { Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
+import sharp from 'sharp';
 import { dataDir, updateTask, getProviderById, getActiveProvider } from './store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +91,76 @@ function dataUrlFromBuffer(buf, fallbackMime) {
   return 'data:' + mime + ';base64,' + buf.toString('base64');
 }
 
+// 供应商对参考图的硬性限制：PNG/JPEG/WebP、≤10MB、边长落在 [256,4096]、宽高比 ≤2:1。
+// 超限的图（手机长截图最常见，如 1440x3168 = 2.2:1）会被直接拒收，
+// 所以在本地先规范化再提交；合规的图原样返回，不做任何重编码。
+const REF_MAX_EDGE = 4096;
+const REF_MIN_EDGE = 256;
+const REF_MAX_RATIO = 2;
+const REF_MAX_BYTES = 10 * 1024 * 1024;
+const REF_FORMATS = new Set(['png', 'jpeg', 'webp']);
+
+async function normalizeReferenceBuffer(buf) {
+  const meta = await sharp(buf, { failOn: 'none' }).metadata();
+  if (!meta?.width || !meta?.height) return null;
+  // EXIF orientation 5-8 会让解码后的宽高互换，判定前要按实际显示方向取尺寸。
+  const swapped = Number(meta.orientation) >= 5;
+  const width = swapped ? meta.height : meta.width;
+  const height = swapped ? meta.width : meta.height;
+  const ratio = Math.max(width, height) / Math.min(width, height);
+  const fits = REF_FORMATS.has(meta.format)
+    && buf.length <= REF_MAX_BYTES
+    && Math.max(width, height) <= REF_MAX_EDGE
+    && Math.min(width, height) >= REF_MIN_EDGE
+    && ratio <= REF_MAX_RATIO;
+  if (fits) return null;
+
+  let scale = 1;
+  if (Math.max(width, height) > REF_MAX_EDGE) scale = REF_MAX_EDGE / Math.max(width, height);
+  else if (Math.min(width, height) < REF_MIN_EDGE) scale = REF_MIN_EDGE / Math.min(width, height);
+  const scaledWidth = Math.max(1, Math.round(width * scale));
+  const scaledHeight = Math.max(1, Math.round(height * scale));
+
+  // sharp 的 extract 作用在 resize 之后的图上，所以缩放与裁切分两步做，避免顺序歧义。
+  let stage = await sharp(buf, { failOn: 'none' }).rotate().toBuffer();
+  let stageWidth = width;
+  let stageHeight = height;
+  if (scale !== 1) {
+    stage = await sharp(stage).resize(scaledWidth, scaledHeight, { fit: 'fill' }).png().toBuffer();
+    stageWidth = scaledWidth;
+    stageHeight = scaledHeight;
+  }
+
+  let image = sharp(stage);
+  if (Math.max(stageWidth, stageHeight) / Math.min(stageWidth, stageHeight) > REF_MAX_RATIO) {
+    // 居中裁到 2:1：横向过长裁宽度，纵向过长裁高度，画面保持饱满，不引入原图之外的内容。
+    if (stageWidth >= stageHeight) {
+      const targetWidth = Math.max(REF_MIN_EDGE, Math.round(stageHeight * REF_MAX_RATIO));
+      image = image.extract({ left: Math.round((stageWidth - targetWidth) / 2), top: 0, width: targetWidth, height: stageHeight });
+    } else {
+      const targetHeight = Math.max(REF_MIN_EDGE, Math.round(stageWidth * REF_MAX_RATIO));
+      image = image.extract({ left: 0, top: Math.round((stageHeight - targetHeight) / 2), width: stageWidth, height: targetHeight });
+    }
+  }
+
+  const output = await image.flatten({ background: '#ffffff' }).jpeg({ quality: 90 }).toBuffer();
+  if (output.length > REF_MAX_BYTES) {
+    return sharp(output).jpeg({ quality: 72 }).toBuffer();
+  }
+  return output;
+}
+
+// 参考图统一入口：先按规格规范化，再包成 Data URL；规范化失败时退回原图。
+async function referenceDataUrl(buf, fallbackMime) {
+  const normalized = await normalizeReferenceBuffer(buf).catch(err => {
+    console.warn('[worker] reference normalize skipped:', err.message);
+    return null;
+  });
+  if (!normalized) return dataUrlFromBuffer(buf, fallbackMime);
+  console.log('[worker] reference normalized', JSON.stringify({ bytesIn: buf.length, bytesOut: normalized.length }));
+  return dataUrlFromBuffer(normalized, 'image/jpeg');
+}
+
 // 参考图必须以公网 URL 或完整 Data URL 的形式提交，裸 base64 与本地路径都不被接受。
 async function readImageAsDataUrl(value) {
   const raw = String(value ?? '').trim();
@@ -97,7 +168,7 @@ async function readImageAsDataUrl(value) {
   if (/^data:image\//i.test(raw)) {
     const match = raw.match(/^data:([^;,]*);base64,(.*)$/is);
     if (!match) return raw;
-    return dataUrlFromBuffer(Buffer.from(match[2].replace(/\s/g, ''), 'base64'), match[1]);
+    return referenceDataUrl(Buffer.from(match[2].replace(/\s/g, ''), 'base64'), match[1]);
   }
   if (/^https?:\/\//i.test(raw)) {
     // 小红书图床有防盗链，必须带 Referer/UA 才能取到原图（与分析链接时同一套头）。
@@ -110,13 +181,13 @@ async function readImageAsDataUrl(value) {
     if (!res.ok) throw new Error(`参考图下载失败（HTTP ${res.status}）`);
     const type = (res.headers.get('content-type') || '').split(';')[0].trim();
     const buf = Buffer.from(await res.arrayBuffer());
-    return dataUrlFromBuffer(buf, /^image\//i.test(type) ? type : '');
+    return referenceDataUrl(buf, /^image\//i.test(type) ? type : '');
   }
   const filePath = path.resolve(uploadDir, path.basename(raw));
   if (fs.existsSync(filePath)) {
-    return dataUrlFromBuffer(fs.readFileSync(filePath), mimeFromPath(filePath));
+    return referenceDataUrl(fs.readFileSync(filePath), mimeFromPath(filePath));
   }
-  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return dataUrlFromBuffer(Buffer.from(raw.replace(/\s/g, ''), 'base64'), '');
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return referenceDataUrl(Buffer.from(raw.replace(/\s/g, ''), 'base64'), '');
   return null;
 }
 
