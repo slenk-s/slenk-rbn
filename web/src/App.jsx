@@ -14,7 +14,7 @@ const GROUPS = [
   ] },
 
   { id: 'download', label: '素材下载', icon: '↓', tabs: [
-    { id: 'note-download', label: '笔记下载', icon: '↓', description: '上传或粘贴笔记素材，整理成可发布的笔记包。' }
+    { id: 'note-download', label: '商品下载', icon: '↓', description: '上传或粘贴笔记素材，整理成可发布的笔记包。' }
   ] }
 ];
 const TABS = [{ id: 'dashboard', label: '仪表盘', icon: '◈', section: '设置' }, ...GROUPS.flatMap(g => g.tabs.map(t => ({ ...t, section: g.label })))];
