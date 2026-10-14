@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { verify } from '../auth.js';
-import sharp from 'sharp';
 
 export const router = Router();
 
@@ -24,20 +23,7 @@ router.get('/', async (req, res, next) => {
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
     }
-    let buf = Buffer.from(await resp.arrayBuffer());
-    if (/xhscdn\.com/.test(target) && !contentType.includes('mp4')) {
-      try {
-        const img = sharp(buf);
-        const meta = await img.metadata();
-        const w = meta.width, h = meta.height;
-        const wmW = Math.round(w * 0.28);
-        const wmH = Math.round(h * 0.07);
-        const left = w - wmW;
-        const top = h - wmH;
-        const blurred = await sharp(buf).extract({ left, top, width: wmW, height: wmH }).blur(25).toBuffer();
-        buf = await sharp(buf).composite([{ input: blurred, left, top }]).jpeg({ quality: 95 }).toBuffer();
-      } catch (e) { /* keep original if processing fails */ }
-    }
+    const buf = Buffer.from(await resp.arrayBuffer());
     res.send(buf);
   } catch (err) {
     res.status(500).json({ error: err.message });

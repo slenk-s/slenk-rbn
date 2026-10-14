@@ -88,10 +88,11 @@ function parseNoteDetail(state) {
   const tags = (detail.tagList || detail.hashTag || []).map(t => t?.name || t?.tagName || t).filter(Boolean);
   const images = (detail.imageList || detail.images || [])
     .map(img => {
+      const fileId = img?.fileId || img?.file_id || '';
+      if (fileId) return 'https://ci.xiaohongshu.com/notes_pre_post/' + String(fileId).replace(/^notes_pre_post\//, '');
       const infoList = img?.infoList || img?.info_list || [];
       const urls = infoList.map(i => normalizeImageUrl(i?.url || i?.imageUrl)).filter(Boolean);
-      const clean = urls.find(u => !/watermark/i.test(u));
-      return clean || urls[urls.length - 1] || normalizeImageUrl(img?.url || img?.imageUrl);
+      return urls[urls.length - 1] || normalizeImageUrl(img?.url || img?.imageUrl);
     })
     .filter(Boolean);
   const videos = [];
@@ -106,8 +107,7 @@ function parseNoteDetail(state) {
   if (videoObj?.url) candidates.push({ url: videoObj.url });
   for (const c of candidates) {
     const u = normalizeImageUrl(c?.masterUrl || c?.url || c?.playAddr || c?.play_url);
-    if (u && !/watermark/i.test(u)) { videos.push(u); break; }
-    if (u && !videos.length) videos.push(u);
+    if (u) { videos.push(u); break; }
   }
   return { title, content, tags, images, videos };
 }
