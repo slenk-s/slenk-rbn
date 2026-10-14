@@ -68,11 +68,37 @@ function mimeFromPath(filePath) {
   return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
 }
 
+// 扩展名与响应头都可能与实际内容不符（例如 .png 文件里其实是 WebP 字节），
+// 这里按文件头识别真实格式，避免供应商报 "data URL media type does not match the image content"。
+function sniffImageMime(buf) {
+  if (!buf || buf.length < 12) return '';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (buf.toString('ascii', 0, 3) === 'GIF') return 'image/gif';
+  if (buf.toString('ascii', 0, 2) === 'BM') return 'image/bmp';
+  if (buf.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = buf.toString('ascii', 8, 12).toLowerCase();
+    if (brand.startsWith('hei') || brand.startsWith('mif') || brand.startsWith('msf')) return 'image/heic';
+    if (brand.startsWith('avi')) return 'image/avif';
+  }
+  return '';
+}
+
+function dataUrlFromBuffer(buf, fallbackMime) {
+  const mime = sniffImageMime(buf) || fallbackMime || 'image/png';
+  return 'data:' + mime + ';base64,' + buf.toString('base64');
+}
+
 // 参考图必须以公网 URL 或完整 Data URL 的形式提交，裸 base64 与本地路径都不被接受。
 async function readImageAsDataUrl(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
-  if (/^data:image\//i.test(raw)) return raw;
+  if (/^data:image\//i.test(raw)) {
+    const match = raw.match(/^data:([^;,]*);base64,(.*)$/is);
+    if (!match) return raw;
+    return dataUrlFromBuffer(Buffer.from(match[2].replace(/\s/g, ''), 'base64'), match[1]);
+  }
   if (/^https?:\/\//i.test(raw)) {
     // 小红书图床有防盗链，必须带 Referer/UA 才能取到原图（与分析链接时同一套头）。
     const res = await fetch(raw, {
@@ -82,16 +108,15 @@ async function readImageAsDataUrl(value) {
       }
     });
     if (!res.ok) throw new Error(`参考图下载失败（HTTP ${res.status}）`);
-    const type = res.headers.get('content-type') || '';
-    const mime = /jpe?g/i.test(type) ? 'image/jpeg' : /webp/i.test(type) ? 'image/webp' : 'image/png';
+    const type = (res.headers.get('content-type') || '').split(';')[0].trim();
     const buf = Buffer.from(await res.arrayBuffer());
-    return 'data:' + mime + ';base64,' + buf.toString('base64');
+    return dataUrlFromBuffer(buf, /^image\//i.test(type) ? type : '');
   }
   const filePath = path.resolve(uploadDir, path.basename(raw));
   if (fs.existsSync(filePath)) {
-    return 'data:' + mimeFromPath(filePath) + ';base64,' + fs.readFileSync(filePath).toString('base64');
+    return dataUrlFromBuffer(fs.readFileSync(filePath), mimeFromPath(filePath));
   }
-  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return 'data:image/png;base64,' + raw.replace(/\s/g, '');
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return dataUrlFromBuffer(Buffer.from(raw.replace(/\s/g, ''), 'base64'), '');
   return null;
 }
 
