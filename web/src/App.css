@@ -2070,6 +2070,8 @@ button:hover { transform: translateY(-1px); }
 
 .note-rewrite-card { padding: 0; overflow: hidden; }
 .note-rewrite-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 760px; }
+.note-rewrite-grid.is-single { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.note-rewrite-card.is-download .note-main { max-width: 100%; }
 .note-main { padding: 22px; display: grid; gap: 18px; }
 .note-section { border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(255,255,255,.82); padding: 16px; box-shadow: 0 10px 26px rgba(15,23,42,.05); }
 .note-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }

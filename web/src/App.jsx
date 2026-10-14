@@ -223,7 +223,8 @@ function Dashboard({ token, activeProviderId, providers, onProviderChange, tasks
     </section>
   );
 }
-function NoteRewriteWorkspace({ token }) {
+function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
+  const isDownload = mode === 'download';
   const [link, setLink] = useState('');
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -287,14 +288,14 @@ function NoteRewriteWorkspace({ token }) {
   function addTags() { const next = tagInput.split(/[,，\s#]+/).map(t => t.trim()).filter(Boolean); setTags(prev => [...new Set([...prev, ...next])].slice(0, 20)); setTagInput(''); }
   function moveImage(from, to) { if (from === to || from < 0 || to < 0) return; setImages(prev => { const next = [...prev]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; }); }
   return (
-    <section className="card note-rewrite-card">
-      <div className="note-rewrite-grid">
+    <section className={'card note-rewrite-card' + (isDownload ? ' is-download' : '')}>
+      <div className={'note-rewrite-grid' + (isDownload ? ' is-single' : '')}>
         <div className="note-main">
           <div className="note-section smart-link">
             <div className="note-head"><div><h2>智能识别笔记链接</h2><p>输入笔记链接，智能识别参考内容：标题、正文、标签、图片</p></div><span className="pill pill-ok">AI 提取</span></div>
             <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder="粘贴小红书笔记链接" /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
           </div>
-          <div className="note-section fields">
+          {!isDownload && (<div className="note-section fields">
             <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><button className="btn-secondary" onClick={() => aiCall({ prompt: "基于链接和正文生成 3 个小红书标题，输出 JSON titles 数组。", source: link || content }, '正在生成标题...')}>AI生成</button></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
             <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><button className="btn-secondary" onClick={() => aiCall({ prompt: PROMPTS['note-rewrite'], source: link || content || '请生成一段适合小红书发布的原创笔记正文。' }, '正在生成正文...')}>AI生成</button></div><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
             <div>
@@ -309,18 +310,18 @@ function NoteRewriteWorkspace({ token }) {
               </div>
               {tags.length > 0 && <div className="tag-list">{tags.map((t, i) => <span key={i} className="topic-tag">{'#' + t}<button onClick={() => setTags(tags.filter((_, idx) => idx !== i))}>×</button></span>)}</div>}
             </div>
-          </div>
+          </div>)}
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3><p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p></div>
             <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>
             <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(resolveImageSrc(img.url), img.name || ('图片 ' + (index + 1))); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
-        <aside className="preview-panel">
+        {!isDownload && (<aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
           <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <img key={i} src={resolveImageSrc(img.url)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
           <div className="publish-actions"><button className="btn-primary" onClick={() => setStatus('当前笔记草稿已保存到前端状态：' + title + ' / ' + tags.length + ' 个标签 / ' + images.length + ' 张图片。')}>保存笔记</button><button className="btn-secondary" onClick={() => setStatus('飞书同步功能待接入当前工作台的发布 API。')}>同步飞书</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
-        </aside>
+        </aside>)}
       </div>
       <footer className="status note-status">{status}</footer>
       {qr && (
@@ -487,7 +488,7 @@ function Workspace({ token }) {
           {active === 'dashboard' ? (
             <Dashboard token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={viewTask} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? (
-            <NoteRewriteWorkspace token={token} />
+            <NoteRewriteWorkspace token={token} mode={active === 'note-download' ? 'download' : 'rewrite'} />
           ) : (
             <section className={'card tool-panel layout-' + layoutVariant + ' ' + (TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default') + ' ' + (isTextFocused ? 'row-text-only' : '')}>
               <div className="panel-row"><div className="panel-cell panel-title-cell"><div className="title-row"><span className="title-label">{activeTabLabel}</span><div className="meta-chips"><span className="meta-chip">任务 {tasks.length}</span><span className="meta-chip provider-chip">{providers.find(p => p.id === selectedProviderId)?.name || '未配置供应商'}</span></div><div className="title-actions"><select className="model-select" value={selectedModel} onChange={e => setSelectedModels(prev => ({ ...prev, [active]: e.target.value }))} aria-label="本页模型">
