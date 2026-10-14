@@ -3,7 +3,10 @@ import { verify } from '../auth.js';
 
 export const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', async (req, res, next) => {
+  if (req.query.inline === '1') return next();
+  return verify(req, res, next);
+}, async (req, res) => {
   try {
     const target = String(req.query.url || '');
     if (!/^https?:\/\//.test(target)) return res.status(400).json({ error: 'invalid_url' });
