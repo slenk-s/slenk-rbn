@@ -80,6 +80,65 @@ function normalizeImageUrl(u) {
   return url;
 }
 
+function parseGoodsLink(url) {
+  const match = String(url || '').match(/(?:www\.)?(?:mall\.)?xiaohongshu\.com\/goods-detail\/([^/?#]+)/i);
+  return match ? { itemId: match[1] } : null;
+}
+
+function readGoodsTemplateData(payload) {
+  let blocks = payload?.template_data;
+  if (typeof blocks === 'string') {
+    try { blocks = JSON.parse(blocks); } catch { return {}; }
+  }
+  if (!Array.isArray(blocks)) blocks = blocks ? [blocks] : [];
+  return Object.assign({}, ...blocks.filter(block => block && typeof block === 'object'));
+}
+
+function readGoodsImages(images) {
+  return (Array.isArray(images) ? images : [])
+    .map(img => normalizeImageUrl(img?.url || img?.imageUrl || img?.thumbnail?.url))
+    .filter(Boolean);
+}
+
+async function parseGoodsDetail(url) {
+  const goods = parseGoodsLink(url);
+  if (!goods) return null;
+
+  const parsed = new URL(url);
+  const apiUrl = new URL('https://mall.xiaohongshu.com/api/store/jpd/edith/detail/h5/toc');
+  apiUrl.searchParams.set('version', '0.0.5');
+  apiUrl.searchParams.set('item_id', goods.itemId);
+  const xsecSource = parsed.searchParams.get('xsec_source');
+  const xsecToken = parsed.searchParams.get('xsec_token');
+  if (xsecSource) apiUrl.searchParams.set('xsec_source', xsecSource);
+  if (xsecToken) apiUrl.searchParams.set('xsec_token', xsecToken);
+
+  const resp = await fetch(apiUrl, {
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'application/json, text/plain, */*',
+      'Referer': url
+    }
+  });
+  const payload = await resp.json().catch(() => null);
+  if (!resp.ok || !payload?.success || !payload?.data) {
+    throw new Error(payload?.msg || '商品详情接口请求失败（' + resp.status + '）');
+  }
+
+  const data = readGoodsTemplateData(payload.data);
+  const images = readGoodsImages(data.carouselH5?.images);
+  if (!images.length) throw new Error('商品详情中没有找到图片');
+
+  return {
+    kind: 'goods',
+    title: data.descriptionH5?.name || data.descriptionMain?.name || '',
+    content: '',
+    tags: [],
+    images,
+    videos: []
+  };
+}
+
 function parseNoteDetail(state) {
   const detail = state?.noteData?.data?.noteData || state?.note?.noteDetailMap?.[Object.keys(state?.note?.noteDetailMap || {})[0]]?.note || state?.note?.note || null;
   if (!detail) return null;
@@ -118,8 +177,13 @@ router.post('/parse', verify, async (req, res) => {
     if (!rawInput) return res.status(400).json({ error: 'missing_link' });
     const match = rawInput.match(/https?:\/\/[^\s，。；）)\]"']+/);
     const link = match ? match[0] : rawInput;
-    if (!/xiaohongshu\.com|xhslink\.com/i.test(link)) return res.status(400).json({ error: 'invalid_link', message: '请输入小红书笔记链接' });
-    const { resp } = await resolveLink(link);
+    if (!/xiaohongshu\.com|xhslink\.com/i.test(link)) return res.status(400).json({ error: 'invalid_link', message: '请输入小红书笔记或商品链接' });
+    const { finalUrl, resp } = await resolveLink(link);
+    const goodsLink = parseGoodsLink(finalUrl) || parseGoodsLink(link);
+    if (goodsLink) {
+      const detail = await parseGoodsDetail(finalUrl);
+      return res.json(detail);
+    }
     const html = await resp.text();
     const raw = extractInitialState(html);
     if (!raw) return res.status(502).json({ error: 'parse_failed', message: '未能解析页面数据，小红书页面结构可能已变化或需要登录' });

@@ -14,7 +14,7 @@ const GROUPS = [
   ] },
 
   { id: 'download', label: '素材下载', icon: '↓', tabs: [
-    { id: 'note-download', label: '商品下载', icon: '↓', description: '上传或粘贴笔记素材，整理成可发布的笔记包。' }
+    { id: 'note-download', label: '商品下载', icon: '↓', description: '粘贴小红书商品链接，获取商品图片。' }
   ] }
 ];
 const TABS = [{ id: 'dashboard', label: '仪表盘', icon: '◈', section: '设置' }, ...GROUPS.flatMap(g => g.tabs.map(t => ({ ...t, section: g.label })))];
@@ -32,7 +32,7 @@ const SECTION_HINTS = {
   'note-rewrite': { options: '选择输出画布，方便后续配图。', text: '粘贴原始笔记正文，AI 将改写成更适合小红书的版本。', upload: '可选上传配图素材。', result: '改写结果含正文、标题和标签。' },
   'multiply':     { options: '选择合成画布比例。', text: '描述叠加关系，如"底图+纹理+色块"。', upload: '上传多张素材，按顺序叠加。', result: '合成结果可下载为图片。' },
   'layout-tool':  { options: '选择目标画布尺寸。', text: '描述标题、正文、商品图、贴纸的布局。', upload: '上传需要排版的图片素材。', result: '排版规划结果可下载参考。' },
-  'note-download':{ options: '选择整理画布比例。', text: '粘贴笔记链接或正文内容。', upload: '上传笔记相关文件（图片、文档等）。', result: '整理后的素材包可下载。' },
+  'note-download':{ options: '选择整理画布比例。', text: '粘贴小红书商品链接。', upload: '上传商品相关图片。', result: '商品图片可下载。' },
 };
 const PROMPTS = {
   'replace-image': '请基于上传图片生成一张可用于小红书笔记封面的替换版图片。\n保持原图主体构图和比例，替换画面中的主体/背景/商品细节，使其更符合笔记封面风格。\n要求：画面干净、视觉重点突出、不要加入无关文字、不要改变输出画幅。',
@@ -41,7 +41,7 @@ const PROMPTS = {
   'note-rewrite': '请把输入笔记改写成更自然、更适合小红书发布的版本。\n保持原意，增强画面感、真实感和代入感，不要夸大，不要营销腔过重。\n输出要求：一段正文 + 3 个可选标题 + 8 个相关标签。',
   'multiply': '请描述你希望叠加的图片关系。\n工具用途：把多张素材按正片叠底思路整理，适合做纹理、色块、氛围层。',
   'layout-tool': '请描述你要排版的标题、正文、商品图和贴纸位置。\n工具用途：先按固定画布规划封面/内页版式，再交给后续生图或编辑。',
-  'note-download': '请粘贴或上传笔记素材链接/文本。\n工具用途：整理为可发布的笔记素材包，包括正文、标签、图片清单。'
+  'note-download': '请粘贴小红书商品链接。\n工具用途：获取商品主图，整理为可下载的商品图片素材。'
 };
 const MOTION_EFFECTS = [
   { value: '手持轻晃', label: '手持轻晃' },
@@ -225,6 +225,8 @@ function Dashboard({ token, activeProviderId, providers, onProviderChange, tasks
 }
 function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
   const isDownload = mode === 'download';
+  const linkLabel = isDownload ? '商品链接' : '笔记链接';
+  const resultLabel = isDownload ? '商品图片' : '图片';
   const [link, setLink] = useState('');
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -268,8 +270,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
   function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); setStatus('已清空。'); }
   async function identifyLink() {
     const target = link.trim();
-    if (!target) return setStatus('请先粘贴笔记链接。');
-    setStatus('正在识别笔记内容...');
+    if (!target) return setStatus('请先粘贴' + linkLabel + '。');
+    setStatus('正在识别' + linkLabel + '...');
     try {
       const res = await fetch(API + '/api/notes/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ link: target }) });
       const data = await res.json();
@@ -279,9 +281,9 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
       if (Array.isArray(data.tags) && data.tags.length) setTags(data.tags.map(t => String(t).replace(/^#/, '')));
       const items = [];
       if (Array.isArray(data.videos) && data.videos.length) data.videos.forEach((url, i) => items.push({ id: 'video-' + i + '-' + Date.now(), url, name: '视频 ' + (i + 1), isVideo: true }));
-      if (Array.isArray(data.images) && data.images.length) data.images.forEach((url, i) => items.push({ id: 'remote-' + i + '-' + Date.now(), url, name: '图片 ' + (i + 1) }));
+      if (Array.isArray(data.images) && data.images.length) data.images.forEach((url, i) => items.push({ id: 'remote-' + i + '-' + Date.now(), url, name: resultLabel + ' ' + (i + 1) }));
       if (items.length) setImages(items);
-      setStatus('已识别：' + (data.title || '无标题') + '，' + (data.images?.length || 0) + ' 张图片' + (data.videos?.length ? '，' + data.videos.length + ' 个无水印视频' : '') + '。');
+      setStatus('已识别：' + (data.title || '无标题') + '，' + (data.images?.length || 0) + ' 张' + resultLabel + (data.videos?.length ? '，' + data.videos.length + ' 个无水印视频' : '') + '。');
     } catch (err) { setStatus(err.message); }
   }
   async function uploadImages(list) { if (!list?.length) return; const fd = new FormData(); Array.from(list).slice(0, 9).forEach(file => fd.append('file', file)); const r = await fetch(API + '/api/upload/files', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd }); const data = await r.json(); setImages(prev => { const next = [...prev]; data.files?.forEach(file => { if (!next.some(f => f.url === file.url)) next.push({ ...file, id: file.url || file.name + Date.now() }); }); return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 张图片已添加。'); }
@@ -293,7 +295,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite' }) {
         <div className="note-main">
           <div className="note-section smart-link">
             <div className="note-head"><div><h2>{isDownload ? '商品下载' : '智能识别笔记链接'}</h2>{!isDownload && <p>输入笔记链接，智能识别参考内容：标题、正文、标签、图片</p>}</div><span className="pill pill-ok">AI 提取</span></div>
-            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder="粘贴小红书笔记链接" /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
+            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
           </div>
           {!isDownload && (<div className="note-section fields">
             <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><button className="btn-secondary" onClick={() => aiCall({ prompt: "基于链接和正文生成 3 个小红书标题，输出 JSON titles 数组。", source: link || content }, '正在生成标题...')}>AI生成</button></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
