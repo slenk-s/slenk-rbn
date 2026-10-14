@@ -12,10 +12,7 @@ const GROUPS = [
   { id: 'copy', label: '文案处理', icon: '✎', tabs: [
     { id: 'note-rewrite', label: '笔记改写', icon: '✎', description: '把笔记内容改写成更适合小红书发布的版本。' }
   ] },
-  { id: 'image', label: '图片处理', icon: '▦', tabs: [
-    { id: 'multiply', label: '正片叠底', icon: '◐', description: '用正片叠底思路把多张素材合成纹理/氛围层。' },
-    { id: 'layout-tool', label: '排版工具', icon: '▦', description: '规划封面/内页的标题、正文、图片、贴纸位置。' }
-  ] },
+
   { id: 'download', label: '素材下载', icon: '↓', tabs: [
     { id: 'note-download', label: '笔记下载', icon: '↓', description: '上传或粘贴笔记素材，整理成可发布的笔记包。' }
   ] }
