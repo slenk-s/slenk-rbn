@@ -148,7 +148,9 @@ function parseNoteDetail(state) {
   const images = (detail.imageList || detail.images || [])
     .map(img => {
       const fileId = img?.fileId || img?.file_id || '';
-      if (fileId) return 'https://ci.xiaohongshu.com/notes_pre_post/' + String(fileId).replace(/^notes_pre_post\//, '');
+      // fileId 本身已是 CDN 相对路径：有的自带 notes_pre_post/ 前缀，有的不带。
+      // 之前无条件补前缀会让 "纯 id" 的笔记图片 404。
+      if (fileId) return 'https://ci.xiaohongshu.com/' + String(fileId).replace(/^\/+/, '');
       const infoList = img?.infoList || img?.info_list || [];
       const urls = infoList.map(i => normalizeImageUrl(i?.url || i?.imageUrl)).filter(Boolean);
       return urls[urls.length - 1] || normalizeImageUrl(img?.url || img?.imageUrl);
@@ -158,10 +160,19 @@ function parseNoteDetail(state) {
   const videoObj = detail.video;
   const stream = videoObj?.media?.stream || videoObj?.stream;
   const candidates = [];
-  if (stream) {
-    for (const list of Object.values(stream)) {
-      if (Array.isArray(list)) for (const item of list) candidates.push(item);
+  if (stream && typeof stream === 'object') {
+    // 同一视频会下发多路流：h264 分支（streamType 259）烧录了小红书水印，
+    // h265 分支（streamType 309 / 520 ...）是同一内容的无水印版本，优先取后者。
+    const byCodec = codec => {
+      const key = Object.keys(stream).find(k => k.toLowerCase() === codec);
+      const list = key ? stream[key] : null;
+      return Array.isArray(list) ? list : [];
+    };
+    const ordered = [...byCodec('h265'), ...byCodec('h264')];
+    if (!ordered.length) {
+      for (const list of Object.values(stream)) if (Array.isArray(list)) ordered.push(...list);
     }
+    candidates.push(...ordered);
   }
   if (videoObj?.url) candidates.push({ url: videoObj.url });
   for (const c of candidates) {

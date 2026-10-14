@@ -63,23 +63,66 @@ function providerRequest(provider, pathname, body) {
   return fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${provider.apiKey}`, accept: 'application/json' }, body: JSON.stringify(body) });
 }
 
-async function providerRequestWithImage(provider, pathname, formData) {
-  if (!provider.baseUrl) throw new Error('供应商 baseUrl 为空');
-  if (!provider.apiKey) throw new Error('供应商 API Key 为空');
-  const url = new URL(pathname.replace(/^\//, ''), `${provider.baseUrl.replace(/\/$/, '')}/`);
-  formData.set('model', provider.imageModel);
-  return fetch(url, { method: 'POST', headers: { authorization: `Bearer ${provider.apiKey}`, accept: 'application/json' }, body: formData });
-}function readUploadedAsDataUrl(value) {
-  if (!value) return null;
-  let filePath = null;
-  if (value.startsWith('/uploads/')) filePath = path.resolve(uploadDir, path.basename(value));
-  else if (/^https?:\/\//i.test(value)) return value;
-  else filePath = path.resolve(uploadDir, path.basename(value));
-  if (!filePath || !fs.existsSync(filePath)) return null;
-  const buf = fs.readFileSync(filePath);
+function mimeFromPath(filePath) {
   const ext = path.extname(filePath).slice(1).toLowerCase();
-  const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
-  return 'data:' + mime + ';base64,' + buf.toString('base64');
+  return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+}
+
+// 参考图必须以公网 URL 或完整 Data URL 的形式提交，裸 base64 与本地路径都不被接受。
+async function readImageAsDataUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (/^data:image\//i.test(raw)) return raw;
+  if (/^https?:\/\//i.test(raw)) {
+    // 小红书图床有防盗链，必须带 Referer/UA 才能取到原图（与分析链接时同一套头）。
+    const res = await fetch(raw, {
+      headers: {
+        Referer: 'https://www.xiaohongshu.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+      }
+    });
+    if (!res.ok) throw new Error(`参考图下载失败（HTTP ${res.status}）`);
+    const type = res.headers.get('content-type') || '';
+    const mime = /jpe?g/i.test(type) ? 'image/jpeg' : /webp/i.test(type) ? 'image/webp' : 'image/png';
+    const buf = Buffer.from(await res.arrayBuffer());
+    return 'data:' + mime + ';base64,' + buf.toString('base64');
+  }
+  const filePath = path.resolve(uploadDir, path.basename(raw));
+  if (fs.existsSync(filePath)) {
+    return 'data:' + mimeFromPath(filePath) + ';base64,' + fs.readFileSync(filePath).toString('base64');
+  }
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return 'data:image/png;base64,' + raw.replace(/\s/g, '');
+  return null;
+}
+
+// 生图接口要求宽高为 32 的倍数、在 [512,4096] 内、宽高比不超过 3:1；空值交给服务端自动判断。
+function normalizeImageSize(value) {
+  const match = String(value || '').trim().match(/^(\d+)x(\d+)$/);
+  if (!match) return 'auto';
+  const snap = n => Math.max(512, Math.min(4096, Math.round(Number(n) / 32) * 32));
+  let width = snap(match[1]);
+  let height = snap(match[2]);
+  if (width / height > 3) width = snap(height * 3);
+  if (height / width > 3) height = snap(width * 3);
+  return `${width}x${height}`;
+}
+
+function collectReferenceImages(payload) {
+  const list = payload.imageUrls?.length ? payload.imageUrls : (payload.image ? [payload.image] : []);
+  return (Array.isArray(list) ? list : [list]).filter(Boolean).slice(0, 5);
+}
+
+// 生图/文本都要先把参考图转成 Data URL，读不到时宁可报错也不要静默丢掉参考图。
+async function loadReferenceDataUrls(payload) {
+  const refs = collectReferenceImages(payload);
+  if (!refs.length) return [];
+  const urls = [];
+  for (const ref of refs) {
+    const dataUrl = await readImageAsDataUrl(ref);
+    if (dataUrl) urls.push(dataUrl);
+  }
+  if (!urls.length) throw new Error('参考图读取失败，无法提交给模型，请重新上传。');
+  return urls;
 }
 
 function errorFromApi(data, response, fallback) {
@@ -94,12 +137,19 @@ function normalizeTextContent(content) {
 }
 
 async function runChat(payload, provider) {
-  const messages = [{ role: 'user', content: `${payload.prompt}\n\n${payload.source || ''}`.trim() }];
+  const text = `${payload.prompt || ''}\n\n${payload.source || ''}`.trim();
+  const referenceImages = await loadReferenceDataUrls(payload);
+  // 带参考图时走内容块数组，纯文本任务保持字符串，兼容只吃字符串的供应商。
+  const content = referenceImages.length
+    ? [{ type: 'text', text }, ...referenceImages.map(url => ({ type: 'image_url', image_url: { url } }))]
+    : text;
+  const messages = [{ role: 'user', content }];
+  console.log('[worker] chat request', JSON.stringify({ model: payload.model || provider.textModel, images: referenceImages.length, promptChars: text.length }));
   const res = await providerRequest(provider, '/chat/completions', { model: payload.model || provider.textModel, messages });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { console.error('chat api error', res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_chat_error'); }
-  const content = data.choices?.[0]?.message?.content || data.output?.text || data.message || data.text || '';
-  return { text: normalizeTextContent(content), raw: data };
+  const reply = data.choices?.[0]?.message?.content || data.output?.text || data.message || data.text || '';
+  return { text: normalizeTextContent(reply), raw: data };
 }
 
 async function extractImageAsset(data, id, index) {
@@ -120,27 +170,23 @@ async function extractImageAsset(data, id, index) {
 }
 
 async function runImage(payload, provider, id) {
-  const prompt = payload.prompt;
-  const image = payload.image;
+  const prompt = payload.prompt || '';
   const count = Math.max(1, Math.min(4, Number(payload.count) || 1));
-  const body = { model: payload.model || provider.imageModel, prompt, n: 1 };
-  if (image) {
-    let imageData = image;
-    try { imageData = JSON.parse(image); } catch {}
-    if (typeof imageData === 'string') {
-      const dataUrl = readUploadedAsDataUrl(imageData);
-      if (dataUrl) body.image = dataUrl;
-      else body.image = imageData;
-    } else {
-      body.image = imageData;
-    }
-  }
+  // 尺寸交给模型的必须是合法值（32 的倍数 / 比例 ≤3:1），画布选项才真正生效。
+  const size = normalizeImageSize(payload.canvasSize);
+  const model = payload.model || provider.imageModel;
+  const referenceImages = await loadReferenceDataUrls(payload);
+  // 有参考图必须走 /images/edits：/images/generations 的 image 字段会被服务端静默忽略。
+  const pathname = referenceImages.length ? '/images/edits' : '/images/generations';
   const images = [];
   let lastData = {};
+  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, references: referenceImages.length, count }));
   for (let i = 0; i < count; i++) {
-    const res = await providerRequest(provider, '/images/generations', body);
+    const body = { model, prompt, n: 1, size, watermark: false };
+    if (referenceImages.length) body.images = referenceImages.map(image_url => ({ image_url }));
+    const res = await providerRequest(provider, pathname, body);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { console.error('image api error', res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
+    if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
     lastData = data;
     const url = await extractImageAsset(data, id, i);
     if (url) images.push(url);
@@ -157,35 +203,33 @@ function resolveUploadUrl(value) {
 }
 
 function buildVideoFilter(payload, duration) {
-  const intensity = Math.max(0, Math.min(100, Number(payload.shakeStrength) || 35));
-  const frequency = Math.max(0, Math.min(100, Number(payload.shakeFrequency) || 45));
+  const intensityRaw = Number(payload.shakeStrength);
+  const frequencyRaw = Number(payload.shakeFrequency);
+  const intensity = Math.max(0, Math.min(100, Number.isFinite(intensityRaw) ? intensityRaw : 35));
+  const frequency = Math.max(0, Math.min(100, Number.isFinite(frequencyRaw) ? frequencyRaw : 45));
   const motionEffect = payload.motionEffect || '手持轻晃';
   const { width, height } = parseCanvasSize(payload.canvasSize);
   const totalFrames = Math.max(1, duration * 30);
   const freqDiv = Math.max(1, frequency / 3);
-  const amp = intensity / 10000;
+  // 抖动强度 0 表示不抖动，此时保持 1.0 倍稳定画面。
+  const amp = intensity === 0 ? 0 : 0.02 + intensity / 10000;
   const prog = '(on/' + totalFrames + ')';
   let zExpr, xExpr, yExpr;
   switch (motionEffect) {
-    case '推进':
-      zExpr = '1.0+' + amp + '*' + prog;
+    case '缓慢推近':
+      zExpr = '1.0+0.06*' + prog;
       xExpr = 'iw/2-(iw/zoom/2)';
       yExpr = 'ih/2-(ih/zoom/2)';
       break;
-    case '拉远':
-      zExpr = '1.0+' + amp + '*(1-' + prog + ')';
+    case '缓慢拉远':
+      zExpr = '1.06-0.06*' + prog;
       xExpr = 'iw/2-(iw/zoom/2)';
       yExpr = 'ih/2-(ih/zoom/2)';
       break;
-    case '平移':
-      zExpr = '1.1';
-      xExpr = 'iw/2-(iw/zoom/2)+' + (intensity / 200) + '*' + '(' + prog + '-0.5)*iw';
-      yExpr = 'ih/2-(ih/zoom/2)';
-      break;
-    case '漂移':
+    case '轻微环绕':
       zExpr = '1.05';
-      xExpr = 'iw/2-(iw/zoom/2)+' + (intensity / 200) + '*' + '(' + prog + '-0.5)*iw';
-      yExpr = 'ih/2-(ih/zoom/2)+' + (intensity / 200) + '*' + '(' + prog + '-0.5)*ih';
+      xExpr = 'iw/2-(iw/zoom/2)+0.01*(' + prog + '-0.5)*iw';
+      yExpr = 'ih/2-(ih/zoom/2)+0.01*(' + prog + '-0.5)*ih';
       break;
     default:
       zExpr = 'if(eq(on,0),1.0,1.0+' + amp + '*(1+sin(on/' + freqDiv + ')))';
@@ -242,8 +286,8 @@ new Worker('ai-tasks', async (job) => {
         duration,
         durationMode: payload.durationMode || 'fixed',
         motionEffect: payload.motionEffect || '手持轻晃',
-        shakeStrength: Math.max(0, Math.min(100, Number(payload.shakeStrength) || 35)),
-        shakeFrequency: Math.max(0, Math.min(100, Number(payload.shakeFrequency) || 45))
+        shakeStrength: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeStrength)) ? Number(payload.shakeStrength) : 0)),
+        shakeFrequency: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeFrequency)) ? Number(payload.shakeFrequency) : 0))
       };
       updateTask(id, {
         status: 'done',

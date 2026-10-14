@@ -28,7 +28,7 @@ const FILE_TABS = new Set(['note-download']);
 const SECTION_HINTS = {
   'ai-image':   { options: '选择画布比例和输出数量。', text: '描述你想要的图片风格、主题和构图。', upload: '可选上传参考图，AI 会参考其风格生成。', result: '生成结果支持一键下载。' },
   'replace-image': { options: '选择画布比例和输出数量。', text: '描述替换方向：主体、背景、风格等。', upload: '上传原始参考图片，AI 将基于此生成替换版。', result: '替换版图片可下载对比。' },
-  'live-video':   { options: '选择画布比例，视频时长固定 3 秒。', text: '描述想要的镜头运动方式和节奏。', upload: '上传视频素材，支持 MP4/MOV/WebM。', result: '生成的运镜视频可直接下载。' },
+  'live-video':   { options: '选择画布比例，视频时长固定 3 秒。', text: '描述想要的镜头运动方式和节奏。', upload: '上传图片素材，支持 PNG/JPG/WebP。', result: '生成的运镜视频可直接下载。' },
   'note-rewrite': { options: '选择输出画布，方便后续配图。', text: '粘贴原始笔记正文，AI 将改写成更适合小红书的版本。', upload: '可选上传配图素材。', result: '改写结果含正文、标题和标签。' },
   'multiply':     { options: '选择合成画布比例。', text: '描述叠加关系，如"底图+纹理+色块"。', upload: '上传多张素材，按顺序叠加。', result: '合成结果可下载为图片。' },
   'layout-tool':  { options: '选择目标画布尺寸。', text: '描述标题、正文、商品图、贴纸的布局。', upload: '上传需要排版的图片素材。', result: '排版规划结果可下载参考。' },
@@ -105,17 +105,19 @@ function resolveImageSrc(url) {
   }
   return API + u;
 }
-async function downloadFile(url, name) {
+async function downloadFile(url, name, kind) {
   try {
     const token = localStorage.getItem('token');
-    const resp = await fetch(API + '/api/download?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(name || 'file'), { headers: { Authorization: 'Bearer ' + token } });
+    // 下载接口只接受绝对 URL；本地上传的图片是 /uploads/... 相对路径，需要补全服务端地址。
+    const target = String(url || '').startsWith('/') ? API + url : url;
+    const resp = await fetch(API + '/api/download?url=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name || 'file'), { headers: { Authorization: 'Bearer ' + token } });
     if (!resp.ok) throw new Error('下载失败');
     const blob = await resp.blob();
     const mime = blob.type || '';
+    // 用户要求：图片统一补 .png，视频统一补 .mp4。
+    const isVideo = kind === 'video' || (kind == null && mime.includes('mp4'));
     let finalName = name || 'file';
-    if (!/\.[a-z0-9]{2,5}$/i.test(finalName)) {
-      finalName += mime.includes('mp4') ? '.mp4' : mime.includes('png') ? '.png' : mime.includes('jpeg') || mime.includes('jpg') ? '.jpg' : '.png';
-    }
+    if (!/\.[a-z0-9]{2,5}$/i.test(finalName)) finalName += isVideo ? '.mp4' : '.png';
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = finalName;
@@ -239,21 +241,42 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   async function api(path, options = {}) {
     return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   }
-  async function aiCall(payload, message) {
+  function referenceImageUrls() { return images.filter(img => !img.isVideo).map(img => img.url); }
+  async function runTask({ type, payload }, message, timeoutMs = 120000) {
     setStatus(message);
-    try {
-      const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ type: 'rewrite', tab: 'note-rewrite', payload }) });
-      const id = data.id || '';
-      if (!id) throw new Error('任务创建失败');
-      const started = Date.now();
-      while (Date.now() - started < 60000) {
-        const list = await api('/api/tasks');
-        const task = list.tasks?.find(t => t.id === id);
-        if (task?.status === 'done') { setStatus('AI 已返回结果，请查看任务详情或重新生成。'); return; }
-        if (task?.status === 'failed') throw new Error(task.error || 'AI 生成失败');
-        await new Promise(resolve => setTimeout(resolve, 1500));
+    const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ type, tab: 'note-rewrite', payload }) });
+    const id = data.id || '';
+    if (!id) throw new Error('任务创建失败');
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const list = await api('/api/tasks');
+      const task = list.tasks?.find(t => t.id === id);
+      if (task?.status === 'done') return task;
+      if (task?.status === 'failed') {
+        let message2 = task.error;
+        try { message2 = JSON.parse(task.error).error || message2; } catch {}
+        throw new Error(message2 || 'AI 生成失败');
       }
-      throw new Error('AI 生成超时');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    throw new Error('AI 生成超时');
+  }
+  async function aiCall(payload, message) {
+    try {
+      await runTask({ type: 'rewrite', payload }, message);
+      setStatus('AI 已返回结果，请查看任务详情或重新生成。');
+    } catch (err) { setStatus(err.message); }
+  }
+  // 图片管理区的「AI生成」应当产出真图，并把结果回填到图片列表。
+  async function aiGenerateImage() {
+    const prompt = ['请为当前小红书笔记生成 1 张配图，真实自然、适合小红书封面。', title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
+    try {
+      const task = await runTask({ type: 'image', payload: { prompt, imageUrls: referenceImageUrls(), canvasSize: '1080x1080', count: 1 } }, '正在生成图片...', 300000);
+      const result = parseJsonText(task.result) || {};
+      const urls = Array.isArray(result.images) && result.images.length ? result.images : (result.image && typeof result.image === 'string' ? [result.image] : []);
+      if (!urls.length) throw new Error('AI 没有返回图片');
+      setImages(prev => [...prev, ...urls.map((url, i) => ({ id: 'ai-' + Date.now() + '-' + i, url, name: 'AI 生成 ' + (i + 1) }))].slice(0, 9));
+      setStatus('AI 图片已生成并加入图片管理。');
     } catch (err) { setStatus(err.message); }
   }
   async function generateQr() {
@@ -298,8 +321,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
             <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
           </div>
           {!isDownload && (<div className="note-section fields">
-            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><button className="btn-secondary" onClick={() => aiCall({ prompt: "基于链接和正文生成 3 个小红书标题，输出 JSON titles 数组。", source: link || content }, '正在生成标题...')}>AI生成</button></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
-            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><button className="btn-secondary" onClick={() => aiCall({ prompt: PROMPTS['note-rewrite'], source: link || content || '请生成一段适合小红书发布的原创笔记正文。' }, '正在生成正文...')}>AI生成</button></div><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
+            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><button className="btn-secondary" onClick={() => aiCall({ prompt: "基于链接和正文生成 3 个小红书标题，输出 JSON titles 数组。", source: link || content, imageUrls: referenceImageUrls() }, '正在生成标题...')}>AI生成</button></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
+            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><button className="btn-secondary" onClick={() => aiCall({ prompt: PROMPTS['note-rewrite'], source: link || content || '请生成一段适合小红书发布的原创笔记正文。', imageUrls: referenceImageUrls() }, '正在生成正文...')}>AI生成</button></div><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
             <div>
               <label>话题标签</label>
               <div className="field-meta">
@@ -315,8 +338,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           </div>)}
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3>{!isDownload && <p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}</div>
-            {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={() => aiCall({ prompt: '请为当前笔记生成 1 张小红书图片，输出 JSON images。', source: title + '\n' + content }, '正在生成图片...')}>AI生成</button></div>}
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(resolveImageSrc(img.url), img.name || ('图片 ' + (index + 1))); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={aiGenerateImage}>AI生成</button></div>}
+            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img.url, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         {!isDownload && (<aside className="preview-panel">
@@ -455,10 +478,12 @@ function Workspace({ token }) {
   }
   function resetPrompt() { setText(PROMPTS[active] || ''); }
   const currentTask = tasks.find(t => t.id === selectedTaskId);
-  const activeMode = (TAB_TO_TYPE[active] || 'rewrite') === 'rewrite' ? 'text' : 'image';
-  const selectedModel = selectedModels[active] || selectedModelValue(activeMode, providers, activeProviderId);
-  const parsedSelectedModel = splitModelValue(selectedModel);
+  // 不能只看 TAB_TO_TYPE：ai-image / replace-image 不在 TYPE_TO_TAB 的反向映射里，
+  // 否则会被误判成文本模式，页面芯片和提交都会错用文本供应商。
+  const activeMode = TEXT_TABS.has(active) || FILE_TABS.has(active) ? 'text' : 'image';
   const modeActiveProviderId = activeMode === 'text' ? (activeTextProviderId || activeProviderId) : (activeImageProviderId || activeProviderId);
+  const selectedModel = selectedModels[active] || selectedModelValue(activeMode, providers, modeActiveProviderId);
+  const parsedSelectedModel = splitModelValue(selectedModel);
   const selectedProviderId = parsedSelectedModel.providerId || modeActiveProviderId;
   const selectedModelName = parsedSelectedModel.model || (providers.find(p => p.id === selectedProviderId)?.model || '');
   
