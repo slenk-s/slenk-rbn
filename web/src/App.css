@@ -941,21 +941,23 @@ button:hover { transform: translateY(-1px); }
 }
 /* 替换生图：图片输入区独占一行在上，文本输入区独占一行在下；
    文本输入区里默认提示词与用户提示词左右并排。
-   注意这里不放进 media 里，因为 .tool-panel .panel-row 默认就是 1fr 1fr，
-   只有 .layout-replace-image 需要把那一行压成单列，才能形成"两排"。 */
+   特异性坑：.card.tool-panel .cell-body（3 个类）把 cell-body 强制成 display:flex，
+   会压掉 .text-input-split 的 display:grid，所以这里的选择器必须带上
+   .card.tool-panel 才能盖过去，写成 4 个类。 */
 .layout-replace-image .panel-row:not(.panel-row-result) {
   grid-template-columns: 1fr;
 }
 .layout-replace-image .panel-row:not(.panel-row-result) > .cell-upload {
   order: -1;
 }
-.layout-replace-image .text-input-split {
+.card.tool-panel.layout-replace-image .text-input-split {
+  display: grid;
   grid-template-columns: 1fr 1fr;
   grid-template-rows: auto;
   gap: 20px;
   align-content: stretch;
 }
-.layout-replace-image .text-input-split > .prompt-section + .prompt-section {
+.card.tool-panel.layout-replace-image .text-input-split > .prompt-section + .prompt-section {
   margin-top: 0;
 }
 
@@ -1691,10 +1693,10 @@ button:hover { transform: translateY(-1px); }
   .layout-text-focused .panel-row:not(.panel-row-result) {
     grid-template-columns: 1fr;
   }
-  .layout-replace-image .text-input-split {
+  .card.tool-panel.layout-replace-image .text-input-split {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto;
-    gap: 32px;
+    gap: 24px;
   }
 }
 
