@@ -3,10 +3,15 @@ import { paths } from '../src/paths.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
-function safeJson(value) {
+function safeJson(value, label) {
   if (value == null) return null;
   if (typeof value === 'object') return JSON.stringify(value);
-  try { return JSON.stringify(JSON.parse(value)); } catch { return null; }
+  try {
+    return JSON.stringify(JSON.parse(value));
+  } catch {
+    console.warn(`malformed JSON (${label}); storing null`);
+    return null;
+  }
 }
 
 const appJson = path.resolve(paths.dataDir, 'app.json');
@@ -17,6 +22,7 @@ if (!fs.existsSync(appJson)) {
 
 const data = JSON.parse(fs.readFileSync(appJson, 'utf8'));
 const stats = { users: 0, providers: 0, notes: 0, tasks: 0 };
+const knownUserIds = new Set((data.users || []).map(u => u.id));
 
 await withTransaction(async client => {
   for (const u of data.users || []) {
@@ -58,7 +64,7 @@ await withTransaction(async client => {
   }
 
   for (const n of data.notes || []) {
-    if (!adminId) break;
+    if (!adminId) throw new Error('no admin user found; refusing to migrate notes without an owner');
     await client.query(
       `insert into slenk_notes_notes (id, user_id, title, content, tags, images, created_at)
        values ($1,$2,$3,$4,$5,$6,$7)
@@ -69,6 +75,11 @@ await withTransaction(async client => {
     stats.notes += 1;
   }
 
+  const orphanTasks = (data.tasks || []).filter(t => t.userId && !knownUserIds.has(t.userId));
+  if (orphanTasks.length) {
+    throw new Error(`tasks reference unknown users: ${orphanTasks.map(t => `${t.id} -> ${t.userId}`).join(', ')}`);
+  }
+
   for (const t of data.tasks || []) {
     if (!t.userId) continue;
     await client.query(
@@ -77,21 +88,24 @@ await withTransaction(async client => {
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        on conflict (id) do nothing`,
       [t.id, t.userId, t.type, t.label || null, t.status || 'queued',
-       safeJson(t.payload), t.providerId || null, t.tab || null,
-       safeJson(t.result), t.error || null,
+       safeJson(t.payload, `task ${t.id} payload`), t.providerId || null, t.tab || null,
+       safeJson(t.result, `task ${t.id} result`), t.error ?? null,
        t.createdAt || new Date().toISOString(), t.updatedAt || new Date().toISOString()]
     );
     stats.tasks += 1;
   }
 });
 
-const counts = await query(`
-  select
-    (select count(*)::int from slenk_notes_users) as users,
-    (select count(*)::int from slenk_notes_providers) as providers,
-    (select count(*)::int from slenk_notes_notes) as notes,
-    (select count(*)::int from slenk_notes_tasks) as tasks
-`);
-console.log('migrated', stats);
-console.log('table counts', counts.rows[0]);
-await closePool();
+try {
+  const counts = await query(`
+    select
+      (select count(*)::int from slenk_notes_users) as users,
+      (select count(*)::int from slenk_notes_providers) as providers,
+      (select count(*)::int from slenk_notes_notes) as notes,
+      (select count(*)::int from slenk_notes_tasks) as tasks
+  `);
+  console.log('migrated', stats);
+  console.log('table counts', counts.rows[0]);
+} finally {
+  await closePool();
+}
