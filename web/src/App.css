@@ -939,6 +939,25 @@ button:hover { transform: translateY(-1px); }
 .layout-video-focused .panel-row:not(.panel-row-result) {
   grid-template-columns: 1fr 1fr;
 }
+/* 替换生图：图片输入区独占一行在上，文本输入区独占一行在下；
+   文本输入区里默认提示词与用户提示词左右并排。
+   注意这里不放进 media 里，因为 .tool-panel .panel-row 默认就是 1fr 1fr，
+   只有 .layout-replace-image 需要把那一行压成单列，才能形成"两排"。 */
+.layout-replace-image .panel-row:not(.panel-row-result) {
+  grid-template-columns: 1fr;
+}
+.layout-replace-image .panel-row:not(.panel-row-result) > .cell-upload {
+  order: -1;
+}
+.layout-replace-image .text-input-split {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto;
+  gap: 20px;
+  align-content: stretch;
+}
+.layout-replace-image .text-input-split > .prompt-section + .prompt-section {
+  margin-top: 0;
+}
 
 /* Result cell：1/5 信息侧栏 + 3/5 媒体舞台（右侧对齐），高度固定 */
 .panel-row-result {
@@ -1671,6 +1690,11 @@ button:hover { transform: translateY(-1px); }
   }
   .layout-text-focused .panel-row:not(.panel-row-result) {
     grid-template-columns: 1fr;
+  }
+  .layout-replace-image .text-input-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    gap: 32px;
   }
 }
 

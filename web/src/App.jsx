@@ -470,7 +470,7 @@ function Workspace({ token }) {
   const activeTab = TABS.find(tab => tab.id === active) || TABS[0];
   const activeTabLabel = activeTab.label;
   const hints = SECTION_HINTS[active] || {};
-  const layoutVariant = TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default';
+  const layoutVariant = active === 'replace-image' ? 'replace-image' : TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default';
   const isTextFocused = TEXT_TABS.has(active);
   const isImageHeavy = IMAGE_HEAVY_TABS.has(active);
   
@@ -576,7 +576,7 @@ function Workspace({ token }) {
   
   // Extract the image/video/file input section into a variable
   const inputSection = !isTextFocused ? (
-    <div className={'panel-cell' + (isImageHeavy ? ' cell-image-large' : '')}>
+    <div className={'panel-cell cell-upload' + (isImageHeavy ? ' cell-image-large' : '')}>
       <div className="cell-head"><div className="section-title-block"><h3>{isLiveVideo ? '图片输入区' : isFileFocused ? '文件输入区' : '图片输入区'}</h3><p>{hints.upload}</p></div></div>
       <div className="cell-body">
         <div className="upload-zone">
