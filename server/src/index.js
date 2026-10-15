@@ -4,7 +4,8 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ensureAdmin, dataDir } from './store.js';
+import { ensureAdmin } from './store.js';
+import { paths } from './paths.js';
 import { router as authRoutes } from './routes/auth.js';
 import { router as uploadRoutes } from './routes/upload.js';
 import { router as taskRoutes } from './routes/tasks.js';
@@ -13,10 +14,10 @@ import { router as providerRoutes } from './routes/providers.js';
 import { router as noteRoutes } from './routes/notes.js';
 import { router as downloadRoutes } from './routes/download.js';
 
-ensureAdmin();
+await ensureAdmin();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadsDir = path.resolve(process.env.UPLOADS_PATH || path.join(dataDir, 'uploads'));
-const videosDir = path.resolve(process.env.VIDEO_OUT_PATH || path.join(dataDir, 'videos'));
+const uploadsDir = paths.uploadsDir;
+const videosDir = paths.videosDir;
 fs.mkdirSync(uploadsDir, { recursive: true });
 fs.mkdirSync(videosDir, { recursive: true });
 

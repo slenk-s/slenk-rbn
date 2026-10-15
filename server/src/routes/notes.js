@@ -16,15 +16,23 @@ function lanOrigin(req) {
   return (req.protocol + '://' + req.get('host'));
 }
 
-router.post('/', verify, (req, res) => {
-  const note = saveNote(req.body || {});
-  res.status(201).json({ id: note.id, url: lanOrigin(req) + '/p/' + note.id });
+router.post('/', verify, async (req, res, next) => {
+  try {
+    const note = await saveNote(req.user.userId, req.body || {});
+    res.status(201).json({ id: note.id, url: lanOrigin(req) + '/p/' + note.id });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get('/:id', (req, res) => {
-  const note = getNote(req.params.id);
-  if (!note) return res.status(404).json({ error: 'note_not_found' });
-  res.json({ note });
+router.get('/:id', async (req, res, next) => {
+  try {
+    const note = await getNote(req.params.id);
+    if (!note) return res.status(404).json({ error: 'note_not_found' });
+    res.json({ note });
+  } catch (err) {
+    next(err);
+  }
 });
 
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';

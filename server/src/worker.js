@@ -7,7 +7,8 @@ import IORedis from 'ioredis';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import sharp from 'sharp';
-import { dataDir, updateTask, getProviderById, getActiveProvider } from './store.js';
+import { updateTask, getProviderUnmaskedById, getActiveProvider } from './store.js';
+import { paths } from './paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -47,12 +48,14 @@ const ffmpegPath = resolveExisting(process.env.FFMPEG_PATH) || (fs.existsSync('E
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const redis = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
-const uploadDir = process.env.UPLOADS_PATH ? (path.isAbsolute(process.env.UPLOADS_PATH) ? process.env.UPLOADS_PATH : path.resolve(root, process.env.UPLOADS_PATH)) : path.join(dataDir, 'uploads');
-const videoDir = process.env.VIDEO_OUT_PATH ? (path.isAbsolute(process.env.VIDEO_OUT_PATH) ? process.env.VIDEO_OUT_PATH : path.resolve(root, process.env.VIDEO_OUT_PATH)) : path.join(dataDir, 'videos');
+const uploadDir = paths.uploadsDir;
+const videoDir = paths.videosDir;
 fs.mkdirSync(videoDir, { recursive: true });
 
-function resolveProvider(payload, mode) {
-  const provider = payload.providerId ? getProviderById(payload.providerId) || getActiveProvider(mode) : getActiveProvider(mode);
+async function resolveProvider(payload, mode, userId) {
+  const provider = payload.providerId
+    ? (await getProviderUnmaskedById(payload.providerId)) || (await getActiveProvider(mode, userId))
+    : await getActiveProvider(mode, userId);
   if (!provider) throw new Error('no active AI provider');
   return provider;
 }
@@ -354,16 +357,16 @@ function makeVideo(payload, id) {
 }
 
 new Worker('ai-tasks', async (job) => {
-  const { id, payload } = job.data;
+  const { id, payload, userId } = job.data;
   try {
     if (job.name === 'rewrite') {
-      const provider = resolveProvider(payload, 'text');
+      const provider = await resolveProvider(payload, 'text', userId);
       const result = await runChat(payload, provider);
-      updateTask(id, { status: 'done', result: JSON.stringify({ ...result, providerId: provider.id, providerName: provider.name }) });
+      await updateTask(id, { status: 'done', result: { ...result, providerId: provider.id, providerName: provider.name } });
       return result;
     }
     if (job.name === 'image') {
-      const provider = resolveProvider(payload, 'image');
+      const provider = await resolveProvider(payload, 'image', userId);
       const result = await runImage(payload, provider, id);
       const resultForStore = {
         ...result,
@@ -371,7 +374,7 @@ new Worker('ai-tasks', async (job) => {
         providerId: provider.id,
         providerName: provider.name
       };
-      updateTask(id, { status: 'done', result: JSON.stringify(resultForStore) });
+      await updateTask(id, { status: 'done', result: resultForStore });
       return result;
     }
     if (job.name === 'video') {
@@ -385,21 +388,21 @@ new Worker('ai-tasks', async (job) => {
         shakeStrength: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeStrength)) ? Number(payload.shakeStrength) : 0)),
         shakeFrequency: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeFrequency)) ? Number(payload.shakeFrequency) : 0))
       };
-      updateTask(id, {
+      await updateTask(id, {
         status: 'done',
-        result: JSON.stringify({
+        result: {
           video: `/videos/${path.basename(out)}`,
           localVideoPath: out,
           prompt: payload.prompt || '',
           options,
           raw: { ffmpeg: 'done', mediaUrls: payload.mediaUrls || [] }
-        })
+        }
       });
       return { video: `/videos/${path.basename(out)}`, localVideoPath: out, prompt: payload.prompt || '', options };
     }
     throw new Error('unknown_job');
   } catch (err) {
-    updateTask(id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) });
+    await updateTask(id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) });
     throw err;
   }
 }, { connection: redis, concurrency: Number(process.env.QUEUE_CONCURRENCY || 2) });

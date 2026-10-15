@@ -4,10 +4,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { nanoid } from 'nanoid';
 import { verify } from '../auth.js';
-import { dataDir } from '../store.js';
+import { paths } from '../paths.js';
 
 export const router = Router();
-const uploadDir = path.resolve(process.env.UPLOADS_PATH || path.join(dataDir, 'uploads'));
+const uploadDir = paths.uploadsDir;
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ storage: multer.diskStorage({ destination: (req,file,cb)=>cb(null,uploadDir), filename: (req,file,cb)=>cb(null,nanoid()+path.extname(file.originalname)) }), limits: { fileSize: 25 * 1024 * 1024 } });
 

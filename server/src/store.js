@@ -1,9 +1,6 @@
 import bcrypt from 'bcryptjs';
 import './loadEnv.js';
 import { query } from './db.js';
-import { paths } from './paths.js';
-
-export const dataDir = paths.dataDir;
 
 function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -112,7 +109,7 @@ async function updateTask(id, patch) {
   if ('result' in patch) push('result', patch.result);
   if ('error' in patch) push('error', patch.error);
   if ('label' in patch) push('label', patch.label);
-  if (!fields.length) return getTaskById(id);
+  if (!fields.length) return await getTaskById(id);
   values.push(id);
   const { rows } = await query(
     `update slenk_notes_tasks set ${fields.join(', ')}, updated_at = now()

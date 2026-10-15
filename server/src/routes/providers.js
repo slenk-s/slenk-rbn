@@ -6,14 +6,23 @@ import {
   updateProvider,
   deleteProvider,
   setActiveProvider,
-  getActiveProvider,
   getActiveProviderIds,
-  getProviderById,
-  getProviderUnmaskedById
+  getProviderUnmaskedById,
+  findUserById
 } from '../store.js';
 
 export const router = Router();
 router.use(verify);
+
+async function requireAdmin(req, res, next) {
+  try {
+    const user = await findUserById(req.user.userId);
+    if (!user?.isAdmin) return res.status(403).json({ error: 'admin_required' });
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
 
 export const PROVIDER_PRESETS = [
   {
@@ -58,40 +67,64 @@ export const PROVIDER_PRESETS = [
   }
 ];
 
-router.get('/', (req,res)=> {
-  res.json({ providers: listProviders(), ...getActiveProviderIds(), presets: PROVIDER_PRESETS });
+router.get('/', async (req, res, next) => {
+  try {
+    const providers = await listProviders();
+    const activeIds = await getActiveProviderIds(req.user.userId);
+    res.json({ providers, ...activeIds, presets: PROVIDER_PRESETS });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.post('/', (req,res)=> {
-  const created = addProvider(req.body);
-  res.status(201).json({ provider: created, providers: listProviders(), ...getActiveProviderIds() });
+router.post('/', requireAdmin, async (req, res, next) => {
+  try {
+    const created = await addProvider(req.body);
+    const providers = await listProviders();
+    const activeIds = await getActiveProviderIds(req.user.userId);
+    res.status(201).json({ provider: created, providers, ...activeIds });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.put('/:id', (req,res)=> {
-  const updated = updateProvider(req.params.id, req.body);
-  if (!updated) return res.status(404).json({ error: 'provider_not_found' });
-  res.json({ provider: updated, providers: listProviders(), ...getActiveProviderIds() });
+router.put('/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const updated = await updateProvider(req.params.id, req.body);
+    if (!updated) return res.status(404).json({ error: 'provider_not_found' });
+    const providers = await listProviders();
+    const activeIds = await getActiveProviderIds(req.user.userId);
+    res.json({ provider: updated, providers, ...activeIds });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.delete('/:id', (req,res)=> {
-  const removed = deleteProvider(req.params.id);
-  if (!removed) return res.status(404).json({ error: 'provider_not_found' });
-  res.json({ providers: listProviders(), ...getActiveProviderIds() });
+router.delete('/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const removed = await deleteProvider(req.params.id);
+    if (!removed) return res.status(404).json({ error: 'provider_not_found' });
+    const providers = await listProviders();
+    const activeIds = await getActiveProviderIds(req.user.userId);
+    res.json({ providers, ...activeIds });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Fetch model list from an arbitrary provider endpoint.
-router.post('/_models', async (req, res) => {
-  let { baseUrl, apiKey, providerId } = req.body || {};
-  if (providerId) {
-    const existing = getProviderById(providerId);
-    if (!existing) return res.status(404).json({ error: 'provider_not_found' });
-    baseUrl = existing.baseUrl;
-    apiKey = existing.apiKey;
-  }
-  if (!baseUrl || !apiKey) return res.status(400).json({ error: 'missing baseUrl or apiKey' });
-  const normalized = baseUrl.replace(/\/+$/, '');
-  const url = normalized + '/models';
+router.post('/_models', async (req, res, next) => {
   try {
+    let { baseUrl, apiKey, providerId } = req.body || {};
+    if (providerId) {
+      const existing = await getProviderUnmaskedById(providerId);
+      if (!existing) return res.status(404).json({ error: 'provider_not_found' });
+      baseUrl = existing.baseUrl;
+      apiKey = existing.apiKey;
+    }
+    if (!baseUrl || !apiKey) return res.status(400).json({ error: 'missing baseUrl or apiKey' });
+    const normalized = baseUrl.replace(/\/+$/, '');
+    const url = normalized + '/models';
     const resp = await fetch(url, {
       headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' }
     });
@@ -108,43 +141,60 @@ router.post('/_models', async (req, res) => {
     const cleaned = Array.from(new Set(models.filter(Boolean))).sort();
     res.json({ models: cleaned });
   } catch (err) {
+    if (res.headersSent) return next(err);
     res.status(500).json({ error: err.message || 'fetch_failed' });
   }
 });
 
-router.post('/:id/duplicate', (req, res) => {
-  const existing = getProviderUnmaskedById(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'provider_not_found' });
-  const baseName = existing.name || '供应商';
-  const names = new Set(listProviders().map(p => p.name));
-  let index = 1;
-  let name = baseName + '-' + index;
-  while (names.has(name)) { index += 1; name = baseName + '-' + index; }
-  const created = addProvider({
-    name,
-    providerType: existing.providerType,
-    appType: existing.appType,
-    baseUrl: existing.baseUrl,
-    apiKey: existing.apiKey,
-    mode: existing.mode,
-    textModel: existing.textModel,
-    imageModel: existing.imageModel,
-    notes: existing.notes,
-    active: false
-  });
-  res.status(201).json({ provider: created, providers: listProviders(), ...getActiveProviderIds() });
+router.post('/:id/duplicate', requireAdmin, async (req, res, next) => {
+  try {
+    const existing = await getProviderUnmaskedById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'provider_not_found' });
+    const baseName = existing.name || '供应商';
+    const names = new Set((await listProviders()).map(p => p.name));
+    let index = 1;
+    let name = baseName + '-' + index;
+    while (names.has(name)) { index += 1; name = baseName + '-' + index; }
+    const created = await addProvider({
+      name,
+      providerType: existing.providerType,
+      appType: existing.appType,
+      baseUrl: existing.baseUrl,
+      apiKey: existing.apiKey,
+      mode: existing.mode,
+      textModel: existing.textModel,
+      imageModel: existing.imageModel,
+      notes: existing.notes,
+      active: false
+    });
+    const providers = await listProviders();
+    const activeIds = await getActiveProviderIds(req.user.userId);
+    res.status(201).json({ provider: created, providers, ...activeIds });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.post('/:id/active', (req,res)=> {
-  const mode = (req.body && req.body.mode) || null;
-  setActiveProvider(req.params.id, mode);
-  res.json({ providers: listProviders(), ...getActiveProviderIds() });
+router.post('/:id/active', async (req, res, next) => {
+  try {
+    const mode = (req.body && req.body.mode) || null;
+    await setActiveProvider(req.params.id, mode, req.user.userId);
+    const providers = await listProviders();
+    const activeIds = await getActiveProviderIds(req.user.userId);
+    res.json({ providers, ...activeIds });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get('/:id/api-key', (req, res) => {
-  const target = getProviderUnmaskedById(req.params.id);
-  if (!target) return res.status(404).json({ error: 'provider_not_found' });
-  res.json({ providerId: target.id, apiKey: target.apiKey || '' });
+router.get('/:id/api-key', requireAdmin, async (req, res, next) => {
+  try {
+    const target = await getProviderUnmaskedById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'provider_not_found' });
+    res.json({ providerId: target.id, apiKey: target.apiKey || '' });
+  } catch (err) {
+    next(err);
+  }
 });
 
 
