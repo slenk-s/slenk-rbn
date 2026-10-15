@@ -960,6 +960,22 @@ button:hover { transform: translateY(-1px); }
 .card.tool-panel.layout-replace-image .text-input-split > .prompt-section + .prompt-section {
   margin-top: 0;
 }
+/* 替换生图：区块说明文字不再另起一行，直接跟在区块标题后面；
+   标题块从竖排改成横向 flex，超长说明会自动折到下一行。 */
+.layout-replace-image .section-title-block {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  column-gap: 10px;
+}
+.layout-replace-image .section-title-block h3 {
+  margin: 0;
+}
+.layout-replace-image .section-title-block p {
+  margin: 0;
+  min-width: 0;
+}
 
 /* Result cell：1/5 信息侧栏 + 3/5 媒体舞台（右侧对齐），高度固定 */
 .panel-row-result {
