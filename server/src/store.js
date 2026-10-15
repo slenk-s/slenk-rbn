@@ -1,38 +1,9 @@
-import fs from 'node:fs';
-import dotenv from 'dotenv';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import './loadEnv.js';
 import { query } from './db.js';
+import { paths } from './paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, '../..');
-dotenv.config({ path: path.resolve(root, '.env') });
-const configuredStoragePath = process.env.STORAGE_PATH || path.resolve(root, 'storage');
-const dataDir = path.isAbsolute(configuredStoragePath) ? configuredStoragePath : path.resolve(root, configuredStoragePath);
-const dbPath = path.resolve(dataDir, 'app.json');
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-
-const DEFAULT = {
-  users: [],
-  tasks: [],
-  providers: [],
-  activeProviderId: null,
-  activeTextProviderId: null,
-  activeImageProviderId: null,
-  notes: []
-};
-
-function read() {
-  if (!fs.existsSync(dbPath)) return structuredClone(DEFAULT);
-  const data = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-  return { ...structuredClone(DEFAULT), ...data, users: data.users || [], tasks: data.tasks || [], providers: data.providers || [] };
-}
-
-function write(data) {
-  fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
-}
+export const dataDir = paths.dataDir;
 
 function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -156,6 +127,27 @@ async function deleteTask(userId, id) {
   return rowCount > 0;
 }
 
+const PROVIDER_COLUMNS = `id, name, provider_type, app_type, base_url, api_key, mode,
+  text_model, image_model, notes, is_active, created_at, updated_at`;
+
+function mapProvider(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    providerType: row.provider_type,
+    appType: row.app_type,
+    baseUrl: row.base_url,
+    apiKey: row.api_key,
+    mode: row.mode,
+    textModel: row.text_model,
+    imageModel: row.image_model,
+    notes: row.notes,
+    active: row.is_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function maskApiKey(apiKey) {
   if (!apiKey) return '';
   const s = String(apiKey);
@@ -163,43 +155,11 @@ function maskApiKey(apiKey) {
   return `${s.slice(0, 4)}${'*'.repeat(Math.max(4, s.length - 8))}${s.slice(-4)}`;
 }
 
-function listProviders() {
-  const data = read();
-  return data.providers.map(p => ({ ...p, apiKey: maskApiKey(p.apiKey) }));
+function withMaskedKey(provider) {
+  return provider ? { ...provider, apiKey: maskApiKey(provider.apiKey) } : null;
 }
 
-function getProviderById(id) {
-  const data = read();
-  return data.providers.find(p => p.id === id) || null;
-}
-
-function getProviderUnmaskedById(id) {
-  const data = read();
-  return data.providers.find(p => p.id === id) || null;
-}
-
-function getActiveProvider(mode) {
-  const data = read();
-  if (mode === 'text' && data.activeTextProviderId) {
-    const found = data.providers.find(p => p.id === data.activeTextProviderId);
-    if (found) return found;
-  }
-  if (mode === 'image' && data.activeImageProviderId) {
-    const found = data.providers.find(p => p.id === data.activeImageProviderId);
-    if (found) return found;
-  }
-  if (mode === 'text') {
-    const textFallback = data.providers.find(p => (p.mode || (p.imageModel ? 'image' : 'text')) === 'text');
-    if (textFallback) return textFallback;
-  }
-  if (mode === 'image') {
-    const imageFallback = data.providers.find(p => (p.mode || (p.imageModel ? 'image' : 'text')) === 'image');
-    if (imageFallback) return imageFallback;
-  }
-  return data.providers.find(p => p.id === data.activeProviderId) || data.providers[0] || null;
-}
-
-function normalizeProvider(input = {}, id) {
+function providerValues(input = {}, id) {
   return {
     id: id || uid('prov'),
     name: String(input.name || 'Custom Provider').trim() || 'Custom Provider',
@@ -211,42 +171,80 @@ function normalizeProvider(input = {}, id) {
     textModel: String(input.textModel || '').trim(),
     imageModel: String(input.imageModel || '').trim(),
     notes: String(input.notes || ''),
-    active: Boolean(input.active),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    active: Boolean(input.active)
   };
 }
 
-function addProvider(input) {
-  const data = read();
-  const provider = normalizeProvider(input);
-  data.providers.push(provider);
-  if (data.providers.length === 1 || input.active) data.activeProviderId = provider.id;
-  write(data);
-  return listProviders().find(p => p.id === provider.id);
+async function listProviders() {
+  const { rows } = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at`);
+  return rows.map(r => withMaskedKey(mapProvider(r)));
 }
 
-function updateProvider(id, input) {
-  const data = read();
-  const target = data.providers.find(p => p.id === id);
-  if (!target) return null;
-  const next = normalizeProvider({ ...target, ...input, id }, id);
-  if (!next.apiKey && target.apiKey) next.apiKey = target.apiKey;
-  Object.assign(target, next);
-  if (input.active) data.activeProviderId = id;
-  write(data);
-  return listProviders().find(p => p.id === id);
+async function getProviderById(id) {
+  const { rows } = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers where id = $1`, [id]);
+  return rows[0] ? withMaskedKey(mapProvider(rows[0])) : null;
 }
 
-function deleteProvider(id) {
-  const data = read();
-  const before = data.providers.length;
-  data.providers = data.providers.filter(p => p.id !== id);
-  if (data.activeProviderId === id) data.activeProviderId = data.providers[0]?.id || null;
-  if (data.activeTextProviderId === id) data.activeTextProviderId = null;
-  if (data.activeImageProviderId === id) data.activeImageProviderId = null;
-  write(data);
-  return data.providers.length < before;
+async function getProviderUnmaskedById(id) {
+  const { rows } = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers where id = $1`, [id]);
+  return rows[0] ? mapProvider(rows[0]) : null;
+}
+
+async function addProvider(input) {
+  const p = providerValues(input);
+  const { rows } = await query(
+    `insert into slenk_notes_providers
+       (id, name, provider_type, app_type, base_url, api_key, mode, text_model, image_model, notes, is_active)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning ${PROVIDER_COLUMNS}`,
+    [p.id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode, p.textModel, p.imageModel, p.notes, p.active]
+  );
+  return withMaskedKey(mapProvider(rows[0]));
+}
+
+async function updateProvider(id, input) {
+  const existing = await getProviderUnmaskedById(id);
+  if (!existing) return null;
+  const p = providerValues({ ...existing, ...input, id }, id);
+  if (!p.apiKey && existing.apiKey) p.apiKey = existing.apiKey;
+  const { rows } = await query(
+    `update slenk_notes_providers set name=$2, provider_type=$3, app_type=$4, base_url=$5, api_key=$6,
+       mode=$7, text_model=$8, image_model=$9, notes=$10, is_active=$11, updated_at = now()
+     where id = $1 returning ${PROVIDER_COLUMNS}`,
+    [id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode, p.textModel, p.imageModel, p.notes, p.active]
+  );
+  return withMaskedKey(mapProvider(rows[0]));
+}
+
+async function deleteProvider(id) {
+  const { rowCount } = await query('delete from slenk_notes_providers where id = $1', [id]);
+  if (rowCount) {
+    await query(
+      `update slenk_notes_user_settings set
+         active_provider_id = case when active_provider_id = $1 then null else active_provider_id end,
+         active_text_provider_id = case when active_text_provider_id = $1 then null else active_text_provider_id end,
+         active_image_provider_id = case when active_image_provider_id = $1 then null else active_image_provider_id end`,
+      [id]
+    );
+  }
+  return rowCount > 0;
+}
+
+async function getActiveProvider(mode, userId) {
+  const settings = await getActiveProviderIds(userId);
+  const preferredId = mode === 'text' ? settings.activeTextProviderId
+    : mode === 'image' ? settings.activeImageProviderId
+    : settings.activeProviderId;
+  if (preferredId) {
+    const preferred = await getProviderUnmaskedById(preferredId);
+    if (preferred) return preferred;
+  }
+  const byMode = await query(
+    `select ${PROVIDER_COLUMNS} from slenk_notes_providers where mode = $1 order by created_at limit 1`,
+    [mode]
+  );
+  if (byMode.rows[0]) return mapProvider(byMode.rows[0]);
+  const fallback = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at limit 1`);
+  return fallback.rows[0] ? mapProvider(fallback.rows[0]) : null;
 }
 
 async function setActiveProvider(providerId, mode, userId) {
@@ -328,6 +326,5 @@ export {
   setActiveProvider,
   getActiveProviderIds,
   saveNote,
-  getNote,
-  dataDir
+  getNote
 };
