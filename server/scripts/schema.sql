@@ -60,16 +60,16 @@ create index if not exists slenk_notes_notes_user_created_idx
   on slenk_notes_notes (user_id, created_at desc);
 
 -- Access model: the backend connects as the table owner and is the only client.
--- RLS with no policies means anon/authenticated reach nothing through the Data API.
+-- RLS with no policies keeps anon/authenticated at zero rows, but Supabase grants
+-- those roles on new public tables by default, so the grants have to be revoked
+-- explicitly below to take the tables off the Data API surface.
 alter table slenk_notes_users enable row level security;
 alter table slenk_notes_user_settings enable row level security;
 alter table slenk_notes_providers enable row level security;
 alter table slenk_notes_tasks enable row level security;
 alter table slenk_notes_notes enable row level security;
 
--- Least privilege: Supabase grants anon/authenticated on new public tables by
--- default. The backend (table owner) is the only client, RLS already returns zero
--- rows, and these revokes take the tables off the Data API surface entirely.
+-- Least privilege: remove the default Data API grants on the tables above.
 revoke all on slenk_notes_users from anon, authenticated;
 revoke all on slenk_notes_user_settings from anon, authenticated;
 revoke all on slenk_notes_providers from anon, authenticated;
