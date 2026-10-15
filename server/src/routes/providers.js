@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { verify } from '../auth.js';
+import { verify, requireAdmin } from '../auth.js';
 import {
   listProviders,
   addProvider,
@@ -7,22 +7,12 @@ import {
   deleteProvider,
   setActiveProvider,
   getActiveProviderIds,
-  getProviderUnmaskedById,
-  findUserById
+  getProviderUnmaskedById
 } from '../store.js';
 
 export const router = Router();
 router.use(verify);
 
-async function requireAdmin(req, res, next) {
-  try {
-    const user = await findUserById(req.user.userId);
-    if (!user?.isAdmin) return res.status(403).json({ error: 'admin_required' });
-    next();
-  } catch (err) {
-    next(err);
-  }
-}
 
 export const PROVIDER_PRESETS = [
   {

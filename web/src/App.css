@@ -2222,3 +2222,102 @@ button:hover { transform: translateY(-1px); }
 
 .image-thumb video { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
 .cover-badge-video { background: #7c3aed; }
+
+/* ========== Current User + User Management ========== */
+.top-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.08);
+  color: var(--text-h);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.top-user b { font-weight: 700; }
+.top-user em {
+  font-style: normal;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.14);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.user-manager { padding: 18px 20px; }
+.user-manager .section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.user-manager .section-head h3 { margin: 0; font-size: 15px; }
+.user-manager .section-head p { margin: 3px 0 0; color: var(--text); font-size: 12px; }
+.user-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 12px;
+}
+.user-manager .form-block { display: grid; gap: 10px; }
+.user-manager label.field { display: grid; gap: 4px; font-size: 12px; color: var(--text); }
+.user-manager label.field b { color: var(--text-h); font-weight: 700; }
+.user-manager input[type=text],
+.user-manager input[type=password] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  background: #fff;
+  color: var(--text-h);
+}
+.user-manager label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-h);
+  font-weight: 400;
+}
+/* The global `input { width: 100% }` would stretch the checkbox across the row. */
+.user-manager label.check input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.user-manager .actions-row { display: grid; gap: 8px; }
+.user-manager .actions-row button {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.user-manager .btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+.user-manager .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+.user-manager .user-meta { color: var(--text); font-size: 11px; }
+.user-manager .user-reset { display: flex; gap: 6px; }
+.user-manager .user-reset input { flex: 1; min-width: 0; }
+.user-manager .user-reset button {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-h);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+.user-manager .user-reset button.danger { color: #c53030; border-color: rgba(214, 69, 69, 0.28); }
+.user-list-block ul.user-list { max-height: 400px; }
+@media (max-width: 1100px) { .user-layout { grid-template-columns: 1fr; } }

@@ -213,7 +213,81 @@ function ProviderManager({ token, activeProviderId, providers, onProviderChange,
     </section>
   );
 }
-function Dashboard({ token, activeProviderId, providers, onProviderChange, tasks, setMessage, selectedTaskId, onViewTask, onTaskDelete }) {
+const USER_ERROR_TEXT = {
+  username_required: '请填写用户名。',
+  username_taken: '该用户名已存在。',
+  password_too_short: '密码至少 6 位。',
+  nothing_to_update: '没有需要保存的改动。',
+  cannot_delete_self: '不能删除当前登录的账号。',
+  cannot_demote_self: '不能取消自己的管理员身份。',
+  user_not_found: '账号不存在，可能已被删除。',
+  admin_required: '需要管理员权限。'
+};
+function UserManager({ token, me, setMessage }) {
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState({ username: '', password: '', isAdmin: false });
+  const [busy, setBusy] = useState(false);
+  const [resetFor, setResetFor] = useState('');
+  const [resetValue, setResetValue] = useState('');
+  const api = (path, options = {}) => fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
+  const report = err => setMessage(USER_ERROR_TEXT[err.message] || err.message);
+  async function load(message) { try { const data = await api('/api/users'); setUsers(data.users || []); if (message) setMessage(message); } catch (err) { report(err); } }
+  useEffect(() => {
+    if (!token) return;
+    fetch(API + '/api/users', { headers: { Authorization: 'Bearer ' + token } })
+      .then(r => r.json())
+      .then(data => setUsers(data.users || []))
+      .catch(() => {});
+  }, [token]);
+  async function createUser(e) {
+    e.preventDefault(); setBusy(true);
+    try {
+      await api('/api/users', { method: 'POST', body: JSON.stringify(form) });
+      setForm({ username: '', password: '', isAdmin: false });
+      await load('用户已创建。');
+    } catch (err) { report(err); } finally { setBusy(false); }
+  }
+  async function saveReset(id) {
+    if (!resetValue) { setMessage('请填写新密码。'); return; }
+    try { await api('/api/users/' + id, { method: 'PUT', body: JSON.stringify({ password: resetValue }) }); setResetFor(''); setResetValue(''); await load('密码已重置。'); } catch (err) { report(err); }
+  }
+  async function toggleAdmin(user) {
+    try { await api('/api/users/' + user.id, { method: 'PUT', body: JSON.stringify({ isAdmin: !user.isAdmin }) }); await load(user.isAdmin ? '已取消管理员。' : '已设为管理员。'); } catch (err) { report(err); }
+  }
+  async function removeUser(user) {
+    const detail = '将同时删除该用户的 ' + (user.noteCount || 0) + ' 条笔记和 ' + (user.taskCount || 0) + ' 个任务，此操作不可撤销。';
+    if (!window.confirm('确定删除账号「' + user.username + '」？\n' + detail)) return;
+    try { await api('/api/users/' + user.id, { method: 'DELETE' }); await load('用户已删除。'); } catch (err) { report(err); }
+  }
+  return (
+    <section className="card user-manager">
+      <div className="section-head"><div><h3>用户管理</h3><p>新增账号、重置密码、分配管理员权限。删除账号会一并清除其笔记与任务。</p></div><span className="pill">{users.length} 个账号</span></div>
+      <div className="user-layout">
+        <form className="form-block" onSubmit={createUser}>
+          <label className="field"><b>用户名</b><input type="text" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="新账号用户名" required /></label>
+          <label className="field"><b>初始密码</b><input type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="至少 6 位" required /></label>
+          <label className="check"><input type="checkbox" checked={form.isAdmin} onChange={e => setForm({ ...form, isAdmin: e.target.checked })} /><span>设为管理员</span></label>
+          <div className="actions-row actions-row-bottom"><button type="submit" className="btn-primary" disabled={busy}>{busy ? '创建中…' : '创建用户'}</button></div>
+        </form>
+        <div className="provider-list-block user-list-block">
+          <div className="list-head"><h3>账号列表</h3><span className="count">{users.length} 个</span></div>
+          <ul className="providers user-list">
+            {users.map(u => (
+              <li key={u.id} className={u.username === me?.username ? 'active' : ''}>
+                <div className="p-name"><b>{u.username}</b><span className={'mode-tag' + (u.isAdmin ? '' : ' image')}>{u.isAdmin ? '管理员' : '普通用户'}</span></div>
+                <small className="user-meta">{u.noteCount} 条笔记 · {u.taskCount} 个任务{u.username === me?.username ? ' · 当前登录' : ''}</small>
+                {resetFor === u.id
+                  ? <div className="user-reset"><input type="password" value={resetValue} onChange={e => setResetValue(e.target.value)} placeholder="新密码" /><button type="button" onClick={() => saveReset(u.id)}>保存</button><button type="button" className="danger" onClick={() => { setResetFor(''); setResetValue(''); }}>取消</button></div>
+                  : <div className="row-btns"><button type="button" onClick={() => { setResetFor(u.id); setResetValue(''); }}>重置密码</button><button type="button" onClick={() => toggleAdmin(u)}>{u.isAdmin ? '取消管理员' : '设为管理员'}</button><button type="button" className="danger" onClick={() => removeUser(u)}>删除</button></div>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
+function Dashboard({ token, me, activeProviderId, providers, onProviderChange, tasks, setMessage, selectedTaskId, onViewTask, onTaskDelete }) {
   const [manageMode, setManageMode] = useState(false);
   return (
     <section className="dashboard-settings">
@@ -222,6 +296,7 @@ function Dashboard({ token, activeProviderId, providers, onProviderChange, tasks
         <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，每 4 秒刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={() => setManageMode(v => !v)}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div><ul className="task-list">{tasks.map(t => <li key={t.id} data-status={t.status}><div className="task-status-row"><b>{t.type}</b><span>{t.status}</span>{manageMode ? <button type="button" className="task-view-btn task-delete-btn" onClick={() => onTaskDelete && onTaskDelete(t.id)}>删除</button> : <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>)}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
         <ProviderManager token={token} activeProviderId={activeProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
       </div>
+      {me?.isAdmin ? <UserManager token={token} me={me} setMessage={setMessage} /> : null}
     </section>
   );
 }
@@ -388,6 +463,7 @@ function Workspace({ token }) {
   const [activeTextProviderId, setActiveTextProviderId] = useState('');
   const [activeImageProviderId, setActiveImageProviderId] = useState('');
   const [status, setStatus] = useState('');
+  const [me, setMe] = useState(null);
   const activeTab = TABS.find(tab => tab.id === active) || TABS[0];
   const activeTabLabel = activeTab.label;
   const hints = SECTION_HINTS[active] || {};
@@ -434,6 +510,7 @@ function Workspace({ token }) {
     } catch (err) { setStatus(err.message); }
   }, [token]);
   useEffect(() => { if (!token) return; refresh(); const timer = setInterval(refresh, 4000); return () => clearInterval(timer); }, [token, refresh]);
+  useEffect(() => { if (!token) return; api('/api/auth/me', { token }).then(data => setMe(data.user || null)).catch(() => setMe(null)); }, [token]);
   const clearedTabs = useRef(new Set());
   const pendingTaskId = useRef('');
   useEffect(() => {
@@ -507,7 +584,7 @@ function Workspace({ token }) {
   
   return (
     <div className="app">
-      <header className="topbar"><div className="brand"><div className="logo">S</div><div><h1>Slenk Notes</h1></div></div><div className="top-actions"><div className="top-models"><span className="model-chip text">文本 {providers.find(p => p.id === (activeTextProviderId || activeProviderId))?.textModel || '未选择'}</span><span className="model-chip image">生图 {providers.find(p => p.id === (activeImageProviderId || activeProviderId))?.imageModel || '未选择'}</span><span className="model-chip page">当前 {selectedModelName || '未选择'}</span></div><button className="btn-secondary" onClick={refresh}>刷新任务</button><button className="btn-danger" onClick={() => localStorage.clear()}>退出</button></div></header>
+      <header className="topbar"><div className="brand"><div className="logo">S</div><div><h1>Slenk Notes</h1></div></div><div className="top-actions"><div className="top-models"><span className="model-chip text">文本 {providers.find(p => p.id === (activeTextProviderId || activeProviderId))?.textModel || '未选择'}</span><span className="model-chip image">生图 {providers.find(p => p.id === (activeImageProviderId || activeProviderId))?.imageModel || '未选择'}</span><span className="model-chip page">当前 {selectedModelName || '未选择'}</span></div><span className="top-user" title="当前登录用户"><b>{me?.username || ""}</b>{me?.isAdmin ? <em>管理员</em> : null}</span><button className="btn-secondary" onClick={refresh}>刷新任务</button><button className="btn-danger" onClick={() => { localStorage.clear(); location.reload(); }}>退出</button></div></header>
       <div className="layout">
         <aside className="sidebar"><div className="sidebar-nav"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
@@ -519,7 +596,7 @@ function Workspace({ token }) {
           <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} />
           <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} />
           {active === 'dashboard' ? (
-            <Dashboard token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={viewTask} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} />
+            <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={viewTask} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? null : (
             <section className={'card tool-panel layout-' + layoutVariant + ' ' + (TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default') + ' ' + (isTextFocused ? 'row-text-only' : '')}>
               <div className="panel-row"><div className="panel-cell panel-title-cell"><div className="title-row"><span className="title-label">{activeTabLabel}</span><div className="meta-chips"><span className="meta-chip">任务 {tasks.length}</span><span className="meta-chip provider-chip">{providers.find(p => p.id === selectedProviderId)?.name || '未配置供应商'}</span></div><div className="title-actions"><select className="model-select" value={selectedModel} onChange={e => setSelectedModels(prev => ({ ...prev, [active]: e.target.value }))} aria-label="本页模型">

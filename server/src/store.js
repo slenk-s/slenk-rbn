@@ -49,8 +49,25 @@ async function createUser({ username, passwordHash, isAdmin = false }) {
 }
 
 async function listUsers() {
-  const { rows } = await query('select id, username, is_admin, created_at from slenk_notes_users order by created_at');
-  return rows.map(r => ({ id: r.id, username: r.username, isAdmin: r.is_admin, createdAt: r.created_at }));
+  const { rows } = await query('select u.id, u.username, u.is_admin, u.created_at, (select count(*)::int from slenk_notes_notes n where n.user_id = u.id) as note_count, (select count(*)::int from slenk_notes_tasks t where t.user_id = u.id) as task_count from slenk_notes_users u order by u.created_at');
+  return rows.map(r => ({ id: r.id, username: r.username, isAdmin: r.is_admin, createdAt: r.created_at, noteCount: r.note_count, taskCount: r.task_count }));
+}
+
+async function updateUser(id, patch = {}) {
+  const fields = [];
+  const values = [];
+  const push = (column, value) => { values.push(value); fields.push(`${column} = $${values.length}`); };
+  if ('passwordHash' in patch) push('password_hash', patch.passwordHash);
+  if ('isAdmin' in patch) push('is_admin', Boolean(patch.isAdmin));
+  if (!fields.length) return findUserById(id);
+  values.push(id);
+  const { rows } = await query(`update slenk_notes_users set ${fields.join(', ')} where id = $${values.length} returning *`, values);
+  return rows[0] ? mapUser(rows[0]) : null;
+}
+
+async function deleteUser(id) {
+  const { rowCount } = await query('delete from slenk_notes_users where id = $1', [id]);
+  return rowCount > 0;
 }
 
 function mapTask(row) {
@@ -307,6 +324,8 @@ export {
   findUserById,
   createUser,
   listUsers,
+  updateUser,
+  deleteUser,
   addTask,
   listTasks,
   getTask,
