@@ -79,7 +79,7 @@ function modelOptionsFor(mode, providers) {
   for (const p of list) {
     const model = mode === 'text' ? (p.textModel || '') : (p.imageModel || '');
     if (!model) continue;
-    options.push({ value: p.id + '::' + model, label: (p.name || p.id) + ' · ' + model });
+    options.push({ value: p.id + '::' + model, label: model });
   }
   return options;
 }
