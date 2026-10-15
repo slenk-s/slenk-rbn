@@ -46,8 +46,12 @@ test('getActiveProvider prefers the user setting then falls back by mode', async
   const textProvider = await addProvider({ name: 'TxtProv', mode: 'text', apiKey: 'sk-txt' });
   t.after(async () => { await deleteProvider(imageProvider.id); await deleteProvider(textProvider.id); });
 
+  // slenk_notes_providers is a global table, so a migrated or otherwise
+  // pre-existing text provider can legitimately be the earliest row. Pin the
+  // fallback contract (a text-mode provider comes back), not a specific id.
   const byMode = await getActiveProvider('text', userId);
-  assert.equal(byMode.id, textProvider.id);
+  assert.ok(byMode, 'expected the mode fallback to return a provider');
+  assert.equal(byMode.mode, 'text');
 
   await query(
     `insert into slenk_notes_user_settings (user_id, active_image_provider_id) values ($1, $2)
