@@ -127,6 +127,8 @@ async function downloadFile(url, name, kind) {
 }
 function parseJsonText(raw) {
   if (!raw) return null;
+  // jsonb 列读出来已经是对象，旧的 JSON 文件存储里是字符串，两种形态都要能解析。
+  if (typeof raw === 'object') return raw;
   try {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : { text: String(raw) };
