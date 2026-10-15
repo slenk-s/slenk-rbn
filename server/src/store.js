@@ -274,19 +274,36 @@ async function getActiveProviderIds(userId) {
   };
 }
 
-function saveNote(note) {
-  const data = read();
-  data.notes = data.notes || [];
-  const id = uid('note');
-  const record = { id, title: note.title || '', content: note.content || '', tags: note.tags || [], images: note.images || [], createdAt: new Date().toISOString() };
-  data.notes.push(record);
-  write(data);
-  return record;
+function mapNote(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    title: row.title,
+    content: row.content,
+    tags: row.tags || [],
+    images: row.images || [],
+    createdAt: row.created_at
+  };
 }
 
-function getNote(id) {
-  const data = read();
-  return (data.notes || []).find(n => n.id === id) || null;
+async function saveNote(userId, note = {}) {
+  const { rows } = await query(
+    `insert into slenk_notes_notes (id, user_id, title, content, tags, images)
+     values ($1, $2, $3, $4, $5, $6) returning *`,
+    [
+      uid('note'), userId,
+      String(note.title || ''), String(note.content || ''),
+      Array.isArray(note.tags) ? note.tags : [],
+      JSON.stringify(Array.isArray(note.images) ? note.images : [])
+    ]
+  );
+  return mapNote(rows[0]);
+}
+
+// 公开读取：/p/<id> 分享页依赖它，id 是随机串不可枚举。
+async function getNote(id) {
+  const { rows } = await query('select * from slenk_notes_notes where id = $1', [id]);
+  return rows[0] ? mapNote(rows[0]) : null;
 }
 
 export {
