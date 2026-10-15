@@ -176,7 +176,7 @@ function providerValues(input = {}, id) {
 }
 
 async function listProviders() {
-  const { rows } = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at`);
+  const { rows } = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at, id`);
   return rows.map(r => withMaskedKey(mapProvider(r)));
 }
 
@@ -205,7 +205,7 @@ async function updateProvider(id, input) {
   const existing = await getProviderUnmaskedById(id);
   if (!existing) return null;
   const p = providerValues({ ...existing, ...input, id }, id);
-  if (!p.apiKey && existing.apiKey) p.apiKey = existing.apiKey;
+  if (!p.apiKey || p.apiKey === maskApiKey(existing.apiKey)) p.apiKey = existing.apiKey;
   const { rows } = await query(
     `update slenk_notes_providers set name=$2, provider_type=$3, app_type=$4, base_url=$5, api_key=$6,
        mode=$7, text_model=$8, image_model=$9, notes=$10, is_active=$11, updated_at = now()
@@ -239,11 +239,11 @@ async function getActiveProvider(mode, userId) {
     if (preferred) return preferred;
   }
   const byMode = await query(
-    `select ${PROVIDER_COLUMNS} from slenk_notes_providers where mode = $1 order by created_at limit 1`,
+    `select ${PROVIDER_COLUMNS} from slenk_notes_providers where mode = $1 order by created_at, id limit 1`,
     [mode]
   );
   if (byMode.rows[0]) return mapProvider(byMode.rows[0]);
-  const fallback = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at limit 1`);
+  const fallback = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at, id limit 1`);
   return fallback.rows[0] ? mapProvider(fallback.rows[0]) : null;
 }
 

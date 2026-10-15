@@ -14,7 +14,7 @@ test('providers round-trip and mask api keys in list output', async (t) => {
   t.after(() => deleteProvider(created.id));
   const listed = (await listProviders()).find(p => p.id === created.id);
   assert.notEqual(listed.apiKey, 'sk-1234567890abcdef');
-  assert.match(listed.apiKey, /^sk-1/);
+  assert.match(listed.apiKey, /^sk-1\*{11}cdef$/);
   const raw = await getProviderUnmaskedById(created.id);
   assert.equal(raw.apiKey, 'sk-1234567890abcdef');
 });
@@ -26,6 +26,17 @@ test('updateProvider keeps the existing api key when the input omits it', async 
   const raw = await getProviderUnmaskedById(created.id);
   assert.equal(raw.name, 'Renamed');
   assert.equal(raw.apiKey, 'sk-keepme');
+});
+
+test('updateProvider treats a masked api key echoed back as unchanged', async (t) => {
+  const created = await addProvider({ name: 'Echo Key', apiKey: 'sk-echokey-123456', mode: 'text' });
+  t.after(() => deleteProvider(created.id));
+  const masked = (await listProviders()).find(p => p.id === created.id).apiKey;
+  assert.notEqual(masked, 'sk-echokey-123456');
+  await updateProvider(created.id, { name: 'Echo Renamed', apiKey: masked });
+  const raw = await getProviderUnmaskedById(created.id);
+  assert.equal(raw.name, 'Echo Renamed');
+  assert.equal(raw.apiKey, 'sk-echokey-123456');
 });
 
 test('getActiveProvider prefers the user setting then falls back by mode', async (t) => {
