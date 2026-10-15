@@ -85,36 +85,75 @@ async function listUsers() {
   return rows.map(r => ({ id: r.id, username: r.username, isAdmin: r.is_admin, createdAt: r.created_at }));
 }
 
-function addTask(task) {
-  const data = read();
-  data.tasks.unshift(task);
-  write(data);
-  return task;
+function mapTask(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    type: row.type,
+    label: row.label || '',
+    status: row.status,
+    payload: row.payload,
+    providerId: row.provider_id,
+    tab: row.tab,
+    result: row.result,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
-function listTasks(userId, limit = 100) {
-  return read().tasks.filter(t => t.userId === userId).slice(0, limit);
+async function addTask(task) {
+  const { rows } = await query(
+    `insert into slenk_notes_tasks (id, user_id, type, label, status, payload, provider_id, tab, result, error)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning *`,
+    [
+      task.id, task.userId, task.type, task.label ?? null, task.status ?? 'queued',
+      task.payload ?? null, task.providerId ?? null, task.tab ?? null,
+      task.result ?? null, task.error ?? null
+    ]
+  );
+  return mapTask(rows[0]);
 }
 
-function getTask(userId, id) {
-  return read().tasks.find(t => t.userId === userId && t.id === id) || null;
+async function listTasks(userId, limit = 100) {
+  const { rows } = await query(
+    'select * from slenk_notes_tasks where user_id = $1 order by created_at desc limit $2',
+    [userId, limit]
+  );
+  return rows.map(mapTask);
 }
 
-function updateTask(id, patch) {
-  const data = read();
-  const task = data.tasks.find(t => t.id === id);
-  if (!task) return null;
-  Object.assign(task, patch, { updatedAt: new Date().toISOString() });
-  write(data);
-  return task;
+async function getTask(userId, id) {
+  const { rows } = await query('select * from slenk_notes_tasks where user_id = $1 and id = $2', [userId, id]);
+  return rows[0] ? mapTask(rows[0]) : null;
 }
 
-function deleteTask(userId, id) {
-  const data = read();
-  const before = data.tasks.length;
-  data.tasks = data.tasks.filter(t => !(t.id === id && t.userId === userId));
-  write(data);
-  return data.tasks.length < before;
+async function getTaskById(id) {
+  const { rows } = await query('select * from slenk_notes_tasks where id = $1', [id]);
+  return rows[0] ? mapTask(rows[0]) : null;
+}
+
+async function updateTask(id, patch) {
+  const fields = [];
+  const values = [];
+  const push = (column, value) => { values.push(value); fields.push(`${column} = $${values.length}`); };
+  if ('status' in patch) push('status', patch.status);
+  if ('result' in patch) push('result', patch.result);
+  if ('error' in patch) push('error', patch.error);
+  if ('label' in patch) push('label', patch.label);
+  if (!fields.length) return getTaskById(id);
+  values.push(id);
+  const { rows } = await query(
+    `update slenk_notes_tasks set ${fields.join(', ')}, updated_at = now()
+     where id = $${values.length} returning *`,
+    values
+  );
+  return rows[0] ? mapTask(rows[0]) : null;
+}
+
+async function deleteTask(userId, id) {
+  const { rowCount } = await query('delete from slenk_notes_tasks where user_id = $1 and id = $2', [userId, id]);
+  return rowCount > 0;
 }
 
 function maskApiKey(apiKey) {
@@ -259,6 +298,7 @@ export {
   addTask,
   listTasks,
   getTask,
+  getTaskById,
   updateTask,
   deleteTask,
   listProviders,
