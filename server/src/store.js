@@ -3,6 +3,8 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
+import './loadEnv.js';
+import { query } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -36,21 +38,51 @@ function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function findUserByUsername(username) {
-  return read().users.find(u => u.username === username) || null;
+function mapUser(row) {
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.password_hash,
+    isAdmin: row.is_admin,
+    createdAt: row.created_at
+  };
 }
 
-function findUserById(id) {
-  return read().users.find(u => u.id === id) || null;
+async function ensureAdmin() {
+  const existing = await query('select id from slenk_notes_users where username = $1', ['admin']);
+  if (existing.rows.length) return;
+  await query(
+    `insert into slenk_notes_users (id, username, password_hash, is_admin)
+     values ($1, $2, $3, true) on conflict (username) do nothing`,
+    ['admin', 'admin', bcrypt.hashSync('123456', 10)]
+  );
+  await query('insert into slenk_notes_user_settings (user_id) values ($1) on conflict do nothing', ['admin']);
 }
 
-function ensureAdmin() {
-  const data = read();
-  if (!data.users.find(u => u.username === 'admin')) {
-    data.users.push({ id: 'admin', username: 'admin', passwordHash: bcrypt.hashSync('123456', 10), createdAt: new Date().toISOString() });
-    write(data);
-  }
-  return data;
+async function findUserByUsername(username) {
+  const { rows } = await query('select * from slenk_notes_users where username = $1', [username]);
+  return rows[0] ? mapUser(rows[0]) : null;
+}
+
+async function findUserById(id) {
+  const { rows } = await query('select * from slenk_notes_users where id = $1', [id]);
+  return rows[0] ? mapUser(rows[0]) : null;
+}
+
+async function createUser({ username, passwordHash, isAdmin = false }) {
+  const id = uid('user');
+  const { rows } = await query(
+    `insert into slenk_notes_users (id, username, password_hash, is_admin)
+     values ($1, $2, $3, $4) returning *`,
+    [id, String(username).trim(), String(passwordHash), Boolean(isAdmin)]
+  );
+  await query('insert into slenk_notes_user_settings (user_id) values ($1) on conflict do nothing', [id]);
+  return mapUser(rows[0]);
+}
+
+async function listUsers() {
+  const { rows } = await query('select id, username, is_admin, created_at from slenk_notes_users order by created_at');
+  return rows.map(r => ({ id: r.id, username: r.username, isAdmin: r.is_admin, createdAt: r.created_at }));
 }
 
 function addTask(task) {
@@ -178,26 +210,28 @@ function deleteProvider(id) {
   return data.providers.length < before;
 }
 
-function setActiveProvider(id, mode) {
-  const data = read();
-  if (!data.providers.find(p => p.id === id)) return null;
-  if (mode === 'text') {
-    data.activeTextProviderId = id;
-  } else if (mode === 'image') {
-    data.activeImageProviderId = id;
-  } else {
-    data.activeProviderId = id;
-  }
-  write(data);
-  return getProviderById(id);
+async function setActiveProvider(providerId, mode, userId) {
+  const column = mode === 'text' ? 'active_text_provider_id'
+    : mode === 'image' ? 'active_image_provider_id'
+    : 'active_provider_id';
+  await query(
+    `insert into slenk_notes_user_settings (user_id, ${column}) values ($1, $2)
+     on conflict (user_id) do update set ${column} = excluded.${column}`,
+    [userId, providerId]
+  );
 }
 
-function getActiveProviderIds() {
-  const data = read();
+async function getActiveProviderIds(userId) {
+  const { rows } = await query(
+    `select active_provider_id, active_text_provider_id, active_image_provider_id
+     from slenk_notes_user_settings where user_id = $1`,
+    [userId]
+  );
+  const row = rows[0] || {};
   return {
-    activeProviderId: data.activeProviderId || null,
-    activeTextProviderId: data.activeTextProviderId || null,
-    activeImageProviderId: data.activeImageProviderId || null
+    activeProviderId: row.active_provider_id ?? null,
+    activeTextProviderId: row.active_text_provider_id ?? null,
+    activeImageProviderId: row.active_image_provider_id ?? null
   };
 }
 
@@ -220,6 +254,8 @@ export {
   ensureAdmin,
   findUserByUsername,
   findUserById,
+  createUser,
+  listUsers,
   addTask,
   listTasks,
   getTask,
