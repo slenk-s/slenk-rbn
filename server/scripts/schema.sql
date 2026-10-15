@@ -71,7 +71,13 @@ alter table slenk_notes_notes enable row level security;
 
 -- Least privilege: remove the default Data API grants on the tables above.
 revoke all on slenk_notes_users from anon, authenticated;
+-- The backend is the only client and connects as the table owner, so removing PUBLIC cannot affect it.
+revoke all on slenk_notes_users from public;
 revoke all on slenk_notes_user_settings from anon, authenticated;
+revoke all on slenk_notes_user_settings from public;
 revoke all on slenk_notes_providers from anon, authenticated;
+revoke all on slenk_notes_providers from public;
 revoke all on slenk_notes_tasks from anon, authenticated;
+revoke all on slenk_notes_tasks from public;
 revoke all on slenk_notes_notes from anon, authenticated;
+revoke all on slenk_notes_notes from public;

@@ -24,8 +24,9 @@ test('addTask stores payload as a jsonb object', async (t) => {
 
 test('tasks are isolated per user', async (t) => {
   const a = await createTestUser();
+  t.after(() => dropTestUser(a));
   const b = await createTestUser();
-  t.after(async () => { await dropTestUser(a); await dropTestUser(b); });
+  t.after(() => dropTestUser(b));
   await seed(a, 'task_a');
   assert.equal((await listTasks(a)).length, 1);
   assert.equal((await listTasks(b)).length, 0);
@@ -38,8 +39,10 @@ test('updateTask writes result and bumps updatedAt', async (t) => {
   const userId = await createTestUser();
   t.after(() => dropTestUser(userId));
   await seed(userId, 'task_a');
+  const before = await getTask(userId, 'task_a');
+  await new Promise(resolve => setTimeout(resolve, 5));
   const updated = await updateTask('task_a', { status: 'done', result: { images: ['/videos/x.png'] } });
   assert.equal(updated.status, 'done');
   assert.deepEqual(updated.result, { images: ['/videos/x.png'] });
-  assert.ok(new Date(updated.updatedAt) >= new Date(updated.createdAt));
+  assert.ok(new Date(updated.updatedAt) > new Date(before.updatedAt));
 });

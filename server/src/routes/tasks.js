@@ -45,19 +45,21 @@ export async function enqueueTask(type, payload, userId, tab) {
     await queue.add(type, { id, payload: taskPayload, userId }, { removeOnComplete: 100, removeOnFail: 100 });
     return { id, status: 'queued' };
   } catch (err) {
-    await updateTask(id, { status: 'failed', error: JSON.stringify({ error: err.message, code: 'redis_queue_error' }) });
-    throw err;
+    const queueError = Object.assign(new Error(err.message || 'queue_error'), { code: 'redis_queue_error', cause: err });
+    await updateTask(id, { status: 'failed', error: JSON.stringify({ error: queueError.message, code: queueError.code }) });
+    throw queueError;
   }
 }
 
 export const router = Router();
 router.use(verify);
 
-router.post('/', async (req,res)=> {
+router.post('/', async (req, res, next) => {
   try {
     res.json(await enqueueTask(req.body.type, req.body.payload, req.user.userId, req.body.tab));
   } catch (err) {
-    res.status(503).json({ error: err.message || 'queue_error' });
+    if (err.code === 'redis_queue_error') return res.status(503).json({ error: err.message || 'queue_error' });
+    next(err);
   }
 });
 router.get('/', async (req, res, next) => {
@@ -99,7 +101,7 @@ router.get('/:id/download', async (req, res, next) => {
     const parsed = item.result && typeof item.result === 'object' ? item.result : {};
 
     if (format === 'text') {
-      const text = parsed.text ?? (typeof item.result === 'string' ? item.result : '');
+      const text = parsed.text ?? (typeof item.result === 'string' ? item.result : JSON.stringify(parsed, null, 2));
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Content-Disposition', 'attachment; filename="' + name.replace(/"/g, '') + '"');
       return res.send(text);

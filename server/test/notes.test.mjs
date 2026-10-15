@@ -28,8 +28,9 @@ test('getNote stays public so share links keep working', async (t) => {
   assert.equal(loaded.title, 'share me');
 });
 
-test('deleting the owner removes their notes', async () => {
+test('deleting the owner removes their notes', async (t) => {
   const userId = await createTestUser();
+  t.after(() => dropTestUser(userId));
   const saved = await saveNote(userId, { title: 'cascade' });
   await dropTestUser(userId);
   assert.equal(await getNote(saved.id), null);

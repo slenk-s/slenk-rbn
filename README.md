@@ -49,6 +49,7 @@ node server/scripts/migrate-app-json.mjs
 - 五张表都开启了 RLS 且没有任何 policy，`anon` / `authenticated` / `PUBLIC` 的权限已全部收回：这些表不在 Supabase Data API 的暴露面上，只有后端通过 `DATABASE_URL` 直连才能访问。
 - `storage/app.json` 与迁移前生成的备份 `storage/app.json.bak` 都原样保留，作为回滚路径：回滚到迁移前的代码并把 `.bak` 还原为 `app.json` 即可；数据库里的表可以留在原地，不影响回滚后的运行。
 - 启动后端前必须在 `.env` 中配好 `DATABASE_URL`（Supavisor pooler 直连串，密码需 URL 编码）。缺失时后端会在启动阶段直接报错退出，不会静默回退到 JSON 文件。
+- 测试建议使用单独的 Supabase project，避免测试数据与应用共用数据库：在环境变量中设置 `TEST_DATABASE_URL`。未设置时测试会回退到 `DATABASE_URL`，并打印醒目警告；应用运行本身始终只使用 `DATABASE_URL`。
 - 数据库连接固定做 TLS 校验，CA 使用仓库内的 `server/certs/prod-ca-2021.crt`。Supabase 轮换根证书时必须把该文件替换为新证书，否则连接会在建立阶段直接失败（不会降级为不校验）。
 
 ## 运行

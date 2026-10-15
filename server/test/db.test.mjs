@@ -11,8 +11,9 @@ test('connects to the project database', async () => {
   assert.match(rows[0].usr, /^postgres/);
 });
 
-test('test helper creates and removes a user', async () => {
+test('test helper creates and removes a user', async (t) => {
   const id = await createTestUser();
+  t.after(() => dropTestUser(id));
   const { rows } = await query('select username from slenk_notes_users where id = $1', [id]);
   assert.equal(rows.length, 1);
   await dropTestUser(id);

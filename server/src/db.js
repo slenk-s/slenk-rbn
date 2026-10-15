@@ -6,12 +6,21 @@ import pg from 'pg';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-if (!process.env.DATABASE_URL) {
+const isTestProcess = process.argv.includes('--test') || Boolean(process.env.NODE_TEST_CONTEXT);
+const connectionString = isTestProcess
+  ? (process.env.TEST_DATABASE_URL || process.env.DATABASE_URL)
+  : process.env.DATABASE_URL;
+
+if (!connectionString) {
   throw new Error('DATABASE_URL is required (see .env)');
 }
 
+if (isTestProcess && !process.env.TEST_DATABASE_URL) {
+  console.warn('⚠️ tests are running against DATABASE_URL (shared with the app); set TEST_DATABASE_URL to use a throwaway database');
+}
+
 export const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString,
   ssl: {
     ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
     rejectUnauthorized: true
