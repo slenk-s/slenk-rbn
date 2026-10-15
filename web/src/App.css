@@ -114,13 +114,22 @@ button, input, textarea, select {
 .sidebar {
   position: sticky;
   top: 96px;
+  display: flex;
+  flex-direction: column;
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   padding: 14px;
   max-height: calc(100vh - 124px);
-  overflow: auto;
+  overflow: hidden;
+}
+
+/* 导航区自己滚动，任务区常驻底部，矮视口下也不会把任务列表挤到折叠线外。 */
+.sidebar-nav {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
 }
 
 .sidebar-title {
@@ -1538,6 +1547,66 @@ button:hover { transform: translateY(-1px); }
   font-size: 11px;
   line-height: 1.4;
 }
+
+/* ========== Sidebar Task List ========== */
+.sidebar-tasks {
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-tasks-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 12px 8px;
+}
+.sidebar-tasks-head b { font-size: 13px; color: var(--text-h); }
+.sidebar-tasks-head span { font-size: 12px; color: var(--text); }
+
+.sidebar-task-list { max-height: min(300px, 38vh); }
+.sidebar-task-list li { padding: 0; }
+.sidebar-task-list li.selected {
+  border-color: var(--accent);
+  background: rgba(79, 70, 229, 0.06);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);
+}
+.sidebar-task-list li.empty-task { padding: 18px 12px; font-size: 12px; }
+
+.sidebar-task-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar-task-item:hover { background: rgba(79, 70, 229, 0.05); }
+.sidebar-task-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-task-state {
+  flex: none;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.08);
+  color: var(--accent);
+}
+.sidebar-task-list li[data-status="done"] .sidebar-task-state { background: rgba(22, 163, 74, 0.10); color: #15803d; }
+.sidebar-task-list li[data-status="failed"] .sidebar-task-state { background: rgba(220, 38, 38, 0.10); color: #b91c1c; }
 
 .dashboard-row {
   display: grid;

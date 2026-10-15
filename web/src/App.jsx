@@ -478,6 +478,8 @@ function Workspace({ token }) {
   }
   function resetPrompt() { setText(PROMPTS[active] || ''); }
   const currentTask = tasks.find(t => t.id === selectedTaskId);
+  // 侧边栏任务列表只显示当前功能的任务；早期任务可能没有 tab 字段，用 TYPE_TO_TAB 兜底。
+  const tabTasks = active === 'dashboard' ? [] : tasks.filter(t => (t.tab || TYPE_TO_TAB[t.type]) === active);
   // 不能只看 TAB_TO_TYPE：ai-image / replace-image 不在 TYPE_TO_TAB 的反向映射里，
   // 否则会被误判成文本模式，页面芯片和提交都会错用文本供应商。
   const activeMode = TEXT_TABS.has(active) || FILE_TABS.has(active) ? 'text' : 'image';
@@ -507,9 +509,11 @@ function Workspace({ token }) {
     <div className="app">
       <header className="topbar"><div className="brand"><div className="logo">S</div><div><h1>Slenk Notes</h1></div></div><div className="top-actions"><div className="top-models"><span className="model-chip text">文本 {providers.find(p => p.id === (activeTextProviderId || activeProviderId))?.textModel || '未选择'}</span><span className="model-chip image">生图 {providers.find(p => p.id === (activeImageProviderId || activeProviderId))?.imageModel || '未选择'}</span><span className="model-chip page">当前 {selectedModelName || '未选择'}</span></div><button className="btn-secondary" onClick={refresh}>刷新任务</button><button className="btn-danger" onClick={() => localStorage.clear()}>退出</button></div></header>
       <div className="layout">
-        <aside className="sidebar"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
+        <aside className="sidebar"><div className="sidebar-nav"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
           {GROUPS.map(group => <div key={group.id} className="tab-group"><div className="tab-group-label"><span>{group.icon}</span>{group.label}</div><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
+          </div>
+          {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{tabTasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => viewTask(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span><span className="sidebar-task-state">{t.status}</span></button></li>)}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
         <main className="workspace">
           <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} />
