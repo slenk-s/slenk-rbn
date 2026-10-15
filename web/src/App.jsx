@@ -27,7 +27,7 @@ const VIDEO_TABS = new Set(['live-video']);
 const FILE_TABS = new Set(['note-download']);
 const SECTION_HINTS = {
   'ai-image':   { options: '选择画布比例和输出数量。', text: '描述你想要的图片风格、主题和构图。', upload: '可选上传参考图，AI 会参考其风格生成。', result: '生成结果支持一键下载。' },
-  'replace-image': { options: '选择画布比例和输出数量。', text: '描述替换方向：主体、背景、风格等。', upload: '上传原始参考图片，AI 将基于此生成替换版。', result: '替换版图片可下载对比。' },
+  'replace-image': { options: '选择画布比例、输出数量和生成方式。', text: '描述替换方向：主体、背景、风格等。', upload: '上传原始参考图片，多张时按图号一一对应生成替换版。', result: '替换版图片可下载对比。' },
   'live-video':   { options: '选择画布比例，视频时长固定 3 秒。', text: '描述想要的镜头运动方式和节奏。', upload: '上传图片素材，支持 PNG/JPG/WebP。', result: '生成的运镜视频可直接下载。' },
   'note-rewrite': { options: '选择输出画布，方便后续配图。', text: '粘贴原始笔记正文，AI 将改写成更适合小红书的版本。', upload: '可选上传配图素材。', result: '改写结果含正文、标题和标签。' },
   'multiply':     { options: '选择合成画布比例。', text: '描述叠加关系，如"底图+纹理+色块"。', upload: '上传多张素材，按顺序叠加。', result: '合成结果可下载为图片。' },
@@ -142,7 +142,7 @@ function TaskResultWithDownload({ task }) {
   const result = parseJsonText(task.result || '');
   if (!result) return <p className="muted">{task.status === 'failed' ? parseJsonText(task.error).error : '任务还没有结果内容。'}</p>;
   if (result.text) return <><p className="result-text">{result.text}</p><div className="result-actions"><DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" /></div></>;
-  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img src={API + img} alt={'AI图片结果 ' + (i + 1)} /><figcaption><DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} /></figcaption></figure>)}</div>;
+  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img src={API + img} alt={'AI图片结果 ' + (i + 1)} /><figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}<DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} /></figcaption></figure>)}</div>;
   if (result.image && typeof result.image === 'string') return <figure className="result-media"><img src={API + result.image} alt="AI图片结果" /><figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption></figure>;
   if (result.video) return <figure className="result-media"><video controls src={API + result.video} /><figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption></figure>;
   return <pre>{JSON.stringify(result, null, 2)}</pre>;
@@ -451,6 +451,7 @@ function Workspace({ token }) {
   const [noteDrafts, setNoteDrafts] = useState({});
   const [canvasSizeByTab, setCanvasSizeByTab] = useState({});
   const [outputCountByTab, setOutputCountByTab] = useState({});
+  const [perReferenceByTab, setPerReferenceByTab] = useState({});
   const [motionEffectByTab, setMotionEffectByTab] = useState({});
   const [durationModeByTab, setDurationModeByTab] = useState({});
   const [customDurationByTab, setCustomDurationByTab] = useState({});
@@ -489,6 +490,8 @@ function Workspace({ token }) {
   const noteDraft = noteDrafts[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] };
   const canvasSize = canvasSizeByTab[active] || '1080x1080';
   const outputCount = outputCountByTab[active] || '1';
+  // 多张参考图时默认按图号一一对应生成；要「多张参考图合成一张」时关掉这个开关。
+  const perReference = perReferenceByTab[active] !== false;
   const motionEffect = motionEffectByTab[active] || '手持轻晃';
   const durationMode = durationModeByTab[active] || 'fixed';
   const customDuration = customDurationByTab[active] || '3';
@@ -500,6 +503,7 @@ function Workspace({ token }) {
   const setFiles = (v) => setFilesByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || []) : v }));
   const setCanvasSize = (v) => setCanvasSizeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1080x1080') : v }));
   const setOutputCount = (v) => setOutputCountByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1') : v }));
+  const setPerReference = (v) => setPerReferenceByTab(prev => ({ ...prev, [active]: v }));
   const setMotionEffect = (v) => setMotionEffectByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '手持轻晃') : v }));
   const setDurationMode = (v) => setDurationModeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || 'fixed') : v }));
   const setCustomDuration = (v) => setCustomDurationByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '3') : v }));
@@ -548,7 +552,7 @@ function Workspace({ token }) {
   }
   function submitCurrentTask() {
     const submitText = text.trim() || defaultPrompt.trim() || PROMPTS[active] || '';
-    if (IMAGE_TABS.has(active)) return createTask('image', { prompt: submitText, image: files[0]?.url, imageUrls: files.map(f => f.url), canvasSize, count: Number(outputCount) || 1, providerId: selectedProviderId, model: selectedModelName });
+    if (IMAGE_TABS.has(active)) return createTask('image', { prompt: submitText, image: files[0]?.url, imageUrls: files.map(f => f.url), canvasSize, count: Number(outputCount) || 1, perReference, providerId: selectedProviderId, model: selectedModelName });
     if (VIDEO_TABS.has(active)) {
       const duration = durationMode === 'random' ? 8 : Number(customDuration) || 3;
       return createTask('video', { prompt: submitText, mediaUrls: files.map(f => f.url), canvasSize, duration, durationMode, motionEffect, shakeStrength, shakeFrequency, providerId: selectedProviderId, model: selectedModelName });
@@ -605,7 +609,7 @@ function Workspace({ token }) {
   <option value={MODEL_EMPTY}>未选择</option>
   {modelOptionsFor(activeMode, providers).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
 </select><button className="btn-primary action-primary" onClick={submitCurrentTask}>{IMAGE_TABS.has(active) ? '提交生成' : VIDEO_TABS.has(active) ? '提交视频任务' : '提交任务'}</button><button className="btn-secondary" onClick={resetPrompt}>重置提示词</button></div></div></div>
-                <div className="panel-cell"><div className="cell-head"><div className="section-title-block"><h3>选项区</h3><p>{hints.options}</p></div></div><div className="cell-body"><div className="option-row"><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>{IMAGE_TABS.has(active) && <select value={outputCount} onChange={e => setOutputCount(e.target.value)} aria-label="输出数量">{[1,2,3,4].map(n => <option key={n} value={String(n)}>{n} 张</option>)}</select>}{VIDEO_TABS.has(active) && <select value={motionEffect} onChange={e => setMotionEffect(e.target.value)} aria-label="运镜效果">{MOTION_EFFECTS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>}</div>{VIDEO_TABS.has(active) && <><div className="option-row range-row range-pair"><div className="range-item"><label className="option-label">抖动强度</label><input type="range" min="0" max="100" value={shakeStrength} onChange={e => setShakeStrength(Number(e.target.value))} style={{ '--progress': shakeStrength + '%' }} /><span className="range-value">{shakeStrength}</span></div><div className="range-item"><label className="option-label">抖动频率</label><input type="range" min="0" max="100" value={shakeFrequency} onChange={e => setShakeFrequency(Number(e.target.value))} style={{ '--progress': shakeFrequency + '%' }} /><span className="range-value">{shakeFrequency}</span></div></div><div className="option-row duration-row"><span className="option-label">视频时长</span><div className="duration-options"><label className="radio-item duration-radio"><input type="radio" name="durationMode" value="random" checked={durationMode === 'random'} onChange={e => setDurationMode(e.target.value)} /><span>随机时长</span><span className="duration-hint">上限 8 秒</span></label><label className="radio-item duration-radio"><input type="radio" name="durationMode" value="fixed" checked={durationMode === 'fixed'} onChange={e => setDurationMode(e.target.value)} /><span>定时时长</span><input type="number" className="duration-input" min="1" max="30" value={customDuration} onChange={e => setCustomDuration(e.target.value)} /><span>秒</span></label></div></div></>}</div></div></div>
+                <div className="panel-cell"><div className="cell-head"><div className="section-title-block"><h3>选项区</h3><p>{hints.options}</p></div></div><div className="cell-body"><div className="option-row"><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>{IMAGE_TABS.has(active) && <select value={outputCount} onChange={e => setOutputCount(e.target.value)} aria-label="输出数量">{[1,2,3,4].map(n => <option key={n} value={String(n)}>{n} 张</option>)}</select>}{IMAGE_TABS.has(active) && <label className="option-check" title="多张参考图时按图号一一对应生成；需要多张参考图合成一张时取消勾选"><input type="checkbox" checked={perReference} onChange={e => setPerReference(e.target.checked)} /><span>按参考图一一对应</span></label>}{VIDEO_TABS.has(active) && <select value={motionEffect} onChange={e => setMotionEffect(e.target.value)} aria-label="运镜效果">{MOTION_EFFECTS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>}</div>{VIDEO_TABS.has(active) && <><div className="option-row range-row range-pair"><div className="range-item"><label className="option-label">抖动强度</label><input type="range" min="0" max="100" value={shakeStrength} onChange={e => setShakeStrength(Number(e.target.value))} style={{ '--progress': shakeStrength + '%' }} /><span className="range-value">{shakeStrength}</span></div><div className="range-item"><label className="option-label">抖动频率</label><input type="range" min="0" max="100" value={shakeFrequency} onChange={e => setShakeFrequency(Number(e.target.value))} style={{ '--progress': shakeFrequency + '%' }} /><span className="range-value">{shakeFrequency}</span></div></div><div className="option-row duration-row"><span className="option-label">视频时长</span><div className="duration-options"><label className="radio-item duration-radio"><input type="radio" name="durationMode" value="random" checked={durationMode === 'random'} onChange={e => setDurationMode(e.target.value)} /><span>随机时长</span><span className="duration-hint">上限 8 秒</span></label><label className="radio-item duration-radio"><input type="radio" name="durationMode" value="fixed" checked={durationMode === 'fixed'} onChange={e => setDurationMode(e.target.value)} /><span>定时时长</span><input type="number" className="duration-input" min="1" max="30" value={customDuration} onChange={e => setCustomDuration(e.target.value)} /><span>秒</span></label></div></div></>}</div></div></div>
               <div className='panel-row'>
                 <div className={'panel-cell' + (isTextFocused ? ' cell-text-fullwidth' : '')}><div className="cell-head"><div className="section-title-block"><h3>文本输入区</h3><p>{hints.text}</p></div></div><div className="cell-body text-input-split"><div className="prompt-section"><div className="prompt-label">默认提示词</div><textarea className="prompt-default" value={defaultPrompt} onChange={e => setDefaultPrompt(e.target.value)} placeholder="暂无默认提示词" /></div><div className="prompt-section"><div className="prompt-label">用户提示词</div><textarea value={text} onChange={e => setText(e.target.value)} placeholder="在此输入或修改提示词..." /></div></div></div>
                 {inputSection}

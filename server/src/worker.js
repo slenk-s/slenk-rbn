@@ -268,6 +268,40 @@ async function extractImageAsset(data, id, index) {
   return `/videos/${path.basename(out)}`;
 }
 
+// 「按参考图一一对应生成」：/images/edits 的 n 只支持 1，多图输入时第 1 张是主编辑图、其余只作参考，
+// 一次请求拿不到「图1→结果1、图2→结果2」，所以每张参考图要单独发一次编辑请求。
+const CN_DIGITS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+
+function toRefIndex(token) {
+  const text = String(token || '').trim();
+  if (/^[0-9]+$/.test(text)) return Number(text);
+  return CN_DIGITS[text] || 0;
+}
+
+// 把「将图1…／将图2…」这种按图编号写的提示词拆成每图一份：命中编号的行只发给对应的参考图，
+// 没写编号的行当作全局要求附加到每一份；完全没写编号时退回完整提示词，行为不变。
+function splitPromptByReference(prompt, refCount) {
+  const lines = String(prompt || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const perRef = Array.from({ length: refCount }, () => []);
+  const shared = [];
+  let hadTarget = false;
+  for (const line of lines) {
+    const targets = new Set();
+    for (const match of line.matchAll(/(?:参考图|图片|图|第)\s*([0-9]+|[一二三四五六七八九十])\s*/g)) {
+      const n = toRefIndex(match[1]);
+      if (n >= 1 && n <= refCount) targets.add(n);
+    }
+    if (targets.size) {
+      hadTarget = true;
+      targets.forEach(n => perRef[n - 1].push(line));
+    } else {
+      shared.push(line);
+    }
+  }
+  if (!hadTarget) return Array.from({ length: refCount }, () => String(prompt || '').trim());
+  return perRef.map(parts => [...shared, ...parts].join('\n').trim());
+}
+
 async function runImage(payload, provider, id) {
   const prompt = payload.prompt || '';
   const count = Math.max(1, Math.min(4, Number(payload.count) || 1));
@@ -277,21 +311,38 @@ async function runImage(payload, provider, id) {
   const referenceImages = await loadReferenceDataUrls(payload);
   // 有参考图必须走 /images/edits：/images/generations 的 image 字段会被服务端静默忽略。
   const pathname = referenceImages.length ? '/images/edits' : '/images/generations';
+  // 每张参考图单独一次编辑请求，count 是每张参考图的张数，最终张数 = 参考图数 x count。
+  const perReference = pathname === '/images/edits' && referenceImages.length > 1 && payload.perReference !== false;
+  const requests = perReference ? referenceImages.length * count : count;
+  const splitPrompts = perReference ? splitPromptByReference(prompt, referenceImages.length) : null;
+  const referenceIndexes = [];
   const images = [];
   let lastData = {};
-  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, references: referenceImages.length, count }));
-  for (let i = 0; i < count; i++) {
-    const body = { model, prompt, n: 1, size, watermark: false };
-    if (referenceImages.length) body.images = referenceImages.map(image_url => ({ image_url }));
+  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, references: referenceImages.length, perReference, requests }));
+  for (let i = 0; i < requests; i++) {
+    const refIndex = perReference ? (i % referenceImages.length) : -1;
+    const refsForThis = refIndex >= 0 ? [referenceImages[refIndex]] : referenceImages;
+    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n: 1, size, watermark: false };
+    if (refsForThis.length) body.images = refsForThis.map(image_url => ({ image_url }));
     const res = await providerRequest(provider, pathname, body);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
     lastData = data;
     const url = await extractImageAsset(data, id, i);
-    if (url) images.push(url);
+    if (url) {
+      images.push(url);
+      referenceIndexes.push(refIndex >= 0 ? refIndex + 1 : images.length);
+    }
   }
   if (!images.length) return { image: lastData, raw: lastData };
-  return { images, image: images[0], raw: lastData };
+  const result = { images, image: images[0], raw: lastData };
+  if (perReference) {
+    result.perReference = true;
+    result.referenceCount = referenceImages.length;
+    result.imageReferences = referenceIndexes;
+    result.splitPrompts = splitPrompts;
+  }
+  return result;
 }
 
 function resolveUploadUrl(value) {

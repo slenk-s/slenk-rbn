@@ -1135,6 +1135,40 @@ button:hover { transform: translateY(-1px); }
 .result-actions button {
   width: auto;
 }
+.result-media figcaption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.result-ref-label {
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-radius: 999px;
+}
+/* 按参考图一一对应生成的开关 */
+.option-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  user-select: none;
+}
+.option-check input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 
 /* Responsive */
 @media (max-width: 1100px) {
