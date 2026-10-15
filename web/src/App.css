@@ -977,6 +977,35 @@ button:hover { transform: translateY(-1px); }
   min-width: 0;
 }
 
+/* 替换生图：画布比例 / 输出数量 / 按参考图一一对应 上移到标题栏，选项区整块移除。
+   控件复用 .option-row / .option-check 的原样式，这里只调成和按钮同高，
+   并把 flex:1 的自适应宽度收掉，避免三个控件在标题栏里横向抢占。 */
+.layout-replace-image .panel-row > .cell-options {
+  display: none;
+}
+.layout-replace-image .title-row .title-options {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+}
+.layout-replace-image .title-row .title-options select {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: auto;
+  min-height: 38px;
+  padding: 9px 30px 9px 12px;
+  border-radius: 10px;
+}
+.layout-replace-image .title-row .title-options .option-check {
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 38px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
 /* Result cell：1/5 信息侧栏 + 3/5 媒体舞台（右侧对齐），高度固定 */
 .panel-row-result {
   grid-template-columns: 1fr;
