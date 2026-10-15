@@ -6,7 +6,8 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node --watch src/index.js",
-    "queue": "node --watch src/worker.js"
+    "queue": "node --watch src/worker.js",
+    "test": "node --test"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -20,6 +21,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "nanoid": "^5.0.9",
+    "pg": "^8.23.1",
     "sharp": "^0.35.5"
   }
 }
