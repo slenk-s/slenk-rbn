@@ -196,7 +196,8 @@ router.post('/parse', verify, async (req, res) => {
     if (!rawInput) return res.status(400).json({ error: 'missing_link' });
     const match = rawInput.match(/https?:\/\/[^\s，。；）)\]"']+/);
     const link = match ? match[0] : rawInput;
-    if (!/xiaohongshu\.com|xhslink\.com/i.test(link)) return res.status(400).json({ error: 'invalid_link', message: '请输入小红书笔记或商品链接' });
+    // xhslink 短链同时存在 .com 与 .cn 两个域名，只放行 .com 会把 .cn 分享链接直接判成 invalid_link。
+    if (!/xiaohongshu\.com|xhslink\.(?:com|cn)/i.test(link)) return res.status(400).json({ error: 'invalid_link', message: '请输入小红书笔记或商品链接' });
     const { finalUrl, resp } = await resolveLink(link);
     const goodsLink = parseGoodsLink(finalUrl) || parseGoodsLink(link);
     if (goodsLink) {
