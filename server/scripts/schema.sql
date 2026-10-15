@@ -66,3 +66,12 @@ alter table slenk_notes_user_settings enable row level security;
 alter table slenk_notes_providers enable row level security;
 alter table slenk_notes_tasks enable row level security;
 alter table slenk_notes_notes enable row level security;
+
+-- Least privilege: Supabase grants anon/authenticated on new public tables by
+-- default. The backend (table owner) is the only client, RLS already returns zero
+-- rows, and these revokes take the tables off the Data API surface entirely.
+revoke all on slenk_notes_users from anon, authenticated;
+revoke all on slenk_notes_user_settings from anon, authenticated;
+revoke all on slenk_notes_providers from anon, authenticated;
+revoke all on slenk_notes_tasks from anon, authenticated;
+revoke all on slenk_notes_notes from anon, authenticated;

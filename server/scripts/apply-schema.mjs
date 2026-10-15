@@ -28,6 +28,25 @@ const { rows } = await client.query(`
   where n.nspname = 'public' and c.relname like 'slenk_notes_%' and c.relkind = 'r'
   order by c.relname
 `);
+
+const { rows: leakedGrants } = await client.query(`
+  select grantee, table_name, privilege_type
+  from information_schema.role_table_grants
+  where table_schema = 'public'
+    and table_name like 'slenk_notes_%'
+    and grantee in ('anon', 'authenticated')
+  order by table_name, grantee, privilege_type
+`);
+
+const { rows: stillPrivileged } = await client.query(`
+  select c.relname as table_name,
+         has_table_privilege('anon', c.oid, 'select') as anon_can_select,
+         has_table_privilege('authenticated', c.oid, 'select') as authenticated_can_select
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname like 'slenk_notes_%' and c.relkind = 'r'
+  order by c.relname
+`);
 await client.end();
 
 console.table(rows);
@@ -40,4 +59,12 @@ if (missing.length) {
   console.error('RLS not enabled on:', missing.map(r => r.table_name).join(', '));
   process.exit(1);
 }
+const exposed = stillPrivileged.filter(r => r.anon_can_select || r.authenticated_can_select);
+if (leakedGrants.length || exposed.length) {
+  console.error('anon/authenticated still reach these tables, revokes did not take effect:');
+  console.table(leakedGrants);
+  console.table(exposed);
+  process.exit(1);
+}
 console.log('schema applied, RLS enabled on all 5 tables');
+console.log('no anon/authenticated table grants: tables off the Data API surface');
