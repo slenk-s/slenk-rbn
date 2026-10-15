@@ -504,6 +504,8 @@ function Workspace({ token }) {
   const setCanvasSize = (v) => setCanvasSizeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1080x1080') : v }));
   const setOutputCount = (v) => setOutputCountByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1') : v }));
   const setPerReference = (v) => setPerReferenceByTab(prev => ({ ...prev, [active]: v }));
+  const fileInputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
   const setMotionEffect = (v) => setMotionEffectByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '手持轻晃') : v }));
   const setDurationMode = (v) => setDurationModeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || 'fixed') : v }));
   const setCustomDuration = (v) => setCustomDurationByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '3') : v }));
@@ -578,10 +580,10 @@ function Workspace({ token }) {
       <div className="cell-head"><div className="section-title-block"><h3>{isLiveVideo ? '图片输入区' : isFileFocused ? '文件输入区' : '图片输入区'}</h3><p>{hints.upload}</p></div></div>
       <div className="cell-body">
         <div className="upload-zone">
-          <label className="dropzone"><input type="file" multiple accept={uploadAccept} onChange={e => uploadMany(e.target.files)} /><span>点击或拖入 {uploadLabel}，最多 9 个素材</span></label>
-          <div className="file-grid file-grid-9 file-grid-strip">
+          <input ref={fileInputRef} type="file" multiple accept={uploadAccept} hidden onChange={e => { uploadMany(e.target.files); e.target.value = ''; }} />
+          <div className={'file-grid file-grid-9 file-grid-strip' + (dragOver ? ' drag-active' : '')} onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={e => { e.preventDefault(); setDragOver(false); uploadMany(e.dataTransfer.files); }}>
             {files.map((file, index) => <figure key={file.url || index} className="file-thumb"><div className="thumb-media" onClick={() => setLightbox({ url: API + file.url, name: file.name || '素材预览', isVideo: !!(file.url && file.url.includes('/videos/')) })}>{file.url && file.url.includes('/videos/') ? <video src={API + file.url} muted /> : <img src={API + file.url} alt={file.name || '素材预览'} />}</div><figcaption><span>{file.name}</span><a href={API + file.url} download={file.name || '素材'} onClick={(e) => e.stopPropagation()}>下载</a><button type="button" className="thumb-remove" onClick={(e) => { e.stopPropagation(); setFiles(files.filter((_, i) => i !== index)); }}>移除</button></figcaption></figure>)}
-            {Array.from({ length: Math.max(0, 9 - files.length) }, (_, i) => <div key={'empty-'+i} className="file-slot-empty"><span>+</span></div>)}
+            {Array.from({ length: Math.max(0, 9 - files.length) }, (_, i) => <button type="button" key={'empty-' + i} className="file-slot-empty" title={'点击或拖入 ' + uploadLabel + '，最多 9 个素材'} aria-label="添加素材" onClick={() => fileInputRef.current?.click()}><span>+</span></button>)}
           </div>
         </div>
       </div>
