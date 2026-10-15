@@ -15,7 +15,10 @@ if (!process.env.DATABASE_URL) {
 const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 const client = new pg.Client({
   connectionString: process.env.DATABASE_URL,
-  ssl: true
+  ssl: {
+    ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
+    rejectUnauthorized: true
+  }
 });
 
 // Literal prefix match: escape the underscores so LIKE cannot match other names.
