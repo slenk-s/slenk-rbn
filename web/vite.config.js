@@ -6,6 +6,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
+    allowedHosts: ['236963.xyz'],
     proxy: {
       '/api': 'http://localhost:3001',
       '/uploads': 'http://localhost:3001',

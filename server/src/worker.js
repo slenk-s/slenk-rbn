@@ -46,6 +46,9 @@ function shouldUseStillImageLoop(payload) {
 
 const ffmpegPath = resolveExisting(process.env.FFMPEG_PATH) || (fs.existsSync('E:/FFmpeg/ffmpeg.exe') ? 'E:/FFmpeg/ffmpeg.exe' : null) || ffmpegStatic;
 ffmpeg.setFfmpegPath(ffmpegPath);
+const jobLockDuration = Number(process.env.JOB_LOCK_DURATION_MS || 30 * 60 * 1000);
+const jobMaxStalledCount = Number(process.env.JOB_MAX_STALLED_COUNT || 3);
+const workerStalledInterval = Number(process.env.WORKER_STALLED_INTERVAL_MS || 30 * 1000);
 
 const redis = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 const uploadDir = paths.uploadsDir;
@@ -398,12 +401,35 @@ function makeVideo(payload, id) {
     const output = path.join(videoDir, id + '.mp4');
     const duration = parseDuration(payload);
     const filter = buildVideoFilter(payload, duration);
-    ffmpeg(input)
-      .inputOptions(shouldUseStillImageLoop(payload) ? ['-loop', '1'] : [])
-      .outputOptions(['-t', String(duration), '-vf', filter, '-pix_fmt', 'yuv420p', '-c:v', 'libx264'])
-      .on('end', () => resolve(output))
-      .on('error', reject)
-      .save(output);
+    const startedAt = Date.now();
+    const inputOptions = shouldUseStillImageLoop(payload) ? ['-loop', '1'] : [];
+    const outputOptions = ['-t', String(duration), '-vf', filter, '-pix_fmt', 'yuv420p', '-c:v', 'libx264'];
+    console.log('[worker] ffmpeg start', JSON.stringify({
+      jobId: id,
+      input,
+      output,
+      ffmpegPath,
+      duration,
+      canvasSize: payload.canvasSize,
+      inputOptions,
+      outputOptions
+    }));
+    const ffmpegRun = ffmpeg(input)
+      .inputOptions(inputOptions)
+      .outputOptions(outputOptions);
+    ffmpegRun
+      .on('start', command => console.log('[worker] ffmpeg process start', JSON.stringify({ jobId: id, command })))
+      .on('stdout', data => console.log('[worker] ffmpeg stdout', JSON.stringify({ jobId: id, line: String(data).trim() })))
+      .on('stderr', data => console.log('[worker] ffmpeg stderr', JSON.stringify({ jobId: id, line: String(data).trim() })))
+      .on('end', () => {
+        console.log('[worker] ffmpeg end', JSON.stringify({ jobId: id, output, durationMs: Date.now() - startedAt }));
+        resolve(output);
+      })
+      .on('error', err => {
+        console.error('[worker] ffmpeg error', JSON.stringify({ jobId: id, durationMs: Date.now() - startedAt, message: err?.message, code: err?.code, signal: err?.signal }));
+        reject(err);
+      });
+    ffmpegRun.save(output);
   });
 }
 
@@ -439,24 +465,31 @@ new Worker('ai-tasks', async (job) => {
         shakeStrength: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeStrength)) ? Number(payload.shakeStrength) : 0)),
         shakeFrequency: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeFrequency)) ? Number(payload.shakeFrequency) : 0))
       };
-      await updateTask(id, {
-        status: 'done',
-        result: {
-          video: `/videos/${path.basename(out)}`,
-          localVideoPath: out,
-          prompt: payload.prompt || '',
-          options,
-          raw: { ffmpeg: 'done', mediaUrls: payload.mediaUrls || [] }
-        }
-      });
-      return { video: `/videos/${path.basename(out)}`, localVideoPath: out, prompt: payload.prompt || '', options };
+      const videoResult = {
+        video: `/videos/${path.basename(out)}`,
+        localVideoPath: out,
+        prompt: payload.prompt || '',
+        options,
+        raw: { ffmpeg: 'done', mediaUrls: payload.mediaUrls || [] }
+      };
+      console.log('[worker] video updateTask before', JSON.stringify({ jobId: id, status: 'done', videoResult }));
+      await updateTask(id, { status: 'done', result: videoResult });
+      console.log('[worker] video updateTask after', JSON.stringify({ jobId: id, status: 'done', videoResult }));
+      return videoResult;
     }
     throw new Error('unknown_job');
   } catch (err) {
     await updateTask(id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) });
     throw err;
   }
-}, { connection: redis, concurrency: Number(process.env.QUEUE_CONCURRENCY || 2) });
+}, {
+    connection: redis,
+    concurrency: Number(process.env.QUEUE_CONCURRENCY || 2),
+    lockDuration: jobLockDuration,
+    lockRenewTime: jobLockDuration,
+    stalledInterval: workerStalledInterval,
+    maxStalledCount: jobMaxStalledCount
+  });
 
 
 
