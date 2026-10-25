@@ -19,12 +19,26 @@ if (isTestProcess && !process.env.TEST_DATABASE_URL) {
   console.warn('⚠️ tests are running against DATABASE_URL (shared with the app); set TEST_DATABASE_URL to use a throwaway database');
 }
 
+// The Supabase pooler needs the bundled CA. A local or CI database has no
+// cert signed by that CA, so opt out explicitly with ?sslmode=disable.
+let disableSsl = false;
+try {
+  disableSsl = new URL(connectionString).searchParams.get('sslmode') === 'disable';
+} catch {
+  // Malformed connection string; pg will report the real error on first query.
+}
+const sslOptions = disableSsl
+  ? {}
+  : {
+      ssl: {
+        ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
+        rejectUnauthorized: true
+      }
+    };
+
 export const pool = new pg.Pool({
   connectionString,
-  ssl: {
-    ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
-    rejectUnauthorized: true
-  },
+  ...sslOptions,
   max: 5,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 15000

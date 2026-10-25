@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
 import { verify } from '../auth.js';
+import { paths } from '../paths.js';
 
 export const router = Router();
 
@@ -12,6 +15,33 @@ function jpegVariantForHeic(target) {
 }
 
 // 小红书图片 fileId 有的自带 notes_pre_post/ 前缀、有的不带，404 时互换前缀重试一次。
+function safeLocalAssetPath(target) {
+  const url = new URL(target);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  const rel = url.pathname.replace(/^\//, '');
+  const allowed = [
+    ['/uploads/', paths.uploadsDir],
+    ['/videos/', paths.videosDir],
+    ['/notes-images/', path.join(paths.dataDir, 'notes-images')]
+  ];
+  const prefix = allowed.find(([p]) => rel.startsWith(p));
+  if (!prefix) return null;
+  const baseDir = path.resolve(prefix[1]);
+  const filePath = path.resolve(baseDir, rel.slice(prefix[0].length));
+  return filePath.startsWith(baseDir) ? filePath : null;
+}
+
+function contentTypeForLocalPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.txt') return 'text/plain; charset=utf-8';
+  return 'application/octet-stream';
+}
+
 function altXhsImageTarget(target) {
   if (!/^https?:\/\/ci\.xiaohongshu\.com\//i.test(target)) return null;
   if (/^https?:\/\/ci\.xiaohongshu\.com\/notes_pre_post\//i.test(target)) {
@@ -28,7 +58,24 @@ router.get('/', async (req, res, next) => {
     const target = String(req.query.url || '');
     if (!/^https?:\/\//.test(target)) return res.status(400).json({ error: 'invalid_url' });
     const name = String(req.query.name || 'image').replace(/[\\/:*?"<>|]/g, '_');
-    const fetchOptions = { headers: { 'Referer': 'https://www.xiaohongshu.com/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' } };
+    const localPath = safeLocalAssetPath(target);
+    if (localPath && fs.existsSync(localPath)) {
+      const localBuf = fs.readFileSync(localPath);
+      const localType = contentTypeForLocalPath(localPath);
+      const hasExt = /\.[a-z0-9]{2,5}$/i.test(name);
+      const ext = hasExt ? '' : (localType.includes('mp4') ? '.mp4' : (localType.includes('png') ? '.png' : ''));
+      if (req.query.inline === '1') {
+        res.setHeader('Content-Type', localType);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+      } else {
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
+      }
+      return res.send(localBuf);
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000); // 25秒超时
+    const fetchOptions = { signal: controller.signal, headers: { 'Referer': 'https://www.xiaohongshu.com/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' } };
     let resp = await fetch(target, fetchOptions);
     let contentType = resp.headers.get('content-type') || 'application/octet-stream';
     if (resp.status === 404) {

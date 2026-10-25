@@ -70,12 +70,35 @@ async function deleteUser(id) {
   return rowCount > 0;
 }
 
+function typeLabel(type) {
+  if (type === 'image') return 'AI生图';
+  if (type === 'video') return '实况视频';
+  if (type === 'rewrite') return '文案改写';
+  return String(type || '任务');
+}
+
+function taskName(type, payload) {
+  const purpose = payload && payload.purpose;
+  if (purpose === 'title') return '标题生成';
+  if (purpose === 'content') return '正文生成';
+  if (purpose === 'tags') return '话题标签生成';
+  if (purpose === 'noteImage') return '配图生成';
+  return typeLabel(type);
+}
+
+function displayTaskLabel(row) {
+  const label = row.label || '';
+  if (!/^(Text|Image|Video|Task)\d+$/i.test(label)) return label;
+  const suffix = String(label).replace(/^[^\d]+/i, '');
+  return `${taskName(row.type, row.payload)}${suffix || ''}`;
+}
+
 function mapTask(row) {
   return {
     id: row.id,
     userId: row.user_id,
     type: row.type,
-    label: row.label || '',
+    label: displayTaskLabel(row),
     status: row.status,
     payload: row.payload,
     providerId: row.provider_id,
@@ -113,12 +136,7 @@ async function getTask(userId, id) {
   return rows[0] ? mapTask(rows[0]) : null;
 }
 
-async function getTaskById(id) {
-  const { rows } = await query('select * from slenk_notes_tasks where id = $1', [id]);
-  return rows[0] ? mapTask(rows[0]) : null;
-}
-
-async function updateTask(id, patch) {
+async function updateTask(userId, id, patch) {
   const fields = [];
   const values = [];
   const push = (column, value) => { values.push(value); fields.push(`${column} = $${values.length}`); };
@@ -126,11 +144,11 @@ async function updateTask(id, patch) {
   if ('result' in patch) push('result', patch.result);
   if ('error' in patch) push('error', patch.error);
   if ('label' in patch) push('label', patch.label);
-  if (!fields.length) return await getTaskById(id);
-  values.push(id);
+  if (!fields.length) return await getTask(userId, id);
+  values.push(id, userId);
   const { rows } = await query(
     `update slenk_notes_tasks set ${fields.join(', ')}, updated_at = now()
-     where id = $${values.length} returning *`,
+     where id = $${values.length - 1} and user_id = $${values.length} returning *`,
     values
   );
   return rows[0] ? mapTask(rows[0]) : null;
@@ -329,7 +347,6 @@ export {
   addTask,
   listTasks,
   getTask,
-  getTaskById,
   updateTask,
   deleteTask,
   listProviders,

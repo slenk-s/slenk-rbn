@@ -9,6 +9,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import sharp from 'sharp';
 import { updateTask, getProviderUnmaskedById, getActiveProvider } from './store.js';
 import { paths } from './paths.js';
+import { collectReferenceImages } from './lib/referenceImages.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -53,6 +54,7 @@ const workerStalledInterval = Number(process.env.WORKER_STALLED_INTERVAL_MS || 3
 const redis = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 const uploadDir = paths.uploadsDir;
 const videoDir = paths.videosDir;
+const notesImagesDir = path.join(paths.dataDir, 'notes-images');
 fs.mkdirSync(videoDir, { recursive: true });
 
 async function resolveProvider(payload, mode, userId) {
@@ -176,6 +178,13 @@ async function readImageAsDataUrl(value) {
     if (!match) return raw;
     return referenceDataUrl(Buffer.from(match[2].replace(/\s/g, ''), 'base64'), match[1]);
   }
+  if (/^\/(?:notes-images|uploads|videos)\//i.test(raw)) {
+    // 智能识别已把远端图片缓存到本地；这里直接读缓存，不再回源，也避免前端走代理预览。
+    const safeName = path.basename(raw);
+    const localPath = path.resolve(raw.startsWith('/notes-images/') ? notesImagesDir : raw.startsWith('/uploads/') ? uploadDir : videoDir, safeName);
+    if (fs.existsSync(localPath)) return referenceDataUrl(fs.readFileSync(localPath), mimeFromPath(localPath));
+    return null;
+  }
   if (/^https?:\/\//i.test(raw)) {
     // 小红书图床有防盗链，必须带 Referer/UA 才能取到原图（与分析链接时同一套头）。
     const res = await fetch(raw, {
@@ -209,11 +218,6 @@ function normalizeImageSize(value) {
   return `${width}x${height}`;
 }
 
-function collectReferenceImages(payload) {
-  const list = payload.imageUrls?.length ? payload.imageUrls : (payload.image ? [payload.image] : []);
-  return (Array.isArray(list) ? list : [list]).filter(Boolean).slice(0, 5);
-}
-
 // 生图/文本都要先把参考图转成 Data URL，读不到时宁可报错也不要静默丢掉参考图。
 async function loadReferenceDataUrls(payload) {
   const refs = collectReferenceImages(payload);
@@ -240,7 +244,7 @@ function normalizeTextContent(content) {
 
 async function runChat(payload, provider) {
   const text = `${payload.prompt || ''}\n\n${payload.source || ''}`.trim();
-  const referenceImages = await loadReferenceDataUrls(payload);
+  const referenceImages = []; // 文本生成不传参考图，避免请求体过大
   // 带参考图时走内容块数组，纯文本任务保持字符串，兼容只吃字符串的供应商。
   const content = referenceImages.length
     ? [{ type: 'text', text }, ...referenceImages.map(url => ({ type: 'image_url', image_url: { url } }))]
@@ -439,7 +443,7 @@ new Worker('ai-tasks', async (job) => {
     if (job.name === 'rewrite') {
       const provider = await resolveProvider(payload, 'text', userId);
       const result = await runChat(payload, provider);
-      await updateTask(id, { status: 'done', result: { ...result, providerId: provider.id, providerName: provider.name } });
+      await updateTask(userId, id, { status: 'done', result: { ...result, providerId: provider.id, providerName: provider.name } });
       return result;
     }
     if (job.name === 'image') {
@@ -451,7 +455,7 @@ new Worker('ai-tasks', async (job) => {
         providerId: provider.id,
         providerName: provider.name
       };
-      await updateTask(id, { status: 'done', result: resultForStore });
+      await updateTask(userId, id, { status: 'done', result: resultForStore });
       return result;
     }
     if (job.name === 'video') {
@@ -473,13 +477,13 @@ new Worker('ai-tasks', async (job) => {
         raw: { ffmpeg: 'done', mediaUrls: payload.mediaUrls || [] }
       };
       console.log('[worker] video updateTask before', JSON.stringify({ jobId: id, status: 'done', videoResult }));
-      await updateTask(id, { status: 'done', result: videoResult });
+      await updateTask(userId, id, { status: 'done', result: videoResult });
       console.log('[worker] video updateTask after', JSON.stringify({ jobId: id, status: 'done', videoResult }));
       return videoResult;
     }
     throw new Error('unknown_job');
   } catch (err) {
-    await updateTask(id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) });
+    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) });
     throw err;
   }
 }, {

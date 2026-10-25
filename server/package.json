@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "queue": "node --watch src/worker.js",
+    "test:db": "node scripts/test-db-up.mjs",
     "test": "node --test"
   },
   "dependencies": {

@@ -1,9 +1,121 @@
 import { Router } from 'express';
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { verify } from '../auth.js';
+import { paths } from '../paths.js';
 import { saveNote, getNote } from '../store.js';
+import { enqueueTask } from './tasks.js';
 
 export const router = Router();
+
+const notesImagesDir = path.join(paths.dataDir, 'notes-images');
+
+// 单张图单个上游请求的上限（沿用原行为），以及一次解析全部图片共享的总预算。
+// 总预算才是真正的护栏：串行时 9 张图最坏 9 × 2 次请求 × 20 秒，共享预算把它切成常数。
+const CACHE_TIMEOUT_MS = 20000;
+const CACHE_BUDGET_MS = 25000;
+const CACHE_CONCURRENCY = 4;
+
+function imageMagic(buf) {
+  const bytes = Array.from(buf.subarray(0, 16));
+  if (buf.length > 1 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'jpeg';
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
+  if (buf.length > 6 && buf.subarray(0, 6).toString('latin1') === 'GIF87a') return 'gif';
+  if (buf.length > 6 && buf.subarray(0, 6).toString('latin1') === 'GIF89a') return 'gif';
+  if (buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'ftyp' && (buf.subarray(4, 8).toString('latin1') === 'heic' || buf.subarray(4, 8).toString('latin1') === 'heix' || buf.subarray(4, 8).toString('latin1') === 'hevc' || buf.subarray(4, 8).toString('latin1') === 'mif1' || buf.subarray(4, 8).toString('latin1') === 'mif2')) return 'heic';
+  if (buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'ftyp' && (buf.subarray(4, 8).toString('latin1') === 'avif' || buf.subarray(4, 8).toString('latin1') === 'avis')) return 'avif';
+  return 'unknown';
+}
+
+function jpegFallbackUrl(rawUrl) {
+  const base = String(rawUrl || '').split(/[?#]/)[0];
+  return base + '?imageView2/2/w/1080/format/jpeg';
+}
+
+export async function cacheRemoteImage(rawUrl, referer, isFallback = false, dir = notesImagesDir, deadline = Date.now() + CACHE_TIMEOUT_MS) {
+  const url = normalizeImageUrl(rawUrl);
+  if (!/^https?:\/\//.test(url)) return '';
+  fs.mkdirSync(dir, { recursive: true });
+  const extMatch = String(url || '').split(/[?#]/)[0].match(/\.(jpe?g|png|webp|gif|avif|heic|heif)$/i);
+  const filename = crypto.createHash('sha256').update(url).digest('hex').slice(0, 32) + (extMatch ? '.' + extMatch[1].toLowerCase().replace('jpeg', 'jpg') : '.jpg');
+  const filePath = path.join(dir, filename);
+  const publicUrl = '/notes-images/' + filename;
+  if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
+    const existingFormat = imageMagic(fs.readFileSync(filePath));
+    if (existingFormat !== 'jpeg' && existingFormat !== 'png' && existingFormat !== 'webp' && existingFormat !== 'gif') {
+      fs.unlinkSync(filePath);
+      // 不能返回远程地址：前端会把非空 cachedUrl 直接拼到 API 后面。交回空值让前端走原图，下次解析重下缓存。
+      return '';
+    }
+    return publicUrl;
+  }
+
+  const controller = new AbortController();
+  // 用剩余预算而不是固定超时：预算耗尽时这张图立刻中止，而不是再占满一轮 20 秒。
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
+  try {
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': UA,
+        'Referer': referer || 'https://www.xiaohongshu.com/'
+      }
+    });
+    if (!resp.ok) return '';
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (!buf.length) return '';
+    const originalFormat = imageMagic(buf);
+    if (originalFormat === 'heic' || originalFormat === 'avif' || originalFormat === 'unknown') {
+      // 当前环境无法可靠解码这类格式，走 CDN 的 jpeg 变体；变体仍不可解码就放弃，避免死循环。
+      if (isFallback) return '';
+      return cacheRemoteImage(jpegFallbackUrl(url), referer, true, dir, deadline);
+    }
+    const finalExt = originalFormat === 'jpeg' ? '.jpg' : '.' + originalFormat;
+    const finalName = filename.replace(/\.(jpe?g|png|webp|gif|avif|heic|heif)$/i, finalExt);
+    const finalPath = path.join(dir, finalName);
+    const tmp = finalPath + '.tmp-' + process.pid + '-' + Date.now();
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, finalPath);
+    if (finalPath !== filePath && !fs.existsSync(filePath)) {
+      // 同一 URL 再来时按原扩展名的键也能命中缓存。
+      fs.writeFileSync(filePath, buf);
+    }
+    return '/notes-images/' + finalName;
+  } catch (err) {
+    console.warn('[notes] cache image failed', url, err.message);
+    return '';
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// 并发池 + 共享预算：常规情况（9 张各约 0.5 秒）从 ~5 秒降到 ~2 秒，
+// 最坏情况被总预算硬切，而不是随张数线性拉长。按索引回填，输出顺序与输入一致。
+export async function cacheImageUrls(urls, referer, { deadline = Date.now() + CACHE_BUDGET_MS, dir = notesImagesDir } = {}) {
+  const seen = new Set();
+  const jobs = [];
+  for (const url of Array.isArray(urls) ? urls : []) {
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    jobs.push(url);
+  }
+  const cached = new Array(jobs.length);
+  let next = 0;
+  const runNext = async () => {
+    for (;;) {
+      const position = next;
+      if (position >= jobs.length) return;
+      next++;
+      const url = jobs[position];
+      cached[position] = { url, cachedUrl: await cacheRemoteImage(url, referer, false, dir, deadline) };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CACHE_CONCURRENCY, jobs.length) }, () => runNext()));
+  return cached;
+}
 
 function lanOrigin(req) {
   const port = Number(process.env.PORT || 3001);
@@ -30,6 +142,19 @@ router.get('/:id', async (req, res, next) => {
     const note = await getNote(req.params.id);
     if (!note) return res.status(404).json({ error: 'note_not_found' });
     res.json({ note });
+  } catch (err) {
+    next(err);
+  }
+});
+router.post('/:id/rewrite', verify, async (req, res, next) => {
+  try {
+    const note = await getNote(req.params.id);
+    if (!note) return res.status(404).json({ error: 'note_not_found' });
+    res.json(await enqueueTask('rewrite', {
+      ...(req.body || {}),
+      prompt: String(req.body?.prompt || ''),
+      source: String(req.body?.source || note.content || note.title || '')
+    }, req.user.userId));
   } catch (err) {
     next(err);
   }
@@ -142,7 +267,7 @@ async function parseGoodsDetail(url) {
     title: data.descriptionH5?.name || data.descriptionMain?.name || '',
     content: '',
     tags: [],
-    images,
+    images: await cacheImageUrls(images, url),
     videos: []
   };
 }
@@ -211,7 +336,8 @@ router.post('/parse', verify, async (req, res) => {
     try { state = JSON.parse(raw.replace(/\bundefined\b/g, 'null')); } catch (e) { return res.status(502).json({ error: 'parse_failed', message: '页面数据格式异常' }); }
     const detail = parseNoteDetail(state);
     if (!detail) return res.status(404).json({ error: 'note_not_found', message: '未找到笔记内容' });
-    res.json({ title: detail.title, content: detail.content, tags: detail.tags, images: detail.images, videos: detail.videos });
+    const cachedImages = await cacheImageUrls(detail.images, finalUrl);
+    res.json({ title: detail.title, content: detail.content, tags: detail.tags, images: cachedImages, videos: detail.videos });
   } catch (err) {
     res.status(500).json({ error: 'fetch_failed', message: err.message });
   }

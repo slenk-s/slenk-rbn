@@ -5,9 +5,11 @@ import { createTestUser, dropTestUser } from './helpers.mjs';
 
 after(() => closePool());
 
-test('connects to the project database', async () => {
+test('connects to the configured database', async () => {
   const { rows } = await query('select current_database() as db, current_user as usr');
-  assert.equal(rows[0].db, 'postgres');
+  const expectedDb = new URL(process.env.TEST_DATABASE_URL || process.env.DATABASE_URL)
+    .pathname.replace(/^\//, '');
+  assert.equal(rows[0].db, expectedDb);
   assert.match(rows[0].usr, /^postgres/);
 });
 

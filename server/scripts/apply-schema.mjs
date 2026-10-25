@@ -13,12 +13,27 @@ if (!process.env.DATABASE_URL) {
 }
 
 const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+
+// The Supabase pooler needs the bundled CA. A local or CI database has no
+// cert signed by that CA, so opt out explicitly with ?sslmode=disable.
+let disableSsl = false;
+try {
+  disableSsl = new URL(process.env.DATABASE_URL).searchParams.get('sslmode') === 'disable';
+} catch {
+  // Malformed connection string; pg will report the real error on connect.
+}
+const sslOptions = disableSsl
+  ? {}
+  : {
+      ssl: {
+        ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
+        rejectUnauthorized: true
+      }
+    };
+
 const client = new pg.Client({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
-    rejectUnauthorized: true
-  }
+  ...sslOptions
 });
 
 // Literal prefix match: escape the underscores so LIKE cannot match other names.

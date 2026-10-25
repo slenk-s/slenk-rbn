@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { diffLines } from './diffText.js';
+import { fetchWithTimeout } from './fetchWithTimeout.js';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL || window.location.origin;
@@ -43,6 +45,71 @@ const PROMPTS = {
   'layout-tool': '请描述你要排版的标题、正文、商品图和贴纸位置。\n工具用途：先按固定画布规划封面/内页版式，再交给后续生图或编辑。',
   'note-download': '请粘贴小红书商品链接。\n工具用途：获取商品主图，整理为可下载的商品图片素材。'
 };
+const NOTE_PROMPT_STORAGE_KEY = 'slenk-notes-note-prompts-v5';
+const NOTE_PROMPT_FIELDS = [
+  { key: 'title', label: '标题提示词', hint: '用于生成标题候选，支持 JSON 或编号列表。' },
+  { key: 'content', label: '正文提示词', hint: '用于改写正文，要求适合小红书发布。' },
+  { key: 'tags', label: '话题标签提示词', hint: '用于提取话题标签，支持 JSON 或 # 标签列表。' },
+];
+const AI_DIFF_FIELDS = {
+  title: { label: '标题' },
+  content: { label: '正文' },
+  tags: { label: '话题标签' },
+};
+const DEFAULT_NOTE_PROMPTS = {
+  title: `你是一位擅长小红书爆款标题拆解的资深内容策划。你熟悉小红书搜索、推荐和用户点击心理，能把普通笔记信息改写成让人愿意点开的具体标题。
+请先理解输入内容，再围绕以下爆款标题变量输出 5 个候选标题：
+1. 具体数字：例如 3 步、7 天、5 件、2 个细节；没有明确数字时不要硬编。
+2. 明确人群：锁定输入中的人群、职业、年龄、肤质、场景或身份。
+3. 真实场景：优先写使用场景、生活问题或选择困难，不要泛泛写“好物推荐”。
+4. 结果导向：写清楚读者能得到的结果、变化或体验，但不要夸大事实。
+5. 情绪钩子：可用亲切、惊讶、轻松、治愈等情绪，但不要夸张诱导。
+硬性要求：
+- 每个标题 10-22 个中文字符，适合移动端首屏阅读。
+- 标题必须贴合笔记真实内容，不编造价格、销量、认证、案例或功效。
+- 避免“绝了”“封神”“天花板”“必入”“王炸”“全网最低”等高风险词。
+- 避免“私信”“加微信”“二维码”“领取资料”等引流违规表达。
+- 5 个标题分别使用不同切入角度，避免只换词不换意思。
+- 可自然使用 1 个 emoji，但不堆砌。
+不要解释，不要输出 JSON，直接按以下样式输出：
+1. 标题
+2. 标题
+3. 标题
+4. 标题
+5. 标题`,
+  content: `你是一位小红书真实种草文案写手，擅长把零散信息改写成有人味、有细节、有体感的中文正文。
+你的写作逻辑是“先抓人，再讲清，最后互动”：
+1. 钩子开头：从用户痛点、真实场景或具体使用瞬间切入，前两句就让用户觉得“这和我有关”。
+2. 内容主体：用第一人称快速分享核心体验和关键细节，不铺陈背景，不写长段说明。
+3. 互动结尾：用一个自然的开放式问题收束，不要写“欢迎评论区告诉我”这类硬引导。
+写作要求：
+- 语气像真实用户分享，少说明书腔，少广告腔，多用具体动作、细节和结果。
+- 把抽象形容词改成可感知描述，例如把“很好用”改写成具体时间、动作或变化。
+- 保持事实准确，不编造数据、销量、认证、价格、案例、身份和功效。
+- 每段 1-2 句，正文控制在 100-200 个中文字符，适合小红书短平快阅读。
+- 可少量使用 emoji 增强节奏，但不要为了装饰而使用。
+- 避免“绝了”“封神”“天花板”“必入”“王炸”“全网最低”等夸张词。
+- 避免“私信”“加微信”“二维码”“领取资料”等引流违规表达。
+- 不输出标题，不输出标签，不解释写作过程。
+直接输出可发布的正文。`,
+  tags: `你是一位小红书搜索词和话题标签策划。请根据笔记标题、正文、商品/主题、目标人群、场景和搜索意图，提取一组高相关性话题标签。
+提取逻辑：
+1. 核心主题词：用户搜索时最可能直接使用的词。
+2. 场景词：例如通勤、宿舍、旅行、送礼、加班、露营等真实使用场景。
+3. 人群词：例如学生党、上班族、敏感肌、新手妈妈、租房族等具体人群。
+4. 细分品类词：更贴近商品、内容类型或问题解决方式。
+5. 结果词：例如平价、懒人友好、收纳、提升幸福感等，但不要夸大功效。
+要求：
+- 输出 8-12 个标签，按相关性从高到低排序。
+- 每行一个标签，标签正文 2-12 个中文字符；不要空格、emoji、标点或解释文字。
+- 避免“绝了”“封神”“天花板”“必入”“王炸”“全网最低”等夸张词。
+- 避免“私信”“加微信”“二维码”“领取资料”等引流违规表达。
+- 不要重复语义相近的标签。
+不要输出 JSON，不要解释，直接按以下样式输出：
+#标签1
+#标签2
+#标签3`,
+};
 const MOTION_EFFECTS = [
   { value: '手持轻晃', label: '手持轻晃' },
   { value: '缓慢推近', label: '缓慢推近' },
@@ -62,12 +129,22 @@ const UPLOAD_ACCEPT = {
 };
 const EMPTY_PROVIDER = { name: '', providerType: 'openai-compatible', appType: 'openai', baseUrl: '', apiKey: '', textModel: 'gpt-4o-mini', imageModel: 'gpt-image-1', notes: '', active: false };
 
+async function readJsonResponse(r) {
+  const text = await r.text();
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (trimmed[0] === '{' || trimmed[0] === '[') return JSON.parse(trimmed);
+  const contentType = r.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) throw new Error('接口返回的不是 JSON：' + (r.status + ' ' + r.url));
+  throw new Error('JSON 解析失败：接口返回内容不是合法 JSON');
+}
+
 function api(path, options = {}) {
   return fetch(`${API}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(options.token ? { Authorization: `Bearer ${options.token}`} : {}) },
     ...options
   }).then(async r => {
-    const data = await r.json().catch(() => ({}));
+    const data = await readJsonResponse(r);
     if (!r.ok) throw new Error(data.error || r.statusText);
     return data;
   });
@@ -96,20 +173,24 @@ function selectedModelValue(mode, providers, activeProviderId) {
   const model = mode === 'text' ? (active.textModel || '') : (active.imageModel || '');
   return active.id + '::' + model;
 }
-function resolveImageSrc(url) {
-  const u = String(url || '');
-  if (!u) return '';
-  if (/^https?:\/\//.test(u)) {
-    if (/xhscdn\.com|xiaohongshu\.com/.test(u)) return API + '/api/download?inline=1&url=' + encodeURIComponent(u);
-    return u;
+function resolveImageSrc(img) {
+    const item = img && typeof img === 'object' ? img : { url: img };
+    const cachedUrl = String(item.cachedUrl || '');
+    if (cachedUrl) return API + cachedUrl;
+    const u = String(item.url || '');
+    if (!u) return '';
+    if (/^https?:\/\//.test(u)) {
+      if (/xhscdn\.com|xiaohongshu\.com/.test(u)) return API + '/api/download?inline=1&url=' + encodeURIComponent(u);
+      return u;
+    }
+    return API + u;
   }
-  return API + u;
-}
 async function downloadFile(url, name, kind) {
-  try {
-    const token = localStorage.getItem('token');
-    // 下载接口只接受绝对 URL；本地上传的图片是 /uploads/... 相对路径，需要补全服务端地址。
-    const target = String(url || '').startsWith('/') ? API + url : url;
+    try {
+      const token = localStorage.getItem('token');
+      const item = url && typeof url === 'object' ? url : { url };
+      const sourceUrl = String(item.cachedUrl || item.url || '');
+      const target = sourceUrl.startsWith('/') ? API + sourceUrl : sourceUrl;
     const resp = await fetch(API + '/api/download?url=' + encodeURIComponent(target) + '&name=' + encodeURIComponent(name || 'file'), { headers: { Authorization: 'Bearer ' + token } });
     if (!resp.ok) throw new Error('下载失败');
     const blob = await resp.blob();
@@ -125,12 +206,28 @@ async function downloadFile(url, name, kind) {
     URL.revokeObjectURL(a.href);
   } catch (e) { alert(e.message); }
 }
+function removeTopicTagMarkup(value) {
+  return String(value || "")
+    .replace(/#([^#\n]{1,40})\[话题\]#/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function unwrapTaskResult(result) {
+  if (result && typeof result === 'object' && typeof result.text === 'string' && result.text.trim()) {
+    return parseJsonText(result.text);
+  }
+  return result;
+}
+
 function parseJsonText(raw) {
   if (!raw) return null;
   // jsonb 列读出来已经是对象，旧的 JSON 文件存储里是字符串，两种形态都要能解析。
   if (typeof raw === 'object') return raw;
+  // LLM 常把 JSON 包在 ```json 代码块里，先剥离再解析，否则标题/标签提取不到。
+  const stripped = String(raw).trim().replace(/^```(?:json)?s*/i, '').replace(/```s*$/, '').trim();
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(stripped);
     return parsed && typeof parsed === 'object' ? parsed : { text: String(raw) };
   } catch { return { text: String(raw) }; }
 }
@@ -139,19 +236,33 @@ function DownloadLink({ url, label, name }) {
   return <a href={absolute} download={name || ''}><button type="button">{label}</button></a>;
 }
 function TaskResultWithDownload({ task }) {
-  const result = parseJsonText(task.result || '');
+  const result = unwrapTaskResult(parseJsonText(task.result || ''));
   if (!result) return <p className="muted">{task.status === 'failed' ? parseJsonText(task.error).error : '任务还没有结果内容。'}</p>;
-  if (result.text) return <><p className="result-text">{result.text}</p><div className="result-actions"><DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" /></div></>;
+  const resultDownload = <DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" />;
+  if (result.text) return <><p className="result-text">{result.text}</p><div className="result-actions">{resultDownload}</div></>;
   if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img src={API + img} alt={'AI图片结果 ' + (i + 1)} /><figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}<DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} /></figcaption></figure>)}</div>;
   if (result.image && typeof result.image === 'string') return <figure className="result-media"><img src={API + result.image} alt="AI图片结果" /><figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption></figure>;
   if (result.video) return <figure className="result-media"><video controls src={API + result.video} /><figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption></figure>;
+  const titleCandidates = Array.isArray(result.titles) ? result.titles.map(String) : [];
+  const displayTitle = titleCandidates[0] || result.title || '';
+  const displayContent = removeTopicTagMarkup(result.text || result.content || '');
+  const displayTags = (Array.isArray(result.tags) ? result.tags : []).map(t => String(t).replace(/^#/, ''));
+  if (titleCandidates.length || displayTitle || displayContent || displayTags.length) {
+    return <div className="task-result-preview">
+      {titleCandidates.length > 0 && <div className="task-result-block task-result-titles"><span>标题候选</span><ol>{titleCandidates.map((item, i) => <li key={i}>{item}</li>)}</ol></div>}
+      {displayTitle && !titleCandidates.length && <div className="task-result-block"><span>标题</span><strong>{displayTitle}</strong></div>}
+      {displayContent && <div className="task-result-block"><span>正文</span><p>{displayContent}</p></div>}
+      {displayTags.length > 0 && <div className="task-result-block"><span>话题标签</span><div className="result-tag-list">{displayTags.map((tag, i) => <span key={i}>{'#' + tag}</span>)}</div></div>}
+      <div className="result-actions">{resultDownload}</div>
+    </div>;
+  }
   return <pre>{JSON.stringify(result, null, 2)}</pre>;
 }
 function ResultEmptyState({ tabId }) {
   const hints = { 'ai-image': '🎨 提交后，生成的图片将显示在此区域，支持一键下载。', 'replace-image': '🖼️ 替换版图片将在此展示，可下载与原图对比。', 'live-video': '🎬 运镜视频将在此播放，支持预览和下载。', 'note-rewrite': '📝 改写结果将包含正文、标题和标签，可下载保存。', 'multiply': '◐ 合成结果图片将在此展示，支持下载。', 'layout-tool': '▦ 排版规划结果将在此展示，可作为设计参考。', 'note-download': '📦 整理好的素材包将在此展示，可打包下载。' };
   return <div className="result-empty-state"><div className="result-empty-icon">{hints[tabId]?.split(' ')[0]}</div><p>{hints[tabId] || '暂无结果。提交任务后会显示在这里。'}</p></div>;
 }
-function ProviderManager({ token, activeProviderId, providers, onProviderChange, setMessage }) {
+function ProviderManager({ token, activeProviderId, activeTextProviderId, activeImageProviderId, providers, onProviderChange, setMessage }) {
   const [form, setForm] = useState(EMPTY_PROVIDER);
   const [editingId, setEditingId] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
@@ -174,26 +285,28 @@ function ProviderManager({ token, activeProviderId, providers, onProviderChange,
       const endpoint = editingId ? '/api/providers/' + editingId : '/api/providers';
       const method = editingId ? 'PUT' : 'POST';
       const data = await api(endpoint, { method, token, body: JSON.stringify(form) });
-      await onProviderChange(data.providers, data.activeProviderId);
+      await onProviderChange(data.providers, data.activeProviderId, data.activeTextProviderId, data.activeImageProviderId);
       setMessage(editingId ? '供应商已更新。' : '供应商已添加。'); resetForm();
     } catch (err) { setMessage(err.message); }
   }
   function editProvider(provider) { setEditingId(provider.id); setForm({ name: provider.name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: Boolean(provider.active) }); setAvailableModels([provider.appType === 'text' ? provider.textModel : provider.imageModel].filter(Boolean)); }
   function copyProvider(provider) { const base = provider.name || '供应商'; let index = 1; let name = base + '-' + index; while (providers.some(p => p.name === name)) { index += 1; name = base + '-' + index; } setForm({ name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: false }); setEditingId(provider.id); }
-  async function refreshProviders(messageText) { const next = await api('/api/providers', { token }); await onProviderChange(next.providers, next.activeProviderId); setMessage(messageText || '已切换供应商'); }
+  async function refreshProviders(messageText) { const next = await api('/api/providers', { token }); await onProviderChange(next.providers, next.activeProviderId, next.activeTextProviderId, next.activeImageProviderId); setMessage(messageText || '已切换供应商'); }
   async function activateProvider(provider) { await api('/api/providers/' + provider.id + '/active', { method: 'POST', token, body: JSON.stringify({ mode: provider.appType === 'text' ? 'text' : 'image' }) }); await refreshProviders('已切换供应商。'); }
   async function duplicateProvider() {
     if (!editingId) return;
     try {
       setMessage('正在复制供应商...');
       const created = await api('/api/providers/' + editingId + '/duplicate', { method: 'POST', token });
-      await onProviderChange(created.providers, created.activeProviderId);
+      await onProviderChange(created.providers, created.activeProviderId, created.activeTextProviderId, created.activeImageProviderId);
       setMessage('供应商已复制新增。');
       const next = created.providers.find(p => p.id === created.provider?.id);
       if (next) { setEditingId(next.id); setForm({ name: next.name, providerType: next.providerType, appType: next.appType, baseUrl: next.baseUrl, apiKey: '', textModel: next.textModel, imageModel: next.imageModel || '', notes: next.notes || '', active: false }); }
     } catch (err) { setMessage(err.message); }
   }
   const activeProvider = providers.find(p => p.id === activeProviderId);
+  const activeTextProvider = providers.find(p => p.id === activeTextProviderId);
+  const activeImageProvider = providers.find(p => p.id === activeImageProviderId);
   return (
     <section className="card provider-manager">
       <div className="section-head"><div><h3>AI 供应商</h3><p>新增/编辑供应商，切换当前启用的 AI 后端。</p></div><span className="pill">{activeProvider?.name || 'admin'}</span></div>
@@ -210,7 +323,7 @@ function ProviderManager({ token, activeProviderId, providers, onProviderChange,
           <div className="actions-row"><button type="button" className="btn-secondary" onClick={clearForm}>{editingId ? '取消编辑' : '清空'}</button><button type="button" className="btn-ghost" onClick={fetchModels}>获取模型</button></div>
           <div className={editingId ? 'actions-row actions-row-bottom actions-row-edit' : 'actions-row actions-row-bottom'}><button type="submit" className="btn-primary">{editingId ? '保存修改' : '创建'}</button>{editingId && <button type="button" className="btn-ghost" onClick={duplicateProvider}>复制新增</button>}</div>
         </form>
-        <div className="provider-list-block"><div className="list-head"><h3>供应商列表</h3><span className="count">{providers.length} 个</span></div><ul className="providers">{providers.map(p => <li key={p.id} className={p.id === activeProviderId ? 'active' : ''}><div className="p-name"><b>{p.name}</b><span className={"mode-tag" + (p.appType === 'text' ? '' : ' image')}>{p.appType === 'text' ? '文本' : '生图'}</span></div><div className="row-btns"><button type="button" onClick={() => editProvider(p)}>编辑</button><button type="button" className="danger" onClick={async () => { await api('/api/providers/' + p.id, { method: 'DELETE', token }); await refreshProviders('供应商已删除。'); }}>删除</button><button type="button" className={p.id === activeProviderId ? 'active' : ''} onClick={() => activateProvider(p)}>{p.id === activeProviderId ? '已启用' : '启用'}</button></div></li>)}</ul></div>
+        <div className="provider-list-block"><div className="list-head"><h3>供应商列表</h3><span className="count">{providers.length} 个</span></div><ul className="providers">{providers.map(p => <li key={p.id} className={p.id === activeProviderId ? 'active' : ''}><div className="p-name"><b>{p.name}</b><span className={"mode-tag" + (p.appType === 'text' ? '' : ' image')}>{p.appType === 'text' ? '文本' : '生图'}</span></div><div className="row-btns"><button type="button" onClick={() => editProvider(p)}>编辑</button><button type="button" className="danger" onClick={async () => { await api('/api/providers/' + p.id, { method: 'DELETE', token }); await refreshProviders('供应商已删除。'); }}>删除</button><button type="button" className={(p.appType === 'text' ? p.id === activeTextProviderId : p.id === activeImageProviderId) ? 'active' : ''} onClick={() => activateProvider(p)}>{(p.appType === 'text' ? p.id === activeTextProviderId : p.id === activeImageProviderId) ? '已启用' : '启用'}</button></div></li>)}</ul></div>
       </div>
     </section>
   );
@@ -231,13 +344,13 @@ function UserManager({ token, me, setMessage }) {
   const [busy, setBusy] = useState(false);
   const [resetFor, setResetFor] = useState('');
   const [resetValue, setResetValue] = useState('');
-  const api = (path, options = {}) => fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
+  const api = (path, options = {}) => fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   const report = err => setMessage(USER_ERROR_TEXT[err.message] || err.message);
   async function load(message) { try { const data = await api('/api/users'); setUsers(data.users || []); if (message) setMessage(message); } catch (err) { report(err); } }
   useEffect(() => {
     if (!token) return;
     fetch(API + '/api/users', { headers: { Authorization: 'Bearer ' + token } })
-      .then(r => r.json())
+      .then(r => readJsonResponse(r))
       .then(data => setUsers(data.users || []))
       .catch(() => {});
   }, [token]);
@@ -289,18 +402,108 @@ function UserManager({ token, me, setMessage }) {
     </section>
   );
 }
-function Dashboard({ token, me, activeProviderId, providers, onProviderChange, tasks, setMessage, selectedTaskId, onViewTask, onTaskDelete }) {
+function Dashboard({ token, me, activeProviderId, activeTextProviderId, activeImageProviderId, providers, onProviderChange, tasks, setMessage, selectedTaskId, onViewTask, onTaskDelete }) {
   const [manageMode, setManageMode] = useState(false);
   return (
     <section className="dashboard-settings">
       <section className="card dashboard-hero"><div className="hero-copy"><span className="eyebrow">全站设置区</span><h2>仪表盘</h2><p>集中查看运行状态，并管理 AI 供应商、本地存储、队列与视频 worker。</p></div><div className="hero-stats"><div><b>{providers.length}</b><span>供应商</span></div><div><b>{tasks.length}</b><span>任务</span></div><div><b>Local</b><span>存储</span></div></div></section>
       <div className="dashboard-row">
-        <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，每 4 秒刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={() => setManageMode(v => !v)}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div><ul className="task-list">{tasks.map(t => <li key={t.id} data-status={t.status}><div className="task-status-row"><b>{t.type}</b><span>{t.status}</span>{manageMode ? <button type="button" className="task-view-btn task-delete-btn" onClick={() => onTaskDelete && onTaskDelete(t.id)}>删除</button> : <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>)}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
-        <ProviderManager token={token} activeProviderId={activeProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
+        <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，每 4 秒刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={() => setManageMode(v => !v)}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div><ul className="task-list">{tasks.map(t => <li key={t.id} data-status={t.status}><div className="task-status-row"><b>{t.label || t.type}</b><span>{t.status}</span>{manageMode ? <button type="button" className="task-view-btn task-delete-btn" onClick={() => onTaskDelete && onTaskDelete(t.id)}>删除</button> : <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>)}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
+        <ProviderManager token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
       </div>
       {me?.isAdmin ? <UserManager token={token} me={me} setMessage={setMessage} /> : null}
     </section>
   );
+}
+function loadNotePrompts() {
+  try {
+    const raw = localStorage.getItem(NOTE_PROMPT_STORAGE_KEY);
+    const saved = raw ? JSON.parse(raw) : {};
+    return { ...DEFAULT_NOTE_PROMPTS, ...saved };
+  } catch { return { ...DEFAULT_NOTE_PROMPTS }; }
+}
+function saveNotePrompts(prompts) {
+  try { localStorage.setItem(NOTE_PROMPT_STORAGE_KEY, JSON.stringify(prompts)); return true; } catch { return false; }
+}
+function DiffCell({ line }) {
+  if (line.type !== 'changed' || !line.pairs) return <span>{line.new}</span>;
+  return <span>{line.pairs.map((p, i) => p.type === 'changed' ? <mark key={i}>{p.new}</mark> : <span key={i}>{p.new}</span>)}</span>;
+}
+function renderFieldDiff(fieldKey, oldText, newText, titleCandidates, activeIndex, onSelectCandidate, draftTags, onDraftTagsChange) {
+  if (fieldKey === 'title' && Array.isArray(titleCandidates) && titleCandidates.length) {
+    return (
+      <div className="diff-title-options">
+        {titleCandidates.map((candidate, index) => (
+          <button key={index} type="button" className={'diff-title-option' + (index === activeIndex ? ' active' : '')} onClick={() => onSelectCandidate(index)}>
+            <b>标题 {index + 1}</b>
+            <span>{candidate}</span>
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (fieldKey === 'tags' && draftTags) {
+    return (
+      <div className="diff-inline-edit">
+        <label><b>候选话题</b><textarea value={draftTags} onChange={e => onDraftTagsChange(e.target.value)} placeholder="每行一个话题，保留 # 也可以" /></label>
+      </div>
+    );
+  }
+  return (
+    <div className="diff-lines">
+      {diffLines(oldText, newText).map((line, index) => (
+        <div key={index} className="diff-line" data-type={line.type}>
+          <div className="diff-code"><DiffCell line={line} /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function extractTextContent(raw) {
+  const source = String(raw?.text || (typeof raw === 'string' ? raw : '') || '').trim();
+  if (!source) return '';
+  const section = source.match(/(?:正文|文案|content)[:：]?\s*([\s\S]+)/i);
+  const base = section?.[1]?.trim() || source.replace(/```(?:json)?\s*|```/g, '').trim();
+  return base
+    .split('\n')
+    .filter(line => {
+      const item = line.trim();
+      return item
+        && !/^(?:#|【)?(?:标题|topic|tags?|标签|话题)/i.test(item)
+        && !/^\d+\s*[.)、．：:]/.test(item)
+        && !/^(?:titles?|text|content|tags?)\s*[:=]/i.test(item)
+        && item.length > 1;
+    })
+    .join('\n')
+    .trim();
+}
+function extractListItems(lines, maxItems) {
+  return lines
+    .map(line => line.replace(/^\s*(?:[-*]|\d+\s*[.)、．]|#{1,4})\s*/, '').trim())
+    .map(line => line.replace(/^#|^【|^】|[‘’“”']/g, '').trim())
+    .filter(line => line && !/^#/.test(line) && line.length <= 32)
+    .slice(0, maxItems);
+}
+function extractStringArray(raw, fallbackKey) {
+  const text = raw?.text || (typeof raw === 'string' ? raw : '');
+  const data = parseJsonText(text);
+  if (data && typeof data === 'object') {
+    const key = Object.keys(data).find(k => /title|title候选|候选标题/i.test(k)) || fallbackKey;
+    const list = data[key] || data[fallbackKey] || Object.values(data).find(v => Array.isArray(v));
+    if (Array.isArray(list)) return list.map(item => String(item).trim()).filter(Boolean);
+  }
+  const source = String(text || '').trim();
+  if (!source) return [];
+  if (fallbackKey === 'tags') {
+    const tagLines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const hashTags = tagLines.filter(line => /^#/.test(line));
+    if (hashTags.length >= 2) return extractListItems(hashTags, 20);
+    const inlineTags = source.match(/#[^\s,，、;；]+/g);
+    if (inlineTags && inlineTags.length >= 2) return extractListItems(inlineTags, 20);
+    return extractListItems(tagLines, 20);
+  }
+  const numbered = source.match(/(?:^|\n)\s*(?:[-*]|\d+\s*[.)、．])\s*[^\n]+/g);
+  return numbered ? extractListItems(numbered, 8) : [];
 }
 function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const isDownload = mode === 'download';
@@ -315,13 +518,20 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const [status, setStatus] = useState('');
   const [dragIndex, setDragIndex] = useState(null);
   const [qr, setQr] = useState(null);
+  const [notePrompts, setNotePrompts] = useState(loadNotePrompts);
+  const [promptConfigOpen, setPromptConfigOpen] = useState(false);
+  const [promptDraft, setPromptDraft] = useState(() => ({ ...DEFAULT_NOTE_PROMPTS }));
+  const [aiDiff, setAiDiff] = useState(null);
   async function api(path, options = {}) {
-    return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
+    return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   }
-  function referenceImageUrls() { return images.filter(img => !img.isVideo).map(img => img.url); }
-  async function runTask({ type, payload }, message, timeoutMs = 120000) {
+  function referenceImageUrls() {
+    return images.filter(img => !img.isVideo).map(img => resolveImageSrc(img)).filter(Boolean);
+  }
+  async function runTask({ type, payload, purpose }, message, timeoutMs = 120000) {
     setStatus(message);
-    const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ type, tab: 'note-rewrite', payload }) });
+    const taskPayload = purpose ? { ...payload, purpose } : payload;
+    const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ type, tab: 'note-rewrite', payload: taskPayload }) });
     const id = data.id || '';
     if (!id) throw new Error('任务创建失败');
     const started = Date.now();
@@ -338,17 +548,90 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     }
     throw new Error('AI 生成超时');
   }
-  async function aiCall(payload, message) {
+  function openAiDiff(fieldKey, values, message) {
+    setAiDiff({
+      fieldKey,
+      title: AI_DIFF_FIELDS[fieldKey].label,
+      oldText: fieldKey === 'title' ? title : fieldKey === 'content' ? content : tags.map(t => '#' + t).join(' '),
+      newText: fieldKey === 'title' ? String(values?.candidates?.[0] || '') : fieldKey === 'content' ? String(values?.text || '') : String(values?.tags?.map(t => '#' + t).join(' ') || ''),
+      titleCandidates: values?.candidates || [],
+      activeIndex: fieldKey === 'title' ? 0 : null,
+      draftTags: fieldKey === 'tags' ? String(values?.tags?.map(t => '#' + t).join(' ') || '') : '',
+      message,
+    });
+  }
+  function applyAiDiff() {
+    if (!aiDiff) return;
+    const { fieldKey, newText, titleCandidates, activeIndex, draftTags, title } = aiDiff;
+    if (fieldKey === 'title') {
+      const next = titleCandidates?.[activeIndex] || title;
+      if (next) setTitle(next);
+    } else if (fieldKey === 'content') {
+      const next = String(newText || '').slice(0, 1000);
+      if (next) setContent(next);
+    } else if (fieldKey === 'tags') {
+      const nextTags = String(draftTags || newText || '')
+        .split(/\s+/)
+        .map(t => t.replace(/^#/, '').trim())
+        .filter(Boolean);
+      if (nextTags.length) setTags([...new Set(nextTags)].slice(0, 20));
+    }
+    setAiDiff(null);
+    setStatus('AI 生成内容已应用。');
+  }
+  async function aiGenerateTitle() {
     try {
-      await runTask({ type: 'rewrite', payload }, message);
-      setStatus('AI 已返回结果，请查看任务详情或重新生成。');
+      const task = await runTask({ type: 'rewrite', purpose: 'title', payload: { prompt: notePrompts.title, source: content || link || '请根据当前笔记生成标题。', imageUrls: referenceImageUrls() } }, '正在生成标题...');
+      const titles = extractStringArray(task.result, 'titles');
+      if (titles.length) {
+        if (!title) { setTitle(titles[0]); setStatus('已生成 ' + titles.length + ' 个标题，已填入第 1 个。'); }
+        else openAiDiff('title', { candidates: titles }, '已生成 ' + titles.length + ' 个标题，确认后写入。');
+      } else setStatus('AI 已返回结果，但没有识别到标题数组。');
     } catch (err) { setStatus(err.message); }
+  }
+  async function aiGenerateContent() {
+    try {
+      const task = await runTask({ type: 'rewrite', purpose: 'content', payload: { prompt: notePrompts.content, source: content || link || '请生成一段适合小红书发布的原创笔记正文。', imageUrls: referenceImageUrls() } }, '正在生成正文...');
+      const text = parseJsonText(task.result);
+      const body = extractTextContent(task.result)
+        || (typeof text?.content === 'string' ? text.content : '')
+        || (Array.isArray(text?.content) ? String(text.content[0]?.text || '').trim() : '')
+        ;
+      if (body) {
+        if (!content) { setContent(body.slice(0, 1000)); setStatus('正文已生成并填入。'); }
+        else openAiDiff('content', { text: body.slice(0, 1000) }, '正文已生成，确认后写入。');
+      } else setStatus('AI 已返回结果，但没有识别到正文内容。');
+    } catch (err) { setStatus(err.message); }
+  }
+  async function aiGenerateTags() {
+    try {
+      const task = await runTask({ type: 'rewrite', purpose: 'tags', payload: { prompt: notePrompts.tags, source: content || link || '请根据当前笔记生成话题标签。', imageUrls: referenceImageUrls() } }, '正在生成话题标签...');
+      const nextTags = extractStringArray(task.result, 'tags').map(t => t.replace(/^#/, '')).filter(Boolean);
+      if (nextTags.length) {
+        if (!tags.length) { setTags(nextTags.slice(0, 20)); setStatus('已生成 ' + nextTags.length + ' 个话题标签。'); }
+        else openAiDiff('tags', { tags: nextTags }, '话题标签已生成，确认后写入。');
+      } else setStatus('AI 已返回结果，但没有识别到标签数组。');
+    } catch (err) { setStatus(err.message); }
+  }
+  function openPromptConfig() {
+    setPromptDraft(notePrompts);
+    setPromptConfigOpen(true);
+  }
+  function savePromptConfig() {
+    const next = Object.fromEntries(NOTE_PROMPT_FIELDS.map(f => [f.key, promptDraft[f.key] ?? DEFAULT_NOTE_PROMPTS[f.key]]));
+    const ok = saveNotePrompts(next);
+    setNotePrompts(next);
+    setPromptConfigOpen(false);
+    setStatus(ok ? '提示词已保存，AI生成将使用新配置。' : '提示词已更新本次会话；浏览器未允许持久化保存。');
+  }
+  function resetPromptConfig() {
+    setPromptDraft({ ...DEFAULT_NOTE_PROMPTS });
   }
   // 图片管理区的「AI生成」应当产出真图，并把结果回填到图片列表。
   async function aiGenerateImage() {
     const prompt = ['请为当前小红书笔记生成 1 张配图，真实自然、适合小红书封面。', title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
     try {
-      const task = await runTask({ type: 'image', payload: { prompt, imageUrls: referenceImageUrls(), canvasSize: '1080x1080', count: 1 } }, '正在生成图片...', 300000);
+      const task = await runTask({ type: 'image', purpose: 'noteImage', payload: { prompt, imageUrls: referenceImageUrls(), canvasSize: '1080x1080', count: 1 } }, '正在生成图片...', 300000);
       const result = parseJsonText(task.result) || {};
       const urls = Array.isArray(result.images) && result.images.length ? result.images : (result.image && typeof result.image === 'string' ? [result.image] : []);
       if (!urls.length) throw new Error('AI 没有返回图片');
@@ -360,7 +643,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     try {
       setStatus('正在生成预览二维码...');
       const res = await fetch(API + '/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ title, content, tags, images }) });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || '生成失败');
       const qrDataUrl = await QRCode.toDataURL(data.url, { width: 320, margin: 2 });
       setQr({ url: data.url, image: qrDataUrl });
@@ -373,20 +656,21 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     if (!target) return setStatus('请先粘贴' + linkLabel + '。');
     setStatus('正在识别' + linkLabel + '...');
     try {
-      const res = await fetch(API + '/api/notes/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ link: target }) });
-      const data = await res.json();
+      // 解析接口服务端最多跑 25 秒，这里 20 秒先放弃，避免转圈无限等；中断后已落盘的缓存下次解析能直接命中。
+      const res = await fetchWithTimeout(API + '/api/notes/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ link: target }) }, 20000);
+      const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.message || data.error || '识别失败');
       if (data.title) setTitle(data.title);
-      if (data.content) setContent(data.content);
+      if (data.content) setContent(removeTopicTagMarkup(data.content));
       if (Array.isArray(data.tags) && data.tags.length) setTags(data.tags.map(t => String(t).replace(/^#/, '')));
       const items = [];
       if (Array.isArray(data.videos) && data.videos.length) data.videos.forEach((url, i) => items.push({ id: 'video-' + i + '-' + Date.now(), url, name: '视频 ' + (i + 1), isVideo: true }));
-      if (Array.isArray(data.images) && data.images.length) data.images.forEach((url, i) => items.push({ id: 'remote-' + i + '-' + Date.now(), url, name: resultLabel + ' ' + (i + 1) }));
+      if (Array.isArray(data.images) && data.images.length) data.images.forEach((img, i) => items.push({ id: 'remote-' + i + '-' + Date.now(), url: img.url, cachedUrl: img.cachedUrl, name: resultLabel + ' ' + (i + 1) }));
       if (items.length) setImages(items);
       setStatus('已识别：' + (data.title || '无标题') + '，' + (data.images?.length || 0) + ' 张' + resultLabel + (data.videos?.length ? '，' + data.videos.length + ' 个无水印视频' : '') + '。');
     } catch (err) { setStatus(err.message); }
   }
-  async function uploadImages(list) { if (!list?.length) return; const fd = new FormData(); Array.from(list).slice(0, 9).forEach(file => fd.append('file', file)); const r = await fetch(API + '/api/upload/files', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd }); const data = await r.json(); setImages(prev => { const next = [...prev]; data.files?.forEach(file => { if (!next.some(f => f.url === file.url)) next.push({ ...file, id: file.url || file.name + Date.now() }); }); return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 张图片已添加。'); }
+  async function uploadImages(list) { if (!list?.length) return; const fd = new FormData(); Array.from(list).slice(0, 9).forEach(file => fd.append('file', file)); const r = await fetch(API + '/api/upload/files', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd }); const data = await readJsonResponse(r); setImages(prev => { const next = [...prev]; data.files?.forEach(file => { if (!next.some(f => f.url === file.url)) next.push({ ...file, id: file.url || file.name + Date.now() }); }); return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 张图片已添加。'); }
   function addTags() { const next = tagInput.split(/[,，\s#]+/).map(t => t.trim()).filter(Boolean); setTags(prev => [...new Set([...prev, ...next])].slice(0, 20)); setTagInput(''); }
   function moveImage(from, to) { if (from === to || from < 0 || to < 0) return; setImages(prev => { const next = [...prev]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; }); }
   return (
@@ -395,16 +679,19 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
         <div className="note-main">
           <div className="note-section smart-link">
             <div className="note-head"><div><h2>{isDownload ? '商品下载' : '智能识别笔记链接'}</h2>{!isDownload && <p>输入笔记链接，智能识别参考内容：标题、正文、标签、图片</p>}</div><span className="pill pill-ok">AI 提取</span></div>
-            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
+            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button>{!isDownload && <button type="button" className="btn-secondary" onClick={openPromptConfig}>提示词配置</button>}</div>
           </div>
           {!isDownload && (<div className="note-section fields">
-            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><button className="btn-secondary" onClick={() => aiCall({ prompt: "基于链接和正文生成 3 个小红书标题，输出 JSON titles 数组。", source: link || content, imageUrls: referenceImageUrls() }, '正在生成标题...')}>AI生成</button></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
-            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><button className="btn-secondary" onClick={() => aiCall({ prompt: PROMPTS['note-rewrite'], source: link || content || '请生成一段适合小红书发布的原创笔记正文。', imageUrls: referenceImageUrls() }, '正在生成正文...')}>AI生成</button></div><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
+            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateTitle}>AI生成</button></div></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
+            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateContent}>AI生成</button></div></div><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
             <div>
               <label>话题标签</label>
               <div className="field-meta">
                 <span>复制话题 {tags.length} 个</span>
-                <button className="btn-secondary" onClick={() => navigator.clipboard?.writeText(tags.map(t => '#' + t).join(' '))}>复制话题</button>
+                <div className="field-actions">
+                  <button className="btn-secondary" onClick={aiGenerateTags}>AI生成</button>
+                  <button className="btn-secondary" onClick={() => navigator.clipboard?.writeText(tags.map(t => '#' + t).join(' '))}>复制话题</button>
+                </div>
               </div>
               <div className="tag-input-row">
                 <input value={tagInput} onChange={e => setTagInput(e.target.value)} placeholder="单个或批量添加，例如：学习资料 #英语，八年级" />
@@ -416,16 +703,47 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3>{!isDownload && <p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}</div>
             {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={aiGenerateImage}>AI生成</button></div>}
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img.url)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img.url, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         {!isDownload && (<aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
-          <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <img key={i} src={resolveImageSrc(img.url)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
+          <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <img key={i} src={resolveImageSrc(img)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
           <div className="publish-actions"><button className="btn-primary" onClick={() => setStatus('当前笔记草稿已保存到前端状态：' + title + ' / ' + tags.length + ' 个标签 / ' + images.length + ' 张图片。')}>保存笔记</button><button className="btn-secondary" onClick={() => setStatus('飞书同步功能待接入当前工作台的发布 API。')}>同步飞书</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
         </aside>)}
       </div>
       <footer className="status note-status">{status}</footer>
+{aiDiff && (
+        <div className="prompt-config-backdrop ai-diff-backdrop" onClick={() => setAiDiff(null)}>
+          <div className="prompt-config-modal ai-diff-modal" onClick={e => e.stopPropagation()}>
+            <button type="button" className="prompt-config-close" onClick={() => setAiDiff(null)}>×</button>
+            <h3>{aiDiff.title} · 改动对比</h3>
+            <p>{aiDiff.message}确认后才会写入表单。</p>
+            <div className="diff-panel">
+              {renderFieldDiff(aiDiff.fieldKey, aiDiff.oldText, aiDiff.newText, aiDiff.titleCandidates, aiDiff.activeIndex, (index) => setAiDiff(prev => prev && { ...prev, activeIndex: index }), aiDiff.draftTags, (value) => setAiDiff(prev => prev && { ...prev, draftTags: value, newText: value }))}
+            </div>
+            <div className="prompt-config-actions">
+              <button type="button" className="btn-secondary" onClick={() => setAiDiff(null)}>取消</button>
+              <button type="button" className="btn-primary" onClick={applyAiDiff}>应用</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {promptConfigOpen && (
+        <div className="prompt-config-backdrop" onClick={() => setPromptConfigOpen(false)}>
+          <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
+            <button type="button" className="prompt-config-close" onClick={() => setPromptConfigOpen(false)}>×</button>
+            <h3>提示词配置</h3>
+            <p>配置后，标题、正文和话题标签的 AI 生成会优先使用这里的提示词。</p>
+            <div className="prompt-config-form">
+              {NOTE_PROMPT_FIELDS.map(field => (
+                <label key={field.key} className="prompt-config-field"><b>{field.label}</b><span>{field.hint}</span><textarea value={promptDraft[field.key] || ''} onChange={e => setPromptDraft(prev => ({ ...prev, [field.key]: e.target.value }))} /></label>
+              ))}
+            </div>
+            <div className="prompt-config-actions"><button type="button" className="btn-secondary" onClick={resetPromptConfig}>恢复默认</button><button type="button" className="btn-primary" onClick={savePromptConfig}>保存配置</button></div>
+          </div>
+        </div>
+      )}
       {qr && (
         <div className="qr-backdrop" onClick={() => setQr(null)}>
           <div className="qr-modal" onClick={e => e.stopPropagation()}>
@@ -458,6 +776,7 @@ function Workspace({ token }) {
   const [shakeStrengthByTab, setShakeStrengthByTab] = useState({});
   const [shakeFrequencyByTab, setShakeFrequencyByTab] = useState({});
   const [selectedTaskId, setSelectedTaskId] = useState('');
+  const [taskDetailId, setTaskDetailId] = useState('');
   const [lightbox, setLightbox] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [providers, setProviders] = useState([]);
@@ -545,11 +864,12 @@ function Workspace({ token }) {
     setSelectedTaskId(result.id || ''); await refresh();
   }
   function viewTask(taskId) { setSelectedTaskId(taskId); const task = tasks.find(t => t.id === taskId); const targetTab = task ? (task.tab || TYPE_TO_TAB[task.type] || lastToolTab) : lastToolTab; clearedTabs.current.delete(targetTab); setActive(targetTab); setLastToolTab(targetTab); }
+  function openTaskDetail(taskId) { setTaskDetailId(taskId); }
   async function uploadMany(list) {
     if (!list?.length) return;
     const fd = new FormData(); Array.from(list).forEach(file => fd.append('file', file));
     const r = await fetch(`${API}/api/upload/files`, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd });
-    const data = await r.json(); const uploaded = data.files || [];
+    const data = await readJsonResponse(r); const uploaded = data.files || [];
       setFiles(prev => { const seen = new Set(prev.map(f => f.url)); const next = [...prev]; for (const file of uploaded) { if (!seen.has(file.url)) next.push(file); } return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 个素材已保存到本地存储路径。');
   }
   function submitCurrentTask() {
@@ -565,6 +885,7 @@ function Workspace({ token }) {
   const currentTask = tasks.find(t => t.id === selectedTaskId);
   // 侧边栏任务列表只显示当前功能的任务；早期任务可能没有 tab 字段，用 TYPE_TO_TAB 兜底。
   const tabTasks = active === 'dashboard' ? [] : tasks.filter(t => (t.tab || TYPE_TO_TAB[t.type]) === active);
+  const taskDetail = tasks.find(t => t.id === taskDetailId);
   // 不能只看 TAB_TO_TYPE：ai-image / replace-image 不在 TYPE_TO_TAB 的反向映射里，
   // 否则会被误判成文本模式，页面芯片和提交都会错用文本供应商。
   const activeMode = TEXT_TABS.has(active) || FILE_TABS.has(active) ? 'text' : 'image';
@@ -598,13 +919,13 @@ function Workspace({ token }) {
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
           {GROUPS.map(group => <div key={group.id} className="tab-group"><div className="tab-group-label"><span>{group.icon}</span>{group.label}</div><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
           </div>
-          {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{tabTasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => viewTask(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span><span className="sidebar-task-state">{t.status}</span></button></li>)}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
+          {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{tabTasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => openTaskDetail(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span><span className="sidebar-task-state">{t.status}</span></button></li>)}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
         <main className="workspace">
           <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} />
           <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} />
           {active === 'dashboard' ? (
-            <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={viewTask} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} />
+            <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId, nextActiveTextProviderId, nextActiveImageProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); if (nextActiveTextProviderId !== undefined) setActiveTextProviderId(nextActiveTextProviderId || ''); if (nextActiveImageProviderId !== undefined) setActiveImageProviderId(nextActiveImageProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={openTaskDetail} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? null : (
             <section className={'card tool-panel layout-' + layoutVariant + ' ' + (TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default') + ' ' + (isTextFocused ? 'row-text-only' : '')}>
               <div className="panel-row"><div className="panel-cell panel-title-cell"><div className="title-row"><span className="title-label">{activeTabLabel}</span><div className="meta-chips"><span className="meta-chip">任务 {tasks.length}</span>{active !== 'replace-image' && active !== 'ai-image' && <span className="meta-chip provider-chip">{providers.find(p => p.id === selectedProviderId)?.name || '未配置供应商'}</span>}</div>{(active === 'replace-image' || active === 'ai-image') && <div className="option-row title-options"><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={outputCount} onChange={e => setOutputCount(e.target.value)} aria-label="输出数量">{[1,2,3,4].map(n => <option key={n} value={String(n)}>{n} 张</option>)}</select><label className="option-check" title="多张参考图时按图号一一对应生成；需要多张参考图合成一张时取消勾选"><input type="checkbox" checked={perReference} onChange={e => setPerReference(e.target.checked)} /><span>按参考图一一对应</span></label></div>}<div className="title-actions"><select className="model-select" value={selectedModel} onChange={e => setSelectedModels(prev => ({ ...prev, [active]: e.target.value }))} aria-label="本页模型">
@@ -631,6 +952,35 @@ function Workspace({ token }) {
           </div>
         </div>
       )}
+      {taskDetail && (
+        <div className="prompt-config-backdrop task-detail-backdrop" onClick={() => setTaskDetailId('')}>
+          <div className="prompt-config-modal task-detail-modal" onClick={e => e.stopPropagation()}>
+            <button type="button" className="prompt-config-close" onClick={() => setTaskDetailId('')}>×</button>
+            <div className="task-detail-head">
+              <div>
+                <h3>{taskDetail.label || taskDetail.type} · 任务结果</h3>
+                <p>点击任务列表即可查看完整输出；关闭后不会切换或清空当前功能区。</p>
+              </div>
+              <span className={'pill ' + (taskDetail.status === 'failed' ? 'pill-bad' : 'pill-ok')}>
+                {taskDetail.status === 'done' ? '已完成' : taskDetail.status === 'failed' ? '失败' : taskDetail.status === 'queued' ? '排队中' : '处理中'}
+              </span>
+            </div>
+            <div className="task-detail-meta">
+              <span>任务编号 {taskDetail.id.slice(0, 8)}</span>
+              <span>{taskDetail.type}</span>
+              <span>{taskDetail.createdAt ? new Date(taskDetail.createdAt).toLocaleString('zh-CN') : '暂无创建时间'}</span>
+            </div>
+            {taskDetail.error && <div className="task-detail-error">{parseJsonText(taskDetail.error).error || parseJsonText(taskDetail.error).text || taskDetail.error}</div>}
+            <div className="task-detail-result">
+              <TaskResultWithDownload task={taskDetail} />
+            </div>
+            <div className="prompt-config-actions">
+              <button type="button" className="btn-secondary" onClick={() => { setTaskDetailId(''); viewTask(taskDetail.id); }}>在输出区查看</button>
+              <button type="button" className="btn-primary" onClick={() => setTaskDetailId('')}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -642,7 +992,7 @@ function Auth() {
     e.preventDefault(); setError('');
     try {
       const r = await fetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
-      const data = await r.json();
+      const data = await readJsonResponse(r);
       if (!r.ok) throw new Error(data.error || '登录失败');
       localStorage.setItem('token', data.token);
       location.reload();
@@ -665,7 +1015,7 @@ function NotePreviewPage({ noteId }) {
   const [error, setError] = useState('');
   useEffect(() => {
     fetch(API + '/api/notes/' + noteId).then(async r => {
-      const data = await r.json();
+      const data = await readJsonResponse(r);
       if (!r.ok) throw new Error(data.error || '加载失败');
       setNote(data.note);
     }).catch(err => setError(err.message));
@@ -675,7 +1025,7 @@ function NotePreviewPage({ noteId }) {
   return (
     <div className="note-page">
       <article className="note-page-card">
-        <div className="note-page-images">{note.images.map((img, i) => <img key={i} src={resolveImageSrc(img.url)} alt={img.name || ('图片 ' + (i + 1))} />)}</div>
+        <div className="note-page-images">{note.images.map((img, i) => <img key={i} src={resolveImageSrc(img)} alt={img.name || ('图片 ' + (i + 1))} />)}</div>
         <h1>{note.title || '笔记标题'}</h1>
         <p className="note-page-content">{note.content}</p>
         <div className="topic-tags">{note.tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div>

@@ -11,11 +11,25 @@ import { verify } from '../auth.js';
 const conn = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 export const queue = new Queue('ai-tasks', { connection: conn });
 
+// 队列共享上面这个连接，queue.close() 关不掉它；测试需要自己断开，否则进程退不出去。
+export async function closeQueue() {
+  await Promise.allSettled([queue.close(), conn.quit()]);
+}
+
 function typeLabel(type) {
-  if (type === 'image') return 'Image';
-  if (type === 'video') return 'Video';
-  if (type === 'rewrite') return 'Text';
-  return String(type || 'Task');
+  if (type === 'image') return 'AI生图';
+  if (type === 'video') return '实况视频';
+  if (type === 'rewrite') return '文案改写';
+  return String(type || '任务');
+}
+
+function taskName(type, payload) {
+  const purpose = payload && payload.purpose;
+  if (purpose === 'title') return '标题生成';
+  if (purpose === 'content') return '正文生成';
+  if (purpose === 'tags') return '话题标签生成';
+  if (purpose === 'noteImage') return '配图生成';
+  return typeLabel(type);
 }
 
 export async function enqueueTask(type, payload, userId, tab) {
@@ -33,7 +47,7 @@ export async function enqueueTask(type, payload, userId, tab) {
     id,
     userId,
     type,
-    label: `${typeLabel(type)}${sameTypeCount}`,
+    label: `${taskName(type, payload)}${sameTypeCount}`,
     status: 'queued',
     payload: taskPayload,
     providerId: taskPayload.providerId,
@@ -46,7 +60,7 @@ export async function enqueueTask(type, payload, userId, tab) {
     return { id, status: 'queued' };
   } catch (err) {
     const queueError = Object.assign(new Error(err.message || 'queue_error'), { code: 'redis_queue_error', cause: err });
-    await updateTask(id, { status: 'failed', error: JSON.stringify({ error: queueError.message, code: queueError.code }) });
+    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: queueError.message, code: queueError.code }) });
     throw queueError;
   }
 }
