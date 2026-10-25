@@ -26,3 +26,7 @@ web/inspect-plugin.mjs
 web/transform-app.mjs
 web/src/App_backup.jsx
 docs.html
+.agents/
+.mcp.json
+skills-lock.json
+*.backup
