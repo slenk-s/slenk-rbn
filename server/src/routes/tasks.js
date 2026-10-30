@@ -23,12 +23,14 @@ function typeLabel(type) {
   return String(type || '任务');
 }
 
-function taskName(type, payload) {
+function taskName(type, payload, tab) {
   const purpose = payload && payload.purpose;
   if (purpose === 'title') return '标题生成';
   if (purpose === 'content') return '正文生成';
   if (purpose === 'tags') return '话题标签生成';
   if (purpose === 'noteImage') return '配图生成';
+  // 图片任务按来源页签命名：替换生图与 AI 生图共用一个 type=image。
+  if (type === 'image' && tab === 'replace-image') return '替换生图';
   return typeLabel(type);
 }
 
@@ -42,12 +44,14 @@ export async function enqueueTask(type, payload, userId, tab) {
   const taskPayload = { ...aiPayload, providerId: aiPayload.providerId || active?.id || null };
   const id = nanoid(16);
   const now = new Date().toISOString();
-  const sameTypeCount = (await listTasks(userId)).filter(t => t.type === type).length + 1;
+  const sameTypeCount = (await listTasks(userId))
+    .filter(t => t.type === type && (type !== 'image' || (t.tab || null) === sourceTab))
+    .length + 1;
   await addTask({
     id,
     userId,
     type,
-    label: `${taskName(type, payload)}${sameTypeCount}`,
+    label: `${taskName(type, payload, sourceTab)}${sameTypeCount}`,
     status: 'queued',
     payload: taskPayload,
     providerId: taskPayload.providerId,
