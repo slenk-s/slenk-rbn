@@ -5,8 +5,8 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "dev": "node --watch src/index.js",
-    "queue": "node --watch src/worker.js",
+    "dev": "node --watch --watch-path=src src/index.js",
+    "queue": "node --watch --watch-path=src src/worker.js",
     "test:db": "node scripts/test-db-up.mjs",
     "test": "node --test"
   },
