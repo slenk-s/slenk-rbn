@@ -65,11 +65,64 @@ async function resolveProvider(payload, mode, userId) {
   return provider;
 }
 
-function providerRequest(provider, pathname, body) {
+function providerRequest(provider, pathname, body, { formData, timeoutMs } = {}) {
   if (!provider.baseUrl) throw new Error('供应商 baseUrl 为空');
   if (!provider.apiKey) throw new Error('供应商 API Key 为空');
   const url = new URL(pathname.replace(/^\//, ''), `${provider.baseUrl.replace(/\/$/, '')}/`);
-  return fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${provider.apiKey}`, accept: 'application/json' }, body: JSON.stringify(body) });
+  const headers = { authorization: `Bearer ${provider.apiKey}`, accept: 'application/json' };
+  let payload;
+  if (formData) {
+    // multipart 的 boundary 由 fetch 自动生成，手动设 content-type 反而会让服务端解析失败。
+    payload = formData;
+  } else {
+    headers['content-type'] = 'application/json';
+    payload = JSON.stringify(body);
+  }
+  const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+  return fetch(url, { method: 'POST', headers, body: payload, signal });
+}
+
+// 中转站文档建议 timeout >= 300s：单次生成通常 120s，复杂 4K + high 可达 180–240s。
+const IMAGE_REQUEST_TIMEOUT_MS = 300 * 1000;
+// 429 限流与网关 5xx 做指数退避重试（文档建议）；其他 4xx（如 contentFilter）直接报错。
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [5000, 20000, 60000];
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 图像请求统一入口：超时 + 退避重试。body 为 JSON 对象，或传 parts 走 multipart。
+async function imageRequest(provider, pathname, { body, parts } = {}) {
+  let formData = null;
+  if (parts) {
+    formData = new FormData();
+    for (const [key, value] of Object.entries(body || {})) {
+      if (value !== undefined && value !== null) formData.set(key, String(value));
+    }
+    parts.forEach((part, index) => {
+      const field = parts.length === 1 ? 'image' : 'image[]';
+      const ext = part.mime === 'image/jpeg' ? 'jpg' : (part.mime.split('/')[1] || 'png');
+      formData.append(field, new Blob([part.buf], { type: part.mime }), `ref-${index + 1}.${ext}`);
+    });
+  }
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await providerRequest(provider, pathname, body, { formData, timeoutMs: IMAGE_REQUEST_TIMEOUT_MS });
+    } catch (err) {
+      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+        throw new Error(`生成超时（>${IMAGE_REQUEST_TIMEOUT_MS / 1000}s），中转站可能仍在排队，请稍后重试`);
+      }
+      if (attempt >= RETRY_DELAYS_MS.length) throw err;
+      console.warn(`[worker] image request network error, retry ${attempt + 1} in ${RETRY_DELAYS_MS[attempt]}ms:`, err.message);
+      await sleep(RETRY_DELAYS_MS[attempt]);
+      continue;
+    }
+    if (!RETRYABLE_STATUS.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
+    console.warn(`[worker] image request HTTP ${res.status}, retry ${attempt + 1} in ${RETRY_DELAYS_MS[attempt]}ms`);
+    await sleep(RETRY_DELAYS_MS[attempt]);
+  }
 }
 
 function mimeFromPath(filePath) {
@@ -158,31 +211,36 @@ async function normalizeReferenceBuffer(buf) {
   return output;
 }
 
-// 参考图统一入口：先按规格规范化，再包成 Data URL；规范化失败时退回原图。
-async function referenceDataUrl(buf, fallbackMime) {
+// 参考图规范化后包一层：data URL 模式包成 Data URL，multipart 模式直接拿 buffer。
+async function referencePart(buf, fallbackMime) {
   const normalized = await normalizeReferenceBuffer(buf).catch(err => {
     console.warn('[worker] reference normalize skipped:', err.message);
     return null;
   });
-  if (!normalized) return dataUrlFromBuffer(buf, fallbackMime);
+  if (!normalized) return { buf, mime: sniffImageMime(buf) || fallbackMime || 'image/png' };
   console.log('[worker] reference normalized', JSON.stringify({ bytesIn: buf.length, bytesOut: normalized.length }));
-  return dataUrlFromBuffer(normalized, 'image/jpeg');
+  return { buf: normalized, mime: 'image/jpeg' };
 }
 
-// 参考图必须以公网 URL 或完整 Data URL 的形式提交，裸 base64 与本地路径都不被接受。
-async function readImageAsDataUrl(value) {
+async function referenceDataUrl(buf, fallbackMime) {
+  const part = await referencePart(buf, fallbackMime);
+  return dataUrlFromBuffer(part.buf, part.mime);
+}
+
+// 读取参考图原始字节：data URL / 本地缓存 / 公网 URL / 裸 base64 四种来源统一成 { buf, fallbackMime }。
+async function readImageSource(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
   if (/^data:image\//i.test(raw)) {
     const match = raw.match(/^data:([^;,]*);base64,(.*)$/is);
-    if (!match) return raw;
-    return referenceDataUrl(Buffer.from(match[2].replace(/\s/g, ''), 'base64'), match[1]);
+    if (!match) return null;
+    return { buf: Buffer.from(match[2].replace(/\s/g, ''), 'base64'), fallbackMime: match[1] };
   }
   if (/^\/(?:notes-images|uploads|videos)\//i.test(raw)) {
     // 智能识别已把远端图片缓存到本地；这里直接读缓存，不再回源，也避免前端走代理预览。
     const safeName = path.basename(raw);
     const localPath = path.resolve(raw.startsWith('/notes-images/') ? notesImagesDir : raw.startsWith('/uploads/') ? uploadDir : videoDir, safeName);
-    if (fs.existsSync(localPath)) return referenceDataUrl(fs.readFileSync(localPath), mimeFromPath(localPath));
+    if (fs.existsSync(localPath)) return { buf: fs.readFileSync(localPath), fallbackMime: mimeFromPath(localPath) };
     return null;
   }
   if (/^https?:\/\//i.test(raw)) {
@@ -195,26 +253,54 @@ async function readImageAsDataUrl(value) {
     });
     if (!res.ok) throw new Error(`参考图下载失败（HTTP ${res.status}）`);
     const type = (res.headers.get('content-type') || '').split(';')[0].trim();
-    const buf = Buffer.from(await res.arrayBuffer());
-    return referenceDataUrl(buf, /^image\//i.test(type) ? type : '');
+    return { buf: Buffer.from(await res.arrayBuffer()), fallbackMime: /^image\//i.test(type) ? type : '' };
   }
   const filePath = path.resolve(uploadDir, path.basename(raw));
   if (fs.existsSync(filePath)) {
-    return referenceDataUrl(fs.readFileSync(filePath), mimeFromPath(filePath));
+    return { buf: fs.readFileSync(filePath), fallbackMime: mimeFromPath(filePath) };
   }
-  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return referenceDataUrl(Buffer.from(raw.replace(/\s/g, ''), 'base64'), '');
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw)) return { buf: Buffer.from(raw.replace(/\s/g, ''), 'base64'), fallbackMime: '' };
   return null;
 }
 
-// 生图接口要求宽高为 32 的倍数、在 [512,4096] 内、宽高比不超过 3:1；空值交给服务端自动判断。
+// 参考图必须以公网 URL 或完整 Data URL 的形式提交，裸 base64 与本地路径都不被接受。
+async function readImageAsDataUrl(value) {
+  const src = await readImageSource(value);
+  if (!src) return null;
+  return referenceDataUrl(src.buf, src.fallbackMime);
+}
+
+// GPT-image 中转站的 /images/edits 要 multipart 文件，不是 Data URL。
+async function readImagePart(value) {
+  const src = await readImageSource(value);
+  if (!src) return null;
+  return referencePart(src.buf, src.fallbackMime);
+}
+
+// 生图尺寸取各供应商约束的交集：32 的倍数（自然是 16 的倍数）、宽高比 ≤3:1、
+// 长边 ≤3840（GPT-image 中转站上限）、总像素 655,360~8,294,400；空值交给服务端自动判断。
+const SIZE_MIN_PIXELS = 655360;
+const SIZE_MAX_PIXELS = 8294400;
 function normalizeImageSize(value) {
   const match = String(value || '').trim().match(/^(\d+)x(\d+)$/);
   if (!match) return 'auto';
-  const snap = n => Math.max(512, Math.min(4096, Math.round(Number(n) / 32) * 32));
+  const snap = n => Math.max(512, Math.min(3840, Math.round(Number(n) / 32) * 32));
   let width = snap(match[1]);
   let height = snap(match[2]);
   if (width / height > 3) width = snap(height * 3);
   if (height / width > 3) height = snap(width * 3);
+  const pixels = width * height;
+  if (pixels > SIZE_MAX_PIXELS) {
+    // 等比缩到上限内（向下取整保证不越界）。
+    const k = Math.sqrt(SIZE_MAX_PIXELS / pixels);
+    width = Math.max(512, Math.floor(width * k / 32) * 32);
+    height = Math.max(512, Math.floor(height * k / 32) * 32);
+  } else if (pixels < SIZE_MIN_PIXELS) {
+    // 等比放到下限以上（向上取整保证达标），例如 512x512 → 832x832。
+    const k = Math.sqrt(SIZE_MIN_PIXELS / pixels);
+    width = Math.min(3840, Math.ceil(width * k / 32) * 32);
+    height = Math.min(3840, Math.ceil(height * k / 32) * 32);
+  }
   return `${width}x${height}`;
 }
 
@@ -229,6 +315,19 @@ async function loadReferenceDataUrls(payload) {
   }
   if (!urls.length) throw new Error('参考图读取失败，无法提交给模型，请重新上传。');
   return urls;
+}
+
+// form 模式（GPT-image 中转站）的参考图：multipart 文件而不是 Data URL。
+async function loadReferenceParts(payload) {
+  const refs = collectReferenceImages(payload);
+  if (!refs.length) return [];
+  const parts = [];
+  for (const ref of refs) {
+    const part = await readImagePart(ref);
+    if (part) parts.push(part);
+  }
+  if (!parts.length) throw new Error('参考图读取失败，无法提交给模型，请重新上传。');
+  return parts;
 }
 
 function errorFromApi(data, response, fallback) {
@@ -315,23 +414,35 @@ async function runImage(payload, provider, id) {
   // 尺寸交给模型的必须是合法值（32 的倍数 / 比例 ≤3:1），画布选项才真正生效。
   const size = normalizeImageSize(payload.canvasSize);
   const model = payload.model || provider.imageModel;
-  const referenceImages = await loadReferenceDataUrls(payload);
+  // form 模式（GPT-image 中转站）：编辑接口只收 multipart 文件，响应始终是 b64_json。
+  const useFormApi = provider.imageApi === 'form';
+  const referenceImages = useFormApi ? [] : await loadReferenceDataUrls(payload);
+  const referenceParts = useFormApi ? await loadReferenceParts(payload) : [];
+  const referenceCount = useFormApi ? referenceParts.length : referenceImages.length;
   // 有参考图必须走 /images/edits：/images/generations 的 image 字段会被服务端静默忽略。
-  const pathname = referenceImages.length ? '/images/edits' : '/images/generations';
+  const pathname = referenceCount ? '/images/edits' : '/images/generations';
   // 每张参考图单独一次编辑请求，count 是每张参考图的张数，最终张数 = 参考图数 x count。
-  const perReference = pathname === '/images/edits' && referenceImages.length > 1 && payload.perReference !== false;
-  const requests = perReference ? referenceImages.length * count : count;
-  const splitPrompts = perReference ? splitPromptByReference(prompt, referenceImages.length) : null;
+  const perReference = pathname === '/images/edits' && referenceCount > 1 && payload.perReference !== false;
+  const requests = perReference ? referenceCount * count : count;
+  const splitPrompts = perReference ? splitPromptByReference(prompt, referenceCount) : null;
   const referenceIndexes = [];
   const images = [];
   let lastData = {};
-  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, references: referenceImages.length, perReference, requests }));
+  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests }));
   for (let i = 0; i < requests; i++) {
-    const refIndex = perReference ? (i % referenceImages.length) : -1;
-    const refsForThis = refIndex >= 0 ? [referenceImages[refIndex]] : referenceImages;
-    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n: 1, size, watermark: false };
-    if (refsForThis.length) body.images = refsForThis.map(image_url => ({ image_url }));
-    const res = await providerRequest(provider, pathname, body);
+    const refIndex = perReference ? (i % referenceCount) : -1;
+    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n: 1, size };
+    let res;
+    if (useFormApi) {
+      const partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
+      // 中转站文档只列出 model/prompt/n/size 等字段，watermark 这类 SenseNova 扩展不带。
+      res = await imageRequest(provider, pathname, { body, parts: partsForThis.length ? partsForThis : null });
+    } else {
+      const refsForThis = refIndex >= 0 ? [referenceImages[refIndex]] : referenceImages;
+      body.watermark = false;
+      if (refsForThis.length) body.images = refsForThis.map(image_url => ({ image_url }));
+      res = await imageRequest(provider, pathname, { body });
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
     lastData = data;
@@ -345,7 +456,7 @@ async function runImage(payload, provider, id) {
   const result = { images, image: images[0], raw: lastData };
   if (perReference) {
     result.perReference = true;
-    result.referenceCount = referenceImages.length;
+    result.referenceCount = referenceCount;
     result.imageReferences = referenceIndexes;
     result.splitPrompts = splitPrompts;
   }

@@ -127,7 +127,7 @@ const UPLOAD_ACCEPT = {
   video: 'video/mp4,video/quicktime,video/webm',
   all: 'image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.docx,.txt,.md'
 };
-const EMPTY_PROVIDER = { name: '', providerType: 'openai-compatible', appType: 'openai', baseUrl: '', apiKey: '', textModel: 'gpt-4o-mini', imageModel: 'gpt-image-1', notes: '', active: false };
+const EMPTY_PROVIDER = { name: '', providerType: 'openai-compatible', appType: 'openai', baseUrl: '', apiKey: '', textModel: 'gpt-4o-mini', imageModel: 'gpt-image-1', imageApi: 'json', notes: '', active: false };
 
 async function readJsonResponse(r) {
   const text = await r.text();
@@ -289,8 +289,8 @@ function ProviderManager({ token, activeProviderId, activeTextProviderId, active
       setMessage(editingId ? '供应商已更新。' : '供应商已添加。'); resetForm();
     } catch (err) { setMessage(err.message); }
   }
-  function editProvider(provider) { setEditingId(provider.id); setForm({ name: provider.name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: Boolean(provider.active) }); setAvailableModels([provider.appType === 'text' ? provider.textModel : provider.imageModel].filter(Boolean)); }
-  function copyProvider(provider) { const base = provider.name || '供应商'; let index = 1; let name = base + '-' + index; while (providers.some(p => p.name === name)) { index += 1; name = base + '-' + index; } setForm({ name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', notes: provider.notes || '', active: false }); setEditingId(provider.id); }
+  function editProvider(provider) { setEditingId(provider.id); setForm({ name: provider.name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', imageApi: provider.imageApi || 'json', notes: provider.notes || '', active: Boolean(provider.active) }); setAvailableModels([provider.appType === 'text' ? provider.textModel : provider.imageModel].filter(Boolean)); }
+  function copyProvider(provider) { const base = provider.name || '供应商'; let index = 1; let name = base + '-' + index; while (providers.some(p => p.name === name)) { index += 1; name = base + '-' + index; } setForm({ name, providerType: provider.providerType, appType: provider.appType, baseUrl: provider.baseUrl, apiKey: '', textModel: provider.textModel, imageModel: provider.imageModel || '', imageApi: provider.imageApi || 'json', notes: provider.notes || '', active: false }); setEditingId(provider.id); }
   async function refreshProviders(messageText) { const next = await api('/api/providers', { token }); await onProviderChange(next.providers, next.activeProviderId, next.activeTextProviderId, next.activeImageProviderId); setMessage(messageText || '已切换供应商'); }
   async function activateProvider(provider) { await api('/api/providers/' + provider.id + '/active', { method: 'POST', token, body: JSON.stringify({ mode: provider.appType === 'text' ? 'text' : 'image' }) }); await refreshProviders('已切换供应商。'); }
   async function duplicateProvider() {
@@ -301,7 +301,7 @@ function ProviderManager({ token, activeProviderId, activeTextProviderId, active
       await onProviderChange(created.providers, created.activeProviderId, created.activeTextProviderId, created.activeImageProviderId);
       setMessage('供应商已复制新增。');
       const next = created.providers.find(p => p.id === created.provider?.id);
-      if (next) { setEditingId(next.id); setForm({ name: next.name, providerType: next.providerType, appType: next.appType, baseUrl: next.baseUrl, apiKey: '', textModel: next.textModel, imageModel: next.imageModel || '', notes: next.notes || '', active: false }); }
+      if (next) { setEditingId(next.id); setForm({ name: next.name, providerType: next.providerType, appType: next.appType, baseUrl: next.baseUrl, apiKey: '', textModel: next.textModel, imageModel: next.imageModel || '', imageApi: next.imageApi || 'json', notes: next.notes || '', active: false }); }
     } catch (err) { setMessage(err.message); }
   }
   const activeProvider = providers.find(p => p.id === activeProviderId);
@@ -320,10 +320,13 @@ function ProviderManager({ token, activeProviderId, activeTextProviderId, active
           <label className="field"><b>API Key</b><input type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder={editingId ? '留空则保持不变' : '填写密钥'} /></label>
           <label className="field"><b>API 请求地址</b><input type="text" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.sensenova.cn/v1" /></label>
           <div className="model-row"><b>默认模型</b><div className="model-wrap"><select value={form.appType === 'text' ? form.textModel : form.imageModel} onChange={e => setForm(form.appType === 'text' ? { ...form, textModel: e.target.value } : { ...form, imageModel: e.target.value })}><option value="">未选择</option>{availableModels.map(m => <option key={m} value={m}>{m}</option>)}</select></div></div>
+          {form.appType !== 'text' && (
+            <div className="model-row"><b>生图接口</b><div className="model-wrap"><select value={form.imageApi} onChange={e => setForm({ ...form, imageApi: e.target.value })}><option value="json">OpenAI JSON 兼容（默认）</option><option value="form">GPT-image 中转站（multipart 编辑）</option></select></div></div>
+          )}
           <div className="actions-row"><button type="button" className="btn-secondary" onClick={clearForm}>{editingId ? '取消编辑' : '清空'}</button><button type="button" className="btn-ghost" onClick={fetchModels}>获取模型</button></div>
           <div className={editingId ? 'actions-row actions-row-bottom actions-row-edit' : 'actions-row actions-row-bottom'}><button type="submit" className="btn-primary">{editingId ? '保存修改' : '创建'}</button>{editingId && <button type="button" className="btn-ghost" onClick={duplicateProvider}>复制新增</button>}</div>
         </form>
-        <div className="provider-list-block"><div className="list-head"><h3>供应商列表</h3><span className="count">{providers.length} 个</span></div><ul className="providers">{providers.map(p => <li key={p.id} className={p.id === activeProviderId ? 'active' : ''}><div className="p-name"><b>{p.name}</b><span className={"mode-tag" + (p.appType === 'text' ? '' : ' image')}>{p.appType === 'text' ? '文本' : '生图'}</span></div><div className="row-btns"><button type="button" onClick={() => editProvider(p)}>编辑</button><button type="button" className="danger" onClick={async () => { await api('/api/providers/' + p.id, { method: 'DELETE', token }); await refreshProviders('供应商已删除。'); }}>删除</button><button type="button" className={(p.appType === 'text' ? p.id === activeTextProviderId : p.id === activeImageProviderId) ? 'active' : ''} onClick={() => activateProvider(p)}>{(p.appType === 'text' ? p.id === activeTextProviderId : p.id === activeImageProviderId) ? '已启用' : '启用'}</button></div></li>)}</ul></div>
+        <div className="provider-list-block"><div className="list-head"><h3>供应商列表</h3><span className="count">{providers.length} 个</span></div><ul className="providers">{providers.map(p => <li key={p.id} className={p.id === activeProviderId ? 'active' : ''}><div className="p-name"><b>{p.name}</b><span className={"mode-tag" + (p.appType === 'text' ? '' : ' image')}>{p.appType === 'text' ? '文本' : '生图'}</span>{p.imageApi === 'form' && <span className="mode-tag relay">中转</span>}</div><div className="row-btns"><button type="button" onClick={() => editProvider(p)}>编辑</button><button type="button" className="danger" onClick={async () => { await api('/api/providers/' + p.id, { method: 'DELETE', token }); await refreshProviders('供应商已删除。'); }}>删除</button><button type="button" className={(p.appType === 'text' ? p.id === activeTextProviderId : p.id === activeImageProviderId) ? 'active' : ''} onClick={() => activateProvider(p)}>{(p.appType === 'text' ? p.id === activeTextProviderId : p.id === activeImageProviderId) ? '已启用' : '启用'}</button></div></li>)}</ul></div>
       </div>
     </section>
   );

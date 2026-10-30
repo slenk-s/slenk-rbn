@@ -1553,6 +1553,9 @@ button:hover { transform: translateY(-1px); }
 .provider-list-block .mode-tag.image {
   background: rgba(236,72,153,0.10); color: #db2777;
 }
+.provider-list-block .mode-tag.relay {
+  background: rgba(16,185,129,0.12); color: #059669;
+}
 .provider-list-block .row-btns { display: inline-flex; gap: 6px; width: 100%; justify-content: flex-end; }
 .provider-list-block .row-btns button { flex: 1; }
 .provider-list-block .row-btns button {

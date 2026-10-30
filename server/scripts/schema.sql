@@ -24,6 +24,8 @@ create table if not exists slenk_notes_providers (
   mode text not null default 'image',
   text_model text not null default '',
   image_model text not null default '',
+  -- 生图接口形态：json = OpenAI 兼容 JSON（SenseNova 等）；form = GPT-image 中转站（编辑走 multipart/form-data）。
+  image_api text not null default 'json',
   notes text not null default '',
   is_active boolean not null default false,
   created_at timestamptz not null default now(),
@@ -58,6 +60,9 @@ create table if not exists slenk_notes_notes (
 );
 create index if not exists slenk_notes_notes_user_created_idx
   on slenk_notes_notes (user_id, created_at desc);
+
+-- Upgrades for databases created before a column existed. Safe to re-run.
+alter table slenk_notes_providers add column if not exists image_api text not null default 'json';
 
 -- Access model: the backend connects as the table owner and is the only client.
 -- RLS with no policies keeps anon/authenticated at zero rows, but Supabase grants

@@ -31,8 +31,11 @@ FFMPEG_FFPROBE_PATH=E:/FFmpeg/ffprobe.exe
 - 添加 / 编辑 / 删除供应商
 - 设置 Base URL、API Key、文案模型、图片模型
 - 切换当前启用供应商
-- 内置预设：OpenAI、OpenRouter、DeepSeek、Groq、SenseNova 开放平台
+- 内置预设：OpenAI、OpenRouter、DeepSeek、Groq、SenseNova 开放平台、GPT-image 中转站
 - 后端支持 OpenAI-compatible `/chat/completions` 和 `/images/generations`
+- 生图供应商可选「生图接口」形态：
+  - `OpenAI JSON 兼容`（默认）：图生图走 JSON + Data URL（SenseNova 等）。
+  - `GPT-image 中转站（multipart 编辑）`：文生图走 `/images/generations` JSON；图生图走 `/images/edits` 的 multipart/form-data（单图字段 `image`，多图 `image[]`）；响应按 `b64_json` 解析；请求超时 300s，429/5xx 自动指数退避重试。模型填 `turing/gpt-image-2`、`turing/gpt-image-2.5-flare`（快）或 `turing/gpt-image-2.5-sunburst`（画质）。
 
 ## 数据层（Supabase Postgres）
 

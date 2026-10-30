@@ -160,7 +160,7 @@ async function deleteTask(userId, id) {
 }
 
 const PROVIDER_COLUMNS = `id, name, provider_type, app_type, base_url, api_key, mode,
-  text_model, image_model, notes, is_active, created_at, updated_at`;
+  text_model, image_model, image_api, notes, is_active, created_at, updated_at`;
 
 function mapProvider(row) {
   return {
@@ -173,6 +173,7 @@ function mapProvider(row) {
     mode: row.mode,
     textModel: row.text_model,
     imageModel: row.image_model,
+    imageApi: row.image_api,
     notes: row.notes,
     active: row.is_active,
     createdAt: row.created_at,
@@ -202,6 +203,7 @@ function providerValues(input = {}, id) {
     mode: String(input.mode || 'image').trim() || 'image',
     textModel: String(input.textModel || '').trim(),
     imageModel: String(input.imageModel || '').trim(),
+    imageApi: input.imageApi === 'form' ? 'form' : 'json',
     notes: String(input.notes || ''),
     active: Boolean(input.active)
   };
@@ -226,9 +228,9 @@ async function addProvider(input) {
   const p = providerValues(input);
   const { rows } = await query(
     `insert into slenk_notes_providers
-       (id, name, provider_type, app_type, base_url, api_key, mode, text_model, image_model, notes, is_active)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning ${PROVIDER_COLUMNS}`,
-    [p.id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode, p.textModel, p.imageModel, p.notes, p.active]
+       (id, name, provider_type, app_type, base_url, api_key, mode, text_model, image_model, image_api, notes, is_active)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning ${PROVIDER_COLUMNS}`,
+    [p.id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode, p.textModel, p.imageModel, p.imageApi, p.notes, p.active]
   );
   return withMaskedKey(mapProvider(rows[0]));
 }
@@ -240,9 +242,9 @@ async function updateProvider(id, input) {
   if (!p.apiKey || p.apiKey === maskApiKey(existing.apiKey)) p.apiKey = existing.apiKey;
   const { rows } = await query(
     `update slenk_notes_providers set name=$2, provider_type=$3, app_type=$4, base_url=$5, api_key=$6,
-       mode=$7, text_model=$8, image_model=$9, notes=$10, is_active=$11, updated_at = now()
+       mode=$7, text_model=$8, image_model=$9, image_api=$10, notes=$11, is_active=$12, updated_at = now()
      where id = $1 returning ${PROVIDER_COLUMNS}`,
-    [id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode, p.textModel, p.imageModel, p.notes, p.active]
+    [id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode, p.textModel, p.imageModel, p.imageApi, p.notes, p.active]
   );
   return withMaskedKey(mapProvider(rows[0]));
 }

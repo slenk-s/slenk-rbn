@@ -53,7 +53,19 @@ export const PROVIDER_PRESETS = [
     appType: 'openai',
     baseUrl: 'https://token.sensenova.cn/v1',
     textModel: 'sensenova-6.8-flash-lite',
-    imageModel: 'sensenova-u1.5-lite'
+    imageModel: 'sensenova-u1.5-lite',
+    imageApi: 'json'
+  },
+  {
+    name: 'GPT-image 中转站',
+    providerType: 'openai-compatible',
+    appType: 'openai',
+    // 中转站地址由用户填写，例如 https://your-relay.example/v1
+    baseUrl: '',
+    textModel: '',
+    imageModel: 'turing/gpt-image-2.5-flare',
+    imageApi: 'form',
+    notes: 'GPT-image-2 / 2.5 中转站：文生图走 JSON，图生图走 multipart，响应只有 b64_json。可选模型：turing/gpt-image-2、turing/gpt-image-2.5-flare（快）、turing/gpt-image-2.5-sunburst（画质）。'
   }
 ];
 
@@ -154,6 +166,7 @@ router.post('/:id/duplicate', requireAdmin, async (req, res, next) => {
       mode: existing.mode,
       textModel: existing.textModel,
       imageModel: existing.imageModel,
+      imageApi: existing.imageApi,
       notes: existing.notes,
       active: false
     });
