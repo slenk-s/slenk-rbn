@@ -2539,3 +2539,27 @@ button:hover { transform: translateY(-1px); }
 
 .field-actions { display: inline-flex; gap: 8px; margin-left: auto; }
 .field-meta .field-actions { margin-left: auto; }
+
+/* 全局状态提示：底部居中浮动弹窗，自动消失 */
+.status-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70vw;
+  padding: 10px 18px;
+  border-radius: 12px;
+  background: rgba(16, 24, 40, 0.92);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
+  z-index: 2000;
+  animation: status-toast-in 0.18s ease-out;
+  pointer-events: none;
+}
+@keyframes status-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}

@@ -37,8 +37,8 @@ const SECTION_HINTS = {
   'note-download':{ options: '选择整理画布比例。', text: '粘贴小红书商品链接。', upload: '上传商品相关图片。', result: '商品图片可下载。' },
 };
 const PROMPTS = {
-  'replace-image': '请基于上传图片生成一张可用于小红书笔记封面的替换版图片。\n保持原图主体构图和比例，替换画面中的主体/背景/商品细节，使其更符合笔记封面风格。\n要求：画面干净、视觉重点突出、不要加入无关文字、不要改变输出画幅。',
-  'ai-image': '请生成一张适合小红书笔记使用的原创图片。\n要求：构图简洁、主体明确、色彩舒服、适合封面展示。\n不要加入文字，不要水印，不要乱码。',
+  'replace-image': '请基于上传图片生成一张可用于小红书笔记封面的替换版图片，成片要像真实用户用手机随手拍的照片，而不是精修广告图。\n保持原图主体构图和比例，替换画面中的主体/背景/商品细节，使其更符合真实生活场景。\n要求：自然光线、质感真实，允许轻微噪点、色差和不完美的小细节；避免影棚布光、塑料质感、过度磨皮、过分对称的摆拍感。\n不要加入无关文字，不要改变输出画幅。',
+  'ai-image': '请生成一张适合小红书笔记使用的原创图片，整体是手机实拍的生活记录感，不要商业精修图。\n要求：自然光线、真实生活场景、主体明确、构图随意但舒服，允许轻微噪点、色差和不完美细节。\n避免影棚布光、塑料质感、过度磨皮和过分完美的摆拍感。\n不要加入文字，不要水印，不要乱码。',
   'live-video': '请基于上传素材生成一段自然、克制的算法运镜视频。\n镜头运动保持轻微推拉和呼吸感，适合做小红书实况封面或笔记动态预览。\n要求：不要夸张抖动，不要裁切主体，保持画面稳定。',
   'note-rewrite': '请把输入笔记改写成更自然、更适合小红书发布的版本。\n保持原意，增强画面感、真实感和代入感，不要夸大，不要营销腔过重。\n输出要求：一段正文 + 3 个可选标题 + 8 个相关标签。',
   'multiply': '请描述你希望叠加的图片关系。\n工具用途：把多张素材按正片叠底思路整理，适合做纹理、色块、氛围层。',
@@ -71,6 +71,7 @@ const DEFAULT_NOTE_PROMPTS = {
 - 避免“私信”“加微信”“二维码”“领取资料”等引流违规表达。
 - 5 个标题分别使用不同切入角度，避免只换词不换意思。
 - 可自然使用 1 个 emoji，但不堆砌。
+- 避免模板化标题套路（如"我不允许还有人不知道""家人们谁懂啊"），像真人随手起的口语标题。
 不要解释，不要输出 JSON，直接按以下样式输出：
 1. 标题
 2. 标题
@@ -84,6 +85,7 @@ const DEFAULT_NOTE_PROMPTS = {
 3. 互动结尾：用一个自然的开放式问题收束，不要写“欢迎评论区告诉我”这类硬引导。
 写作要求：
 - 语气像真实用户分享，少说明书腔，少广告腔，多用具体动作、细节和结果。
+- 避免"首先/其次/再者/最后/总而言之"这类结构化连接词，避免排比句和总分总作文腔；允许短句、碎句和口语化的跳跃表达，像真人随手记录。
 - 把抽象形容词改成可感知描述，例如把“很好用”改写成具体时间、动作或变化。
 - 保持事实准确，不编造数据、销量、认证、价格、案例、身份和功效。
 - 每段 1-2 句，正文控制在 100-200 个中文字符，适合小红书短平快阅读。
@@ -508,6 +510,24 @@ function extractStringArray(raw, fallbackKey) {
   const numbered = source.match(/(?:^|\n)\s*(?:[-*]|\d+\s*[.)、．])\s*[^\n]+/g);
   return numbered ? extractListItems(numbered, 8) : [];
 }
+// 全局提示：底部居中的浮动弹窗，自动消失，替代原来的页脚常驻文字。
+function useStatusToast(duration = 3200) {
+  const [status, setStatusText] = useState('');
+  const timer = useRef(null);
+  const setStatus = useCallback((msg) => {
+    setStatusText(msg);
+    if (timer.current) clearTimeout(timer.current);
+    if (msg) timer.current = setTimeout(() => setStatusText(''), duration);
+  }, [duration]);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return [status, setStatus];
+}
+
+function StatusToast({ text }) {
+  if (!text) return null;
+  return <div className="status-toast" role="status">{text}</div>;
+}
+
 function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const isDownload = mode === 'download';
   const linkLabel = isDownload ? '商品链接' : '笔记链接';
@@ -518,7 +538,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const [tags, setTags] = useState([]);
   const [tagInput, setTagInput] = useState('');
   const [images, setImages] = useState([]);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useStatusToast();
   const [dragIndex, setDragIndex] = useState(null);
   const [qr, setQr] = useState(null);
   const [notePrompts, setNotePrompts] = useState(loadNotePrompts);
@@ -715,7 +735,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           <div className="publish-actions"><button className="btn-primary" onClick={() => setStatus('当前笔记草稿已保存到前端状态：' + title + ' / ' + tags.length + ' 个标签 / ' + images.length + ' 张图片。')}>保存笔记</button><button className="btn-secondary" onClick={() => setStatus('飞书同步功能待接入当前工作台的发布 API。')}>同步飞书</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
         </aside>)}
       </div>
-      <footer className="status note-status">{status}</footer>
+      <StatusToast text={status} />
 {aiDiff && (
         <div className="prompt-config-backdrop ai-diff-backdrop" onClick={() => setAiDiff(null)}>
           <div className="prompt-config-modal ai-diff-modal" onClick={e => e.stopPropagation()}>
@@ -787,7 +807,7 @@ function Workspace({ token }) {
   const [activeProviderId, setActiveProviderId] = useState('');
   const [activeTextProviderId, setActiveTextProviderId] = useState('');
   const [activeImageProviderId, setActiveImageProviderId] = useState('');
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useStatusToast();
   const [me, setMe] = useState(null);
   const activeTab = TABS.find(tab => tab.id === active) || TABS[0];
   const activeTabLabel = activeTab.label;
@@ -945,7 +965,7 @@ function Workspace({ token }) {
           )}
         </main>
       </div>
-      <footer className="status">{status}</footer>
+      <StatusToast text={status} />
       {lightbox && (
         <div className="lightbox-backdrop" onClick={() => setLightbox(null)}>
           <div className="lightbox-body" onClick={e => e.stopPropagation()}>

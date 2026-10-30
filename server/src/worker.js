@@ -370,7 +370,10 @@ async function extractImageAsset(data, id, index) {
   else throw new Error('AI 图片返回格式无法识别');
   const suffix = index > 0 ? '-p' + index : '';
   const out = path.join(videoDir, `${id}${suffix}.png`);
-  fs.writeFileSync(out, buffer);
+  // 重新编码剥掉 EXIF/XMP/ICC/文本块：部分上游会在图里写生成工具标记，带着发布容易被平台当成 AI 图。
+  let clean = buffer;
+  try { clean = await sharp(buffer).png().toBuffer(); } catch { /* 解码失败就按原样保存 */ }
+  fs.writeFileSync(out, clean);
   return `/videos/${path.basename(out)}`;
 }
 
