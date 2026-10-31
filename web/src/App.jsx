@@ -1026,8 +1026,8 @@ function Auth() {
     <div className="auth-screen">
       <form className="auth-card" onSubmit={login}>
         <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>
-        <label>用户名<input value={username} onChange={e => setUsername(e.target.value)} placeholder="admin" required /></label>
-        <label>密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="123456" required /></label>
+        <label>用户名<input value={username} onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" required /></label>
+        <label>密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" required /></label>
         {error && <p className="auth-error">{error}</p>}
         <button className="btn-primary" type="submit">登录</button>
       </form>
