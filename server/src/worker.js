@@ -38,12 +38,6 @@ function parseDuration(payload) {
   return Math.max(1, Math.min(30, Number(payload.duration) || 3));
 }
 
-function shouldUseStillImageLoop(payload) {
-  const { width, height } = parseCanvasSize(payload.canvasSize);
-  const duration = parseDuration(payload);
-  return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 && duration >= 2;
-}
-
 
 const ffmpegPath = resolveExisting(process.env.FFMPEG_PATH) || (fs.existsSync('E:/FFmpeg/ffmpeg.exe') ? 'E:/FFmpeg/ffmpeg.exe' : null) || ffmpegStatic;
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -481,34 +475,66 @@ function buildVideoFilter(payload, duration) {
   const motionEffect = payload.motionEffect || '手持轻晃';
   const { width, height } = parseCanvasSize(payload.canvasSize);
   const totalFrames = Math.max(1, duration * 30);
-  const freqDiv = Math.max(1, frequency / 3);
-  // 抖动强度 0 表示不抖动，此时保持 1.0 倍稳定画面。
-  const amp = intensity === 0 ? 0 : 0.02 + intensity / 10000;
-  const prog = '(on/' + totalFrames + ')';
-  let zExpr, xExpr, yExpr;
+  // 强度是所有模式的统一幅度缩放，0 表示完全静止。
+  const ampScale = intensity / 50;
+  // 频率滑杆控制手持模式高频微抖的速率（整段视频里的抖动周期数）。
+  const jitterCycles = 4 + frequency / 5;
+  const p = '(on/' + totalFrames + ')';
+  // smoothstep 缓动：起步和收尾都柔和，避免线性运动的机械感。
+  const ease = '(' + p + '*' + p + '*(3-2*' + p + '))';
+  let zExpr, xExpr, yExpr, rotExpr = null;
   switch (motionEffect) {
-    case '缓慢推近':
-      zExpr = '1.0+0.06*' + prog;
+    case '缓慢推近': {
+      const range = (0.06 + 0.08 * intensity / 100) * (intensity === 0 ? 0 : 1);
+      zExpr = '1+' + range.toFixed(4) + '*' + ease;
       xExpr = 'iw/2-(iw/zoom/2)';
       yExpr = 'ih/2-(ih/zoom/2)';
       break;
-    case '缓慢拉远':
-      zExpr = '1.06-0.06*' + prog;
+    }
+    case '缓慢拉远': {
+      const range = (0.06 + 0.08 * intensity / 100) * (intensity === 0 ? 0 : 1);
+      zExpr = '1+' + range.toFixed(4) + '-' + range.toFixed(4) + '*' + ease;
       xExpr = 'iw/2-(iw/zoom/2)';
       yExpr = 'ih/2-(ih/zoom/2)';
       break;
-    case '轻微环绕':
-      zExpr = '1.05';
-      xExpr = 'iw/2-(iw/zoom/2)+0.01*(' + prog + '-0.5)*iw';
-      yExpr = 'ih/2-(ih/zoom/2)+0.01*(' + prog + '-0.5)*ih';
+    }
+    case '轻微环绕': {
+      // 真正的圆周运镜：整圈回到起点，天然无缝循环。
+      const r = 0.012 * ampScale;
+      zExpr = '1.06';
+      xExpr = 'iw/2-(iw/zoom/2)+' + r.toFixed(5) + '*iw*sin(2*PI*' + p + ')';
+      yExpr = 'ih/2-(ih/zoom/2)-' + r.toFixed(5) + '*ih*cos(2*PI*' + p + ')';
       break;
-    default:
-      zExpr = 'if(eq(on,0),1.0,1.0+' + amp + '*(1+sin(on/' + freqDiv + ')))';
-      xExpr = 'iw/2-(iw/zoom/2)';
-      yExpr = 'ih/2-(ih/zoom/2)';
+    }
+    default: {
+      // 手持轻晃：低频呼吸/漂移 + 高频微抖 + 微小旋转，多组不可通约的正弦叠加避免机械感。
+      if (ampScale === 0) {
+        zExpr = '1.0';
+        xExpr = 'iw/2-(iw/zoom/2)';
+        yExpr = 'ih/2-(ih/zoom/2)';
+        break;
+      }
+      const breathe = 0.015 * ampScale;
+      const microZ = 0.004 * ampScale;
+      const driftX = 0.006 * ampScale;
+      const driftY = 0.005 * ampScale;
+      const microX = 0.002 * ampScale;
+      const microY = 0.0018 * ampScale;
+      // zoom 基准 1.08：给旋转和平移留出裁剪余量，保证不露黑边。
+      zExpr = '1.08+' + breathe.toFixed(5) + '*sin(2*PI*' + p + '*2)+' + microZ.toFixed(5) + '*sin(2*PI*' + p + '*' + jitterCycles.toFixed(2) + '+1.3)';
+      xExpr = 'iw/2-(iw/zoom/2)+' + driftX.toFixed(5) + '*iw*sin(2*PI*' + p + '*1.5)+' + microX.toFixed(5) + '*iw*sin(2*PI*' + p + '*' + (jitterCycles * 1.37).toFixed(2) + '+2.1)';
+      yExpr = 'ih/2-(ih/zoom/2)+' + driftY.toFixed(5) + '*ih*sin(2*PI*' + p + '*1.7+0.9)+' + microY.toFixed(5) + '*ih*sin(2*PI*' + p + '*' + (jitterCycles * 1.73).toFixed(2) + '+4.2)';
+      // rotate 的 a 用弧度、时间基准是 t（秒），输入已固定 30fps，t 与 on/30 一致。
+      const rotDeg = 0.4 * ampScale;
+      rotExpr = (rotDeg * Math.PI / 180).toFixed(6) + '*sin(2*PI*t/' + duration + '*2.7)';
       break;
+    }
   }
-  return `zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':d=${totalFrames}:s=${width}x${height}':fps=30`;
+  // 先把原图放大 2 倍再进 zoompan：亚像素位移有更细的采样网格，消除一顿一顿的抖动。
+  const parts = ['scale=iw*2:ih*2:flags=lanczos'];
+  if (rotExpr) parts.push(`rotate=a='${rotExpr}':c=black`);
+  parts.push(`zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':d=${totalFrames}:s=${width}x${height}:fps=30`);
+  return parts.join(',');
 }
 
 function makeVideo(payload, id) {
@@ -520,7 +546,9 @@ function makeVideo(payload, id) {
     const duration = parseDuration(payload);
     const filter = buildVideoFilter(payload, duration);
     const startedAt = Date.now();
-    const inputOptions = shouldUseStillImageLoop(payload) ? ['-loop', '1'] : [];
+    // 上传组件只接受图片，恒为静帧输入：始终循环并锁定 30fps，
+    // 让 rotate 滤镜的时间基准 t 与输出的 30fps 严格一致（on = t*30）。
+    const inputOptions = ['-loop', '1', '-framerate', '30'];
     const outputOptions = ['-t', String(duration), '-vf', filter, '-pix_fmt', 'yuv420p', '-c:v', 'libx264'];
     console.log('[worker] ffmpeg start', JSON.stringify({
       jobId: id,
