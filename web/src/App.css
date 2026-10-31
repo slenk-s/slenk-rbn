@@ -2139,36 +2139,67 @@ button:hover { transform: translateY(-1px); }
 
 
 
+/* 滑条：用 --progress（JS 按当前值写入）画出已填充的渐变色段，其余是浅灰轨道 */
+.option-row.range-row input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+.option-row.range-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--accent) 0%, var(--accent-2) var(--progress, 0%), #e6eaf2 var(--progress, 0%), #e6eaf2 100%);
+}
 .option-row.range-row input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #fff;
-  cursor: pointer;
+  cursor: grab;
   border: 2px solid var(--accent);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
-  margin-top: -4px;
-  transition: transform 0.15s;
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.35);
+  margin-top: -6px;
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 .option-row.range-row input[type="range"]::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
+  transform: scale(1.2);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.45);
+}
+.option-row.range-row input[type="range"]:active::-webkit-slider-thumb {
+  cursor: grabbing;
+  transform: scale(1.1);
+}
+.option-row.range-row input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #e6eaf2;
+}
+.option-row.range-row input[type="range"]::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--accent), var(--accent-2));
 }
 .option-row.range-row input[type="range"]::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #fff;
-  cursor: pointer;
+  cursor: grab;
   border: 2px solid var(--accent);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.35);
 }
 .range-value {
   font-weight: 700;
   color: var(--accent);
-  min-width: 44px;
-  text-align: right;
+  background: var(--accent-bg);
+  border-radius: 999px;
+  padding: 2px 8px;
+  min-width: 36px;
+  text-align: center;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -2254,31 +2285,34 @@ button:hover { transform: translateY(-1px); }
   outline: none;
   border-color: var(--accent);
 }
-/* 双滑块同行布局 */
+/* 双滑块布局：空间够就并排，不够就自动换成上下两行，数值胶囊永不溢出卡片 */
 .option-row.range-pair {
   display: flex;
   align-items: center;
-  gap: 24px;
+  flex-wrap: wrap;
+  gap: 8px 24px;
   padding: 6px 0;
 }
 .range-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 1;
+  flex: 1 1 210px;
   min-width: 0;
 }
 .range-item .option-label {
   min-width: 56px;
+  flex-shrink: 0;
 }
 .range-item input[type="range"] {
   flex: 1;
-  min-width: 80px;
+  min-width: 60px;
   max-width: 160px;
 }
 .range-item .range-value {
   min-width: 32px;
   font-size: 12px;
+  flex-shrink: 0;
 }
 
 
