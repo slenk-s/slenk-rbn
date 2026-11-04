@@ -433,6 +433,29 @@ function loadNotePrompts() {
 function saveNotePrompts(prompts) {
   try { localStorage.setItem(NOTE_PROMPT_STORAGE_KEY, JSON.stringify(prompts)); return true; } catch { return false; }
 }
+const NOTE_PROMPT_FIELD_MAP = Object.fromEntries(NOTE_PROMPT_FIELDS.map(f => [f.key, f]));
+// 外置的可折叠提示词条：输入即更新内存，失焦由 onPersist 持久化，支持单字段恢复默认。
+function PromptStrip({ promptKey, value, onChange, onPersist, onReset }) {
+  const [open, setOpen] = useState(false);
+  const def = NOTE_PROMPT_FIELD_MAP[promptKey];
+  const customized = String(value || '').trim() !== String(DEFAULT_NOTE_PROMPTS[promptKey] || '').trim();
+  return (
+    <div className={'prompt-strip' + (open ? ' open' : '')}>
+      <button type="button" className="prompt-strip-head" onClick={() => setOpen(o => !o)}>
+        <b>{def.label}</b>
+        {customized && <span className="prompt-strip-badge">已自定义</span>}
+        <span className="prompt-strip-chevron">{open ? '▴' : '▾'}</span>
+      </button>
+      {open && (
+        <div className="prompt-strip-body">
+          <span className="prompt-strip-hint">{def.hint}</span>
+          <textarea value={value || ''} onChange={e => onChange(e.target.value)} onBlur={onPersist} />
+          <div className="prompt-strip-actions"><button type="button" onClick={onReset}>恢复默认</button></div>
+        </div>
+      )}
+    </div>
+  );
+}
 function DiffCell({ line }) {
   if (line.type !== 'changed' || !line.pairs) return <span>{line.new}</span>;
   return <span>{line.pairs.map((p, i) => p.type === 'changed' ? <mark key={i}>{p.new}</mark> : <span key={i}>{p.new}</span>)}</span>;
@@ -545,8 +568,6 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const [dragIndex, setDragIndex] = useState(null);
   const [qr, setQr] = useState(null);
   const [notePrompts, setNotePrompts] = useState(loadNotePrompts);
-  const [promptConfigOpen, setPromptConfigOpen] = useState(false);
-  const [promptDraft, setPromptDraft] = useState(() => ({ ...DEFAULT_NOTE_PROMPTS }));
   const [aiDiff, setAiDiff] = useState(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState(null);
   const [regeneratingId, setRegeneratingId] = useState(null);
@@ -690,19 +711,19 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       } else setStatus('AI 已返回结果，但没有识别到标签数组。');
     } catch (err) { setStatus(err.message); }
   }
-  function openPromptConfig() {
-    setPromptDraft(notePrompts);
-    setPromptConfigOpen(true);
+  // 外置提示词条：输入即更新内存（AI 生成读取最新值），失焦持久化。
+  function updateNotePrompt(key, value) {
+    setNotePrompts(prev => ({ ...prev, [key]: value }));
   }
-  function savePromptConfig() {
-    const next = Object.fromEntries(NOTE_PROMPT_FIELDS.map(f => [f.key, promptDraft[f.key] ?? DEFAULT_NOTE_PROMPTS[f.key]]));
-    const ok = saveNotePrompts(next);
-    setNotePrompts(next);
-    setPromptConfigOpen(false);
+  function persistNotePrompts() {
+    const ok = saveNotePrompts(notePrompts);
     setStatus(ok ? '提示词已保存，AI生成将使用新配置。' : '提示词已更新本次会话；浏览器未允许持久化保存。');
   }
-  function resetPromptConfig() {
-    setPromptDraft({ ...DEFAULT_NOTE_PROMPTS });
+  function resetPromptField(key) {
+    const next = { ...notePrompts, [key]: DEFAULT_NOTE_PROMPTS[key] };
+    setNotePrompts(next);
+    const ok = saveNotePrompts(next);
+    setStatus(ok ? '已恢复默认提示词。' : '已恢复默认提示词（仅本次会话）。');
   }
   async function generateQr() {
     try {
@@ -744,11 +765,11 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
         <div className="note-main">
           <div className="note-section smart-link">
             <div className="note-head"><div><h2>{isDownload ? '商品下载' : '智能识别笔记链接'}</h2>{!isDownload && <p>输入笔记链接，智能识别参考内容：标题、正文、标签、图片</p>}</div><span className="pill pill-ok">AI 提取</span></div>
-            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button>{!isDownload && <button type="button" className="btn-secondary" onClick={openPromptConfig}>提示词配置</button>}</div>
+            <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
           </div>
           {!isDownload && (<div className="note-section fields">
-            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateTitle}>AI生成</button></div></div><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
-            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateContent}>AI生成</button></div></div><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
+            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateTitle}>AI生成</button></div></div><PromptStrip promptKey="title" value={notePrompts.title} onChange={v => updateNotePrompt('title', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('title')} /><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
+            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateContent}>AI生成</button></div></div><PromptStrip promptKey="content" value={notePrompts.content} onChange={v => updateNotePrompt('content', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('content')} /><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
             <div>
               <label>话题标签</label>
               <div className="field-meta">
@@ -758,6 +779,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
                   <button className="btn-secondary" onClick={() => navigator.clipboard?.writeText(tags.map(t => '#' + t).join(' '))}>复制话题</button>
                 </div>
               </div>
+              <PromptStrip promptKey="tags" value={notePrompts.tags} onChange={v => updateNotePrompt('tags', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('tags')} />
               <div className="tag-input-row">
                 <input value={tagInput} onChange={e => setTagInput(e.target.value)} placeholder="单个或批量添加，例如：学习资料 #英语，八年级" />
                 <button className="btn-secondary" onClick={addTags}>添加</button>
@@ -767,6 +789,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           </div>)}
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3>{!isDownload && <p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}</div>
+            {!isDownload && <PromptStrip promptKey="imageReplace" value={notePrompts.imageReplace} onChange={v => updateNotePrompt('imageReplace', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('imageReplace')} />}
             {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label></div>}
             <div className="image-grid">{images.map((img, index) => (
               <figure
@@ -850,21 +873,6 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           </div>
         );
       })()}
-      {promptConfigOpen && (
-        <div className="prompt-config-backdrop" onClick={() => setPromptConfigOpen(false)}>
-          <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
-            <button type="button" className="prompt-config-close" onClick={() => setPromptConfigOpen(false)}>×</button>
-            <h3>提示词配置</h3>
-            <p>配置后，标题、正文、话题标签和图片替换的 AI 生成会优先使用这里的提示词。</p>
-            <div className="prompt-config-form">
-              {NOTE_PROMPT_FIELDS.map(field => (
-                <label key={field.key} className="prompt-config-field"><b>{field.label}</b><span>{field.hint}</span><textarea value={promptDraft[field.key] || ''} onChange={e => setPromptDraft(prev => ({ ...prev, [field.key]: e.target.value }))} /></label>
-              ))}
-            </div>
-            <div className="prompt-config-actions"><button type="button" className="btn-secondary" onClick={resetPromptConfig}>恢复默认</button><button type="button" className="btn-primary" onClick={savePromptConfig}>保存配置</button></div>
-          </div>
-        </div>
-      )}
       {qr && (
         <div className="qr-backdrop" onClick={() => setQr(null)}>
           <div className="qr-modal" onClick={e => e.stopPropagation()}>

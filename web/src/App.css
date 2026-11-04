@@ -2355,6 +2355,19 @@ button:hover { transform: translateY(-1px); }
 .image-prompt-editor textarea { width: 100%; min-height: 64px; resize: vertical; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; font-size: 12px; line-height: 1.5; color: var(--text-h); background: #fff; box-sizing: border-box; cursor: text; }
 .image-prompt-editor textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
 .image-prompt-editor button { justify-self: end; }
+.prompt-strip { margin: 6px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--code-bg); overflow: hidden; }
+.prompt-strip-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 12px; border: none; background: transparent; cursor: pointer; font-size: 12px; color: var(--text); text-align: left; }
+.prompt-strip-head b { color: var(--text-h); font-weight: 600; }
+.prompt-strip-head:hover { background: rgba(255, 255, 255, 0.6); }
+.prompt-strip-badge { padding: 1px 7px; border-radius: 999px; background: var(--accent-bg); color: var(--accent); font-size: 10px; font-weight: 700; }
+.prompt-strip-chevron { margin-left: auto; color: var(--text); }
+.prompt-strip-body { display: grid; gap: 6px; padding: 0 12px 10px; }
+.prompt-strip-hint { font-size: 11px; color: var(--text); }
+.prompt-strip-body textarea { width: 100%; min-height: 84px; max-height: 220px; resize: vertical; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 12px; line-height: 1.6; color: var(--text-h); background: #fff; box-sizing: border-box; }
+.prompt-strip-body textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.prompt-strip-actions { display: flex; justify-content: flex-end; }
+.prompt-strip-actions button { border: none; background: transparent; color: var(--text); font-size: 11px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.prompt-strip-actions button:hover { color: var(--accent); background: var(--accent-bg); }
 .image-compare-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center; margin: 12px 0; }
 .image-compare-grid figure { margin: 0; display: grid; gap: 6px; text-align: center; font-size: 12px; color: var(--text); }
 .image-compare-grid img { width: 100%; max-height: 320px; object-fit: contain; border: 1px solid var(--border); border-radius: 12px; background: var(--code-bg); }
