@@ -581,6 +581,19 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       setRegeneratingId(null);
     }
   }
+  function applyImageReplace() {
+    if (!imageReplacePreview) return;
+    const targetIndex = images.findIndex(item => item.id === imageReplacePreview.id);
+    if (targetIndex < 0) { setImageReplacePreview(null); setStatus('原图已被删除或移动，新图已弃用。'); return; }
+    setImages(prev => prev.map((item, i) => {
+      if (i !== targetIndex) return item;
+      // 旧 cachedUrl 指向旧图，必须丢弃；id/name/prompt 保留，顺序与封面逻辑不变。
+      const { cachedUrl, ...rest } = item;
+      return { ...rest, url: imageReplacePreview.url };
+    }));
+    setImageReplacePreview(null);
+    setStatus('已替换为新图。');
+  }
   async function api(path, options = {}) {
     return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   }
@@ -821,6 +834,29 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           </div>
         </div>
       )}
+      {imageReplacePreview && (() => {
+        const targetIndex = images.findIndex(item => item.id === imageReplacePreview.id);
+        if (targetIndex < 0) return null;
+        const target = images[targetIndex];
+        return (
+          <div className="prompt-config-backdrop" onClick={() => setImageReplacePreview(null)}>
+            <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
+              <button type="button" className="prompt-config-close" onClick={() => setImageReplacePreview(null)}>×</button>
+              <h3>替换图片确认</h3>
+              <p>「{target.name || '图片 ' + (targetIndex + 1)}」将被替换为新图，原图不保留。</p>
+              <div className="image-compare-grid">
+                <figure><img src={resolveImageSrc(target)} alt="原图" /><figcaption>原图</figcaption></figure>
+                <div className="image-compare-arrow">→</div>
+                <figure><img src={resolveImageSrc({ url: imageReplacePreview.url })} alt="新图" /><figcaption>新图</figcaption></figure>
+              </div>
+              <div className="prompt-config-actions">
+                <button type="button" className="btn-secondary" onClick={() => setImageReplacePreview(null)}>取消</button>
+                <button type="button" className="btn-primary" onClick={applyImageReplace}>应用</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {promptConfigOpen && (
         <div className="prompt-config-backdrop" onClick={() => setPromptConfigOpen(false)}>
           <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
