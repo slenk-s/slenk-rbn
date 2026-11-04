@@ -50,7 +50,7 @@ const NOTE_PROMPT_FIELDS = [
   { key: 'title', label: '标题提示词', hint: '用于生成标题候选，支持 JSON 或编号列表。' },
   { key: 'content', label: '正文提示词', hint: '用于改写正文，要求适合小红书发布。' },
   { key: 'tags', label: '话题标签提示词', hint: '用于提取话题标签，支持 JSON 或 # 标签列表。' },
-  { key: 'imageReplace', label: '按图替换提示词', hint: '选中图片点「重新生成此图」且未填专属提示词时使用，生成时自动附带标题/正文。' },
+  { key: 'imageReplace', label: '默认提示词', hint: '选中图片点「重新生成此图」且未填专属提示词时使用，生成时自动附带标题/正文。' },
 ];
 const AI_DIFF_FIELDS = {
   title: { label: '标题' },
