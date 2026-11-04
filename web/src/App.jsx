@@ -553,8 +553,34 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     setRegeneratingId(null);
     setImageReplacePreview(null);
   }
-  // Task 2 填充：按图重生成
-  function regenerateImage(index) { void index; }
+  // 按图重生成：以该图为参考走 /images/edits。参考图传原始存储值
+  // （/notes-images、/uploads 相对路径或远程 URL），worker 会直接读本地缓存；
+  // 不要传 resolveImageSrc() 拼出的带域名绝对地址。
+  async function regenerateImage(index) {
+    const img = images[index];
+    if (!img || img.isVideo || regeneratingId) return;
+    const custom = String(img.prompt || '').trim();
+    const fallback = [PROMPTS['replace-image'], title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
+    const reference = img.cachedUrl || img.url;
+    if (!reference) { setStatus('该图片缺少可用地址，无法作为参考图。'); return; }
+    setRegeneratingId(img.id);
+    try {
+      const task = await runTask(
+        { type: 'image', purpose: 'noteImage', payload: { prompt: custom || fallback, imageUrls: [reference], perReference: true, canvasSize: '1080x1080', count: 1 } },
+        '正在重新生成图片...',
+        300000
+      );
+      const result = parseJsonText(task.result) || {};
+      const urls = Array.isArray(result.images) && result.images.length ? result.images : (result.image && typeof result.image === 'string' ? [result.image] : []);
+      if (!urls.length) throw new Error('AI 没有返回图片');
+      setImageReplacePreview({ id: img.id, url: urls[0] });
+      setStatus('新图已生成，请确认是否替换。');
+    } catch (err) {
+      setStatus(err.message);
+    } finally {
+      setRegeneratingId(null);
+    }
+  }
   async function api(path, options = {}) {
     return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   }
