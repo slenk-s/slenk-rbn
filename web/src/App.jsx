@@ -545,6 +545,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const [promptConfigOpen, setPromptConfigOpen] = useState(false);
   const [promptDraft, setPromptDraft] = useState(() => ({ ...DEFAULT_NOTE_PROMPTS }));
   const [aiDiff, setAiDiff] = useState(null);
+  const [selectedImageIndex, setSelectedImageIndex] = useState(null);
+  const [regeneratingId, setRegeneratingId] = useState(null);
+  const [imageReplacePreview, setImageReplacePreview] = useState(null);
+  function clearImageSelectionState() {
+    setSelectedImageIndex(null);
+    setRegeneratingId(null);
+    setImageReplacePreview(null);
+  }
+  // Task 2 填充：按图重生成
+  function regenerateImage(index) { void index; }
   async function api(path, options = {}) {
     return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
   }
@@ -673,7 +683,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       setStatus('二维码已生成，手机扫码预览笔记。');
     } catch (err) { setStatus(err.message); }
   }
-  function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); setStatus('已清空。'); }
+  function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); clearImageSelectionState(); setStatus('已清空。'); }
   async function identifyLink() {
     const target = link.trim();
     if (!target) return setStatus('请先粘贴' + linkLabel + '。');
@@ -689,7 +699,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       const items = [];
       if (Array.isArray(data.videos) && data.videos.length) data.videos.forEach((url, i) => items.push({ id: 'video-' + i + '-' + Date.now(), url, name: '视频 ' + (i + 1), isVideo: true }));
       if (Array.isArray(data.images) && data.images.length) data.images.forEach((img, i) => items.push({ id: 'remote-' + i + '-' + Date.now(), url: img.url, cachedUrl: img.cachedUrl, name: resultLabel + ' ' + (i + 1) }));
-      if (items.length) setImages(items);
+      if (items.length) { setImages(items); clearImageSelectionState(); }
       setStatus('已识别：' + (data.title || '无标题') + '，' + (data.images?.length || 0) + ' 张' + resultLabel + (data.videos?.length ? '，' + data.videos.length + ' 个无水印视频' : '') + '。');
     } catch (err) { setStatus(err.message); }
   }
@@ -726,7 +736,40 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3>{!isDownload && <p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}</div>
             {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={aiGenerateImage}>AI生成</button></div>}
-            <div className="image-grid">{images.map((img, index) => <figure key={img.id || index} className="image-thumb" draggable onDragStart={() => setDragIndex(index)} onDragOver={e => e.preventDefault()} onDrop={() => moveImage(dragIndex, index)}>{img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}{img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} />}<figcaption><span>{img.name || '图片 ' + (index + 1)}</span><div><button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button><button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); }}>删除</button></div></figcaption></figure>)}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
+            <div className="image-grid">{images.map((img, index) => (
+              <figure
+                key={img.id || index}
+                className={'image-thumb' + (selectedImageIndex === index ? ' selected' : '')}
+                draggable
+                onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }}
+                onDragOver={e => e.preventDefault()}
+                onDrop={() => { moveImage(dragIndex, index); clearImageSelectionState(); }}
+                onClick={() => { if (!img.isVideo) setSelectedImageIndex(selectedImageIndex === index ? null : index); }}
+              >
+                {img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}
+                {regeneratingId === img.id && <div className="image-regen-overlay">生成中…</div>}
+                {img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} />}
+                <figcaption>
+                  <span>{img.name || '图片 ' + (index + 1)}</span>
+                  <div>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button>
+                    <button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>
+                  </div>
+                </figcaption>
+                {selectedImageIndex === index && !img.isVideo && (
+                  <div className="image-prompt-editor" onClick={e => e.stopPropagation()}>
+                    <textarea
+                      value={img.prompt || ''}
+                      placeholder="留空则使用默认替换提示词 + 笔记标题/正文"
+                      onChange={e => setImages(prev => prev.map((item, i) => i === index ? { ...item, prompt: e.target.value } : item))}
+                    />
+                    <button type="button" className="btn-secondary" disabled={regeneratingId !== null} onClick={() => regenerateImage(index)}>
+                      {regeneratingId === img.id ? '生成中…' : '重新生成此图'}
+                    </button>
+                  </div>
+                )}
+              </figure>
+            ))}{images.length === 0 && <div className="empty-image">暂无图片</div>}</div>
           </div>
         </div>
         {!isDownload && (<aside className="preview-panel">
