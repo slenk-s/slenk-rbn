@@ -565,13 +565,15 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     const img = images[index];
     if (!img || img.isVideo || regeneratingId) return;
     const custom = String(img.prompt || '').trim();
-    const fallback = [notePrompts.imageReplace, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
+    // 默认替换提示词始终生效（保底风格约束）；填了专属提示词则追加为其后该图的具体要求。
+    const base = [notePrompts.imageReplace, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
+    const finalPrompt = custom ? base + '\n附加要求：' + custom : base;
     const reference = img.cachedUrl || img.url;
     if (!reference) { setStatus('该图片缺少可用地址，无法作为参考图。'); return; }
     setRegeneratingId(img.id);
     try {
       const task = await runTask(
-        { type: 'image', purpose: 'noteImage', payload: { prompt: custom || fallback, imageUrls: [reference], perReference: true, canvasSize: '1080x1080', count: 1 } },
+        { type: 'image', purpose: 'noteImage', payload: { prompt: finalPrompt, imageUrls: [reference], perReference: true, canvasSize: '1080x1080', count: 1 } },
         '正在重新生成图片...',
         300000
       );
@@ -804,7 +806,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
                   <div className="image-prompt-editor" onClick={e => e.stopPropagation()}>
                     <textarea
                       value={img.prompt || ''}
-                      placeholder="留空则使用默认替换提示词 + 笔记标题/正文"
+                      placeholder="可选：补充此图的具体要求，与默认替换提示词叠加生效"
                       onChange={e => setImages(prev => prev.map((item, i) => i === index ? { ...item, prompt: e.target.value } : item))}
                     />
                     <button type="button" className="btn-secondary" disabled={regeneratingId !== null} onClick={() => regenerateImage(index)}>
