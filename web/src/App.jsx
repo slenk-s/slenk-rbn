@@ -583,7 +583,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   async function regenerateImage(index) {
     const img = images[index];
     if (!img || img.isVideo || regeneratingId) return;
-    // 编辑框已预填默认替换提示词，发送时以编辑框内容为准（用户清空则回退默认），再附标题/正文上下文。
+    // 专属提示词与默认提示词相互独立（同「替换生图」工作区）：填了用专属，留空用默认；再附标题/正文上下文。
     const custom = String(img.prompt || '').trim();
     const finalPrompt = [custom || notePrompts.imageReplace, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
     const reference = img.cachedUrl || img.url;
@@ -815,8 +815,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
                 {selectedImageIndex === index && !img.isVideo && (
                   <div className="image-prompt-editor" onClick={e => e.stopPropagation()}>
                     <textarea
-                      value={img.prompt ?? notePrompts.imageReplace}
-                      placeholder="留空则使用默认替换提示词"
+                      value={img.prompt || ''}
+                      placeholder="可选：填写此图专属提示词；留空则使用上方默认提示词"
                       onChange={e => setImages(prev => prev.map((item, i) => i === index ? { ...item, prompt: e.target.value } : item))}
                     />
                     <button type="button" className="btn-secondary" disabled={regeneratingId !== null} onClick={() => regenerateImage(index)}>
