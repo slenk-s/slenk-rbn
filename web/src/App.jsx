@@ -790,9 +790,9 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
             </div>
           </div>)}
           <div className="note-section images">
-            <div className="section-title"><h3>图片管理</h3>{!isDownload && <p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}</div>
+            <div className="section-title"><h3>图片管理</h3>{!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label></div>}</div>
+            {!isDownload && <p className="section-desc">支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}
             {!isDownload && <PromptStrip promptKey="imageReplace" value={notePrompts.imageReplace} onChange={v => updateNotePrompt('imageReplace', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('imageReplace')} />}
-            {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label></div>}
             <div className="image-grid">{images.map((img, index) => (
               <figure
                 key={img.id || index}

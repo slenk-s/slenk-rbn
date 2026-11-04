@@ -509,6 +509,9 @@ button, input, textarea, select {
   line-height: 1.55;
 }
 
+.note-section.images .section-title { align-items: center; }
+.note-section.images .section-desc { margin: -6px 0 10px; color: var(--text); font-size: 12px; line-height: 1.55; }
+
 .panel-head {
   display: flex;
   justify-content: space-between;
