@@ -768,15 +768,17 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
             <div className="note-link-row"><input value={link} onChange={e => setLink(e.target.value)} placeholder={'粘贴小红书' + linkLabel} /><button className="btn-primary" onClick={identifyLink}>智能识别</button><button className="btn-secondary" onClick={clearNote}>清空</button></div>
           </div>
           {!isDownload && (<div className="note-section fields">
-            <div><label>标题</label><div className="field-meta"><span>{title.length} 字</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateTitle}>AI生成</button></div></div><PromptStrip promptKey="title" value={notePrompts.title} onChange={v => updateNotePrompt('title', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('title')} /><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
-            <div><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateContent}>AI生成</button></div></div><PromptStrip promptKey="content" value={notePrompts.content} onChange={v => updateNotePrompt('content', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('content')} /><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
+            <div><div className="field-head"><label>标题</label><div className="field-meta"><span>{title.length} 字</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateTitle}>AI生成</button></div></div></div><PromptStrip promptKey="title" value={notePrompts.title} onChange={v => updateNotePrompt('title', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('title')} /><input value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入笔记标题" /></div>
+            <div><div className="field-head"><label>正文</label><div className="field-meta"><span>{content.length} / 1000</span><div className="field-actions"><button className="btn-secondary" onClick={aiGenerateContent}>AI生成</button></div></div></div><PromptStrip promptKey="content" value={notePrompts.content} onChange={v => updateNotePrompt('content', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('content')} /><textarea maxLength={1000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入笔记正文" /></div>
             <div>
-              <label>话题标签</label>
-              <div className="field-meta">
-                <span>复制话题 {tags.length} 个</span>
-                <div className="field-actions">
-                  <button className="btn-secondary" onClick={aiGenerateTags}>AI生成</button>
-                  <button className="btn-secondary" onClick={() => navigator.clipboard?.writeText(tags.map(t => '#' + t).join(' '))}>复制话题</button>
+              <div className="field-head">
+                <label>话题标签</label>
+                <div className="field-meta">
+                  <span>复制话题 {tags.length} 个</span>
+                  <div className="field-actions">
+                    <button className="btn-secondary" onClick={aiGenerateTags}>AI生成</button>
+                    <button className="btn-secondary" onClick={() => navigator.clipboard?.writeText(tags.map(t => '#' + t).join(' '))}>复制话题</button>
+                  </div>
                 </div>
               </div>
               <PromptStrip promptKey="tags" value={notePrompts.tags} onChange={v => updateNotePrompt('tags', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('tags')} />

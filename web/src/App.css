@@ -2340,6 +2340,8 @@ button:hover { transform: translateY(-1px); }
 .note-section input:focus, .note-section textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-bg); }
 .note-section.fields { display: grid; gap: 14px; }
 .field-meta { display: flex; justify-content: space-between; align-items: center; margin: 7px 0 8px; font-size: 12px; color: var(--text); }
+.field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 7px 0 8px; }
+.field-head .field-meta { margin: 0; justify-content: flex-end; gap: 10px; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .topic-tag { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 999px; background: var(--accent-bg); color: var(--accent); border: 1px solid rgba(79,70,229,.14); font-size: 12px; font-weight: 700; }
 .topic-tag button { all: unset; cursor: pointer; line-height: 1; }
