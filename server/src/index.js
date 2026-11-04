@@ -53,6 +53,8 @@ fs.mkdirSync(notesImagesDir, { recursive: true });
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
+// Static asset dirs. If you add one here, mirror it in the dev proxy at
+// web/vite.config.js (server.proxy) — otherwise dev mode serves broken assets.
 app.use('/uploads', express.static(uploadsDir));
 app.use('/videos', express.static(videosDir));
 app.use('/notes-images', serveNotesImages);
