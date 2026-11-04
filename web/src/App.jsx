@@ -50,7 +50,6 @@ const NOTE_PROMPT_FIELDS = [
   { key: 'title', label: '标题提示词', hint: '用于生成标题候选，支持 JSON 或编号列表。' },
   { key: 'content', label: '正文提示词', hint: '用于改写正文，要求适合小红书发布。' },
   { key: 'tags', label: '话题标签提示词', hint: '用于提取话题标签，支持 JSON 或 # 标签列表。' },
-  { key: 'image', label: '配图提示词', hint: '用于图片管理工具栏「AI生成」新增配图，生成时自动附带标题/正文。' },
   { key: 'imageReplace', label: '按图替换提示词', hint: '选中图片点「重新生成此图」且未填专属提示词时使用，生成时自动附带标题/正文。' },
 ];
 const AI_DIFF_FIELDS = {
@@ -113,7 +112,6 @@ const DEFAULT_NOTE_PROMPTS = {
 #标签1
 #标签2
 #标签3`,
-  image: '请为当前小红书笔记生成 1 张配图，真实自然、适合小红书封面。',
   // 与「替换生图」工作区共用同一条默认值，保持两处行为一致
   imageReplace: PROMPTS['replace-image'],
 };
@@ -706,18 +704,6 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   function resetPromptConfig() {
     setPromptDraft({ ...DEFAULT_NOTE_PROMPTS });
   }
-  // 图片管理区的「AI生成」应当产出真图，并把结果回填到图片列表。
-  async function aiGenerateImage() {
-    const prompt = [notePrompts.image, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
-    try {
-      const task = await runTask({ type: 'image', purpose: 'noteImage', payload: { prompt, imageUrls: referenceImageUrls(), canvasSize: '1080x1080', count: 1 } }, '正在生成图片...', 300000);
-      const result = parseJsonText(task.result) || {};
-      const urls = Array.isArray(result.images) && result.images.length ? result.images : (result.image && typeof result.image === 'string' ? [result.image] : []);
-      if (!urls.length) throw new Error('AI 没有返回图片');
-      setImages(prev => [...prev, ...urls.map((url, i) => ({ id: 'ai-' + Date.now() + '-' + i, url, name: 'AI 生成 ' + (i + 1) }))].slice(0, 9));
-      setStatus('AI 图片已生成并加入图片管理。');
-    } catch (err) { setStatus(err.message); }
-  }
   async function generateQr() {
     try {
       setStatus('正在生成预览二维码...');
@@ -781,7 +767,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           </div>)}
           <div className="note-section images">
             <div className="section-title"><h3>图片管理</h3>{!isDownload && <p>支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}</div>
-            {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label><button className="btn-secondary" onClick={aiGenerateImage}>AI生成</button></div>}
+            {!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label></div>}
             <div className="image-grid">{images.map((img, index) => (
               <figure
                 key={img.id || index}
@@ -869,7 +855,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
             <button type="button" className="prompt-config-close" onClick={() => setPromptConfigOpen(false)}>×</button>
             <h3>提示词配置</h3>
-            <p>配置后，标题、正文、话题标签和配图的 AI 生成会优先使用这里的提示词。</p>
+            <p>配置后，标题、正文、话题标签和图片替换的 AI 生成会优先使用这里的提示词。</p>
             <div className="prompt-config-form">
               {NOTE_PROMPT_FIELDS.map(field => (
                 <label key={field.key} className="prompt-config-field"><b>{field.label}</b><span>{field.hint}</span><textarea value={promptDraft[field.key] || ''} onChange={e => setPromptDraft(prev => ({ ...prev, [field.key]: e.target.value }))} /></label>
