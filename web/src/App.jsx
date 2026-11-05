@@ -435,6 +435,26 @@ function saveNotePrompts(prompts) {
 }
 const NOTE_PROMPT_FIELD_MAP = Object.fromEntries(NOTE_PROMPT_FIELDS.map(f => [f.key, f]));
 // 外置的可折叠提示词条：输入即更新内存，失焦由 onPersist 持久化，支持单字段恢复默认。
+// 侧边栏任务按笔记分组：noteId 相同的归一组，组头取组内最新任务的笔记标题；
+// 无 noteId 的历史任务归入最后的「未分组」。按最新任务时间倒序。
+function groupTasksByNote(list) {
+  const sorted = [...list].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const byId = new Map();
+  const ungrouped = [];
+  for (const t of sorted) {
+    const nid = t.payload && t.payload.noteId;
+    if (!nid) { ungrouped.push(t); continue; }
+    if (!byId.has(nid)) byId.set(nid, []);
+    byId.get(nid).push(t);
+  }
+  const groups = [...byId.entries()].map(([key, tasks]) => ({
+    key,
+    title: String(tasks[0]?.payload?.noteTitle || '').trim() || '未命名笔记',
+    tasks,
+  }));
+  if (ungrouped.length) groups.push({ key: '__ungrouped', title: '未分组', tasks: ungrouped });
+  return groups;
+}
 function PromptStrip({ promptKey, value, onChange, onPersist, onReset }) {
   const [open, setOpen] = useState(false);
   const def = NOTE_PROMPT_FIELD_MAP[promptKey];
@@ -625,9 +645,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   function referenceImageUrls() {
     return images.filter(img => !img.isVideo).map(img => resolveImageSrc(img)).filter(Boolean);
   }
+  // 笔记身份：智能识别/清空后归零，发任务时惰性生成；同一条笔记的所有任务共享 noteId 供侧边栏分组。
+  const noteIdRef = useRef('');
+  function currentNoteId() {
+    if (!noteIdRef.current) noteIdRef.current = 'note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    return noteIdRef.current;
+  }
   async function runTask({ type, payload, purpose }, message, timeoutMs = 120000) {
     setStatus(message);
-    const taskPayload = purpose ? { ...payload, purpose } : payload;
+    const taskPayload = { ...payload, noteId: currentNoteId(), noteTitle: title.trim() || '未命名笔记' };
+    if (purpose) taskPayload.purpose = purpose;
     const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ type, tab: 'note-rewrite', payload: taskPayload }) });
     const id = data.id || '';
     if (!id) throw new Error('任务创建失败');
@@ -735,7 +762,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       setStatus('二维码已生成，手机扫码预览笔记。');
     } catch (err) { setStatus(err.message); }
   }
-  function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); clearImageSelectionState(); setStatus('已清空。'); }
+  function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); clearImageSelectionState(); noteIdRef.current = ''; setStatus('已清空。'); }
   async function identifyLink() {
     const target = link.trim();
     if (!target) return setStatus('请先粘贴' + linkLabel + '。');
@@ -752,6 +779,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       if (Array.isArray(data.videos) && data.videos.length) data.videos.forEach((url, i) => items.push({ id: 'video-' + i + '-' + Date.now(), url, name: '视频 ' + (i + 1), isVideo: true }));
       if (Array.isArray(data.images) && data.images.length) data.images.forEach((img, i) => items.push({ id: 'remote-' + i + '-' + Date.now(), url: img.url, cachedUrl: img.cachedUrl, name: resultLabel + ' ' + (i + 1) }));
       if (items.length) { setImages(items); clearImageSelectionState(); }
+      noteIdRef.current = '';
       setStatus('已识别：' + (data.title || '无标题') + '，' + (data.images?.length || 0) + ' 张' + resultLabel + (data.videos?.length ? '，' + data.videos.length + ' 个无水印视频' : '') + '。');
     } catch (err) { setStatus(err.message); }
   }
@@ -1014,8 +1042,10 @@ function Workspace({ token }) {
   }
   function resetPrompt() { setText(PROMPTS[active] || ''); }
   const currentTask = tasks.find(t => t.id === selectedTaskId);
+  const [collapsedTaskGroups, setCollapsedTaskGroups] = useState(() => new Set());
   // 侧边栏任务列表只显示当前功能的任务；早期任务可能没有 tab 字段，用 TYPE_TO_TAB 兜底。
   const tabTasks = active === 'dashboard' ? [] : tasks.filter(t => (t.tab || TYPE_TO_TAB[t.type]) === active);
+  const taskGroups = groupTasksByNote(tabTasks);
   const taskDetail = tasks.find(t => t.id === taskDetailId);
   // 不能只看 TAB_TO_TYPE：ai-image / replace-image 不在 TYPE_TO_TAB 的反向映射里，
   // 否则会被误判成文本模式，页面芯片和提交都会错用文本供应商。
@@ -1050,7 +1080,16 @@ function Workspace({ token }) {
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
           {GROUPS.map(group => <div key={group.id} className="tab-group"><div className="tab-group-label"><span>{group.icon}</span>{group.label}</div><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
           </div>
-          {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{tabTasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => openTaskDetail(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span><span className="sidebar-task-state">{t.status}</span></button></li>)}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
+          {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{taskGroups.map(g => (
+            <li key={g.key} className="task-group">
+              <button type="button" className="task-group-head" onClick={() => setCollapsedTaskGroups(prev => { const next = new Set(prev); if (next.has(g.key)) next.delete(g.key); else next.add(g.key); return next; })}>
+                <span className="task-group-chevron">{collapsedTaskGroups.has(g.key) ? '▸' : '▾'}</span>
+                <span className="task-group-title">{g.title}</span>
+                <span className="task-group-count">{g.tasks.length}</span>
+              </button>
+              {!collapsedTaskGroups.has(g.key) && (<ul className="task-group-items">{g.tasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => openTaskDetail(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span><span className="sidebar-task-state">{t.status}</span></button></li>)}</ul>)}
+            </li>
+          ))}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
         <main className="workspace">
           <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} />
