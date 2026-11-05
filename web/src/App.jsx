@@ -1084,7 +1084,7 @@ function Workspace({ token }) {
             <li key={g.key} className="task-group">
               <button type="button" className="task-group-head" onClick={() => setCollapsedTaskGroups(prev => { const next = new Set(prev); if (next.has(g.key)) next.delete(g.key); else next.add(g.key); return next; })}>
                 <span className="task-group-chevron">{collapsedTaskGroups.has(g.key) ? '▸' : '▾'}</span>
-                <span className="task-group-title">{g.title}</span>
+                <span className="task-group-title" title={g.title}>{g.title.length > 14 ? g.title.slice(0, 14) + '…' : g.title}</span>
                 <span className="task-group-count">{g.tasks.length}</span>
               </button>
               {!collapsedTaskGroups.has(g.key) && (<ul className="task-group-items">{g.tasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => openTaskDetail(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span><span className="sidebar-task-state">{t.status}</span></button></li>)}</ul>)}

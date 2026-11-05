@@ -1758,7 +1758,7 @@ button:hover { transform: translateY(-1px); }
 .sidebar-task-list li[data-status="failed"] .sidebar-task-state { background: rgba(220, 38, 38, 0.10); color: #b91c1c; }
 .task-group-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; border: none; border-radius: 8px; background: transparent; cursor: pointer; font-size: 12px; color: var(--text-h); font-weight: 600; text-align: left; }
 .task-group-head:hover { background: rgba(79, 70, 229, 0.05); }
-.task-group-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-group-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-group-chevron { color: var(--text); font-size: 10px; }
 .task-group-count { color: var(--text); font-size: 11px; font-weight: 400; }
 .task-group-items { list-style: none; margin: 0 0 6px 14px; padding: 0 0 0 10px; border-left: 2px solid var(--border); display: grid; gap: 4px; }
