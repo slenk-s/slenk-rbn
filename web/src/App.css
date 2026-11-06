@@ -1763,6 +1763,45 @@ button:hover { transform: translateY(-1px); }
   background: rgba(15, 23, 42, 0.06);
   color: var(--text-dim, #64748b);
 }
+/* 管理模式的批量删除操作栏与行内勾选框。 */
+.task-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 10px;
+}
+.task-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-h);
+  cursor: pointer;
+}
+.task-batch-count {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-dim, #64748b);
+}
+.task-select {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.task-delete-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* 结果图可点击放大，复用现有 lightbox 弹层。 */
+.result-media img.zoomable {
+  cursor: zoom-in;
+  transition: transform 0.15s ease;
+}
+.result-media img.zoomable:hover {
+  transform: scale(1.015);
+}
 .sidebar-task-list li[data-status="done"] .sidebar-task-state { background: rgba(22, 163, 74, 0.10); color: #15803d; }
 .sidebar-task-list li[data-status="failed"] .sidebar-task-state { background: rgba(220, 38, 38, 0.10); color: #b91c1c; }
 .task-group-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; border: none; border-radius: 8px; background: transparent; cursor: pointer; font-size: 12px; color: var(--text-h); font-weight: 600; text-align: left; }
@@ -1934,7 +1973,8 @@ button:hover { transform: translateY(-1px); }
   inset: 0;
   background: rgba(15, 10, 35, 0.78);
   backdrop-filter: blur(4px);
-  z-index: 1000;
+  /* 必须高过任务详情弹层 .task-detail-backdrop (1230)，否则从详情里点图放大时灯箱被压在下面。 */
+  z-index: 1300;
   display: flex;
   align-items: center;
   justify-content: center;

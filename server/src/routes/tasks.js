@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { nanoid } from 'nanoid';
-import { addTask, getTask, getTaskById, listTasks, listAllTasks, deleteTask, deleteTaskById, updateTask, getActiveProvider, findUserById } from '../store.js';
+import { addTask, getTask, getTaskById, listTasks, listAllTasks, deleteTask, deleteTaskById, deleteTasksByIds, updateTask, getActiveProvider, findUserById } from '../store.js';
 import { paths } from '../paths.js';
 import { verify } from '../auth.js';
 
@@ -97,6 +97,20 @@ router.get('/:id', async (req, res, next) => {
     next(err);
   }
 });
+// 批量删除：与单个删除同一套权限——本人可删自己的，管理员可删任何人的；
+// 普通用户混入他人 id 时静默跳过，返回实际删除条数。
+router.post('/batch-delete', async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean).slice(0, 200) : [];
+    if (!ids.length) return res.status(400).json({ error: 'missing_ids' });
+    const me = await findUserById(req.user.userId);
+    const deleted = await deleteTasksByIds(ids, req.user.userId, Boolean(me?.isAdmin));
+    res.json({ ok: true, deleted, tasks: await listAllTasks() });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.delete('/:id', async (req, res, next) => {
   try {
     // 共享可见但删除受限：只有本人或管理员能删。

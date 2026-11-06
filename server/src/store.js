@@ -164,6 +164,17 @@ async function deleteTaskById(id) {
   return rowCount > 0;
 }
 
+// 批量删除：管理员可删任何任务，普通用户只删得动自己的；返回实际删除条数。
+async function deleteTasksByIds(ids, userId, isAdmin) {
+  if (!Array.isArray(ids) || !ids.length) return 0;
+  if (isAdmin) {
+    const { rowCount } = await query('delete from slenk_notes_tasks where id = any($1)', [ids]);
+    return rowCount;
+  }
+  const { rowCount } = await query('delete from slenk_notes_tasks where id = any($1) and user_id = $2', [ids, userId]);
+  return rowCount;
+}
+
 async function updateTask(userId, id, patch) {
   const fields = [];
   const values = [];
@@ -382,6 +393,7 @@ export {
   updateTask,
   deleteTask,
   deleteTaskById,
+  deleteTasksByIds,
   listProviders,
   getProviderById,
   getProviderUnmaskedById,
