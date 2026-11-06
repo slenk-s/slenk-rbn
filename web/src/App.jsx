@@ -236,6 +236,11 @@ function parseJsonText(raw) {
     return parsed && typeof parsed === 'object' ? parsed : { text: String(raw) };
   } catch { return { text: String(raw) }; }
 }
+// 任务结果可能是云端公网 URL（Supabase Storage）或本地 /videos 路径，两种都要能展示。
+function resultMediaSrc(url) {
+  const u = String(url || '');
+  return /^https?:\/\//i.test(u) ? u : API + u;
+}
 function DownloadLink({ url, label, name }) {
   const absolute = url.startsWith('http') ? url : API + url;
   return <a href={absolute} download={name || ''}><button type="button">{label}</button></a>;
@@ -245,9 +250,9 @@ function TaskResultWithDownload({ task }) {
   if (!result) return <p className="muted">{task.status === 'failed' ? parseJsonText(task.error).error : '任务还没有结果内容。'}</p>;
   const resultDownload = <DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" />;
   if (result.text) return <><p className="result-text">{result.text}</p><div className="result-actions">{resultDownload}</div></>;
-  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img src={API + img} alt={'AI图片结果 ' + (i + 1)} /><figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}<DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} /></figcaption></figure>)}</div>;
-  if (result.image && typeof result.image === 'string') return <figure className="result-media"><img src={API + result.image} alt="AI图片结果" /><figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption></figure>;
-  if (result.video) return <figure className="result-media"><video controls src={API + result.video} /><figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption></figure>;
+  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img src={resultMediaSrc(img)} alt={'AI图片结果 ' + (i + 1)} /><figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}<DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} /></figcaption></figure>)}</div>;
+  if (result.image && typeof result.image === 'string') return <figure className="result-media"><img src={resultMediaSrc(result.image)} alt="AI图片结果" /><figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption></figure>;
+  if (result.video) return <figure className="result-media"><video controls src={resultMediaSrc(result.video)} /><figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption></figure>;
   const titleCandidates = Array.isArray(result.titles) ? result.titles.map(String) : [];
   const displayTitle = titleCandidates[0] || result.title || '';
   const displayContent = removeTopicTagMarkup(result.text || result.content || '');

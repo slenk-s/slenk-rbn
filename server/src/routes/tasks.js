@@ -138,6 +138,14 @@ router.get('/:id/download', async (req, res, next) => {
 
     const mediaUrl = format === 'video' ? (parsed.video || '') : (parsed.image || parsed.images?.[0] || '');
     if (!mediaUrl) return res.status(404).json({ error: 'no_media' });
+    // 云端 URL（Supabase Storage 公网地址）：服务端拉回字节再转发，保住附件下载的文件名。
+    if (/^https?:\/\//i.test(mediaUrl)) {
+      const upstream = await fetch(mediaUrl);
+      if (!upstream.ok) return res.status(502).json({ error: 'upstream_fetch_failed' });
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || (format === 'video' ? 'video/mp4' : 'image/png'));
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name.replace(/"/g, '') + '"');
+      return res.send(Buffer.from(await upstream.arrayBuffer()));
+    }
     const base = mediaUrl.startsWith('/uploads/')
       ? paths.uploadsDir
       : mediaUrl.startsWith('/videos/')

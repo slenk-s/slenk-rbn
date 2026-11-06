@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { updateTask, getProviderUnmaskedById, getActiveProvider } from './store.js';
 import { paths } from './paths.js';
 import { collectReferenceImages } from './lib/referenceImages.js';
+import { uploadResultAsset } from './cloudStorage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -368,7 +369,10 @@ async function extractImageAsset(data, id, index) {
   let clean = buffer;
   try { clean = await sharp(buffer).png().toBuffer(); } catch { /* 解码失败就按原样保存 */ }
   fs.writeFileSync(out, clean);
-  return `/videos/${path.basename(out)}`;
+  const local = `/videos/${path.basename(out)}`;
+  // 同步上传云存储：url 优先用公网地址（换机/丢本地文件后仍可用），上传失败回退本地路径。
+  const cloud = await uploadResultAsset(out, path.basename(out), 'image/png');
+  return { local, url: cloud || local };
 }
 
 // 「按参考图一一对应生成」：/images/edits 的 n 只支持 1，多图输入时第 1 张是主编辑图、其余只作参考，
@@ -424,6 +428,7 @@ async function runImage(payload, provider, id) {
   const splitPrompts = perReference ? splitPromptByReference(prompt, referenceCount) : null;
   const referenceIndexes = [];
   const images = [];
+  const localImages = [];
   let lastData = {};
   console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests }));
   for (let i = 0; i < requests; i++) {
@@ -443,14 +448,15 @@ async function runImage(payload, provider, id) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
     lastData = data;
-    const url = await extractImageAsset(data, id, i);
-    if (url) {
-      images.push(url);
+    const asset = await extractImageAsset(data, id, i);
+    if (asset) {
+      images.push(asset.url);
+      localImages.push(asset.local);
       referenceIndexes.push(refIndex >= 0 ? refIndex + 1 : images.length);
     }
   }
   if (!images.length) return { image: lastData, raw: lastData };
-  const result = { images, image: images[0], raw: lastData };
+  const result = { images, image: images[0], localImages, localImage: localImages[0], raw: lastData };
   if (perReference) {
     result.perReference = true;
     result.referenceCount = referenceCount;
@@ -611,8 +617,12 @@ new Worker('ai-tasks', async (job) => {
         shakeStrength: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeStrength)) ? Number(payload.shakeStrength) : 0)),
         shakeFrequency: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeFrequency)) ? Number(payload.shakeFrequency) : 0))
       };
+      const localVideo = `/videos/${path.basename(out)}`;
+      // 与图片一样上传云存储，video 写公网 URL，本地路径留作缓存。
+      const cloudVideo = await uploadResultAsset(out, path.basename(out), 'video/mp4');
       const videoResult = {
-        video: `/videos/${path.basename(out)}`,
+        video: cloudVideo || localVideo,
+        localVideo,
         localVideoPath: out,
         prompt: payload.prompt || '',
         options,
