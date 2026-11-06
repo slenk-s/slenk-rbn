@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { nanoid } from 'nanoid';
-import { addTask, getTask, listTasks, deleteTask, updateTask, getActiveProvider } from '../store.js';
+import { addTask, getTask, getTaskById, listTasks, listAllTasks, deleteTask, deleteTaskById, updateTask, getActiveProvider, findUserById } from '../store.js';
 import { paths } from '../paths.js';
 import { verify } from '../auth.js';
 
@@ -82,14 +82,15 @@ router.post('/', async (req, res, next) => {
 });
 router.get('/', async (req, res, next) => {
   try {
-    res.json({ tasks: await listTasks(req.user.userId) });
+    // 任务结果全站共享：任何登录用户都能看到所有人的任务。
+    res.json({ tasks: await listAllTasks() });
   } catch (err) {
     next(err);
   }
 });
 router.get('/:id', async (req, res, next) => {
   try {
-    const item = await getTask(req.user.userId, req.params.id);
+    const item = await getTaskById(req.params.id);
     if (!item) return res.status(404).json({ error: 'not_found' });
     res.json({ task: item });
   } catch (err) {
@@ -98,9 +99,19 @@ router.get('/:id', async (req, res, next) => {
 });
 router.delete('/:id', async (req, res, next) => {
   try {
-    const removed = await deleteTask(req.user.userId, req.params.id);
+    // 共享可见但删除受限：只有本人或管理员能删。
+    const item = await getTaskById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'task_not_found' });
+    let removed = false;
+    if (item.userId === req.user.userId) {
+      removed = await deleteTask(req.user.userId, req.params.id);
+    } else {
+      const me = await findUserById(req.user.userId);
+      if (!me?.isAdmin) return res.status(403).json({ error: 'not_task_owner' });
+      removed = await deleteTaskById(req.params.id);
+    }
     if (!removed) return res.status(404).json({ error: 'task_not_found' });
-    res.json({ ok: true, tasks: await listTasks(req.user.userId) });
+    res.json({ ok: true, tasks: await listAllTasks() });
   } catch (err) {
     next(err);
   }
@@ -108,7 +119,7 @@ router.delete('/:id', async (req, res, next) => {
 
 router.get('/:id/download', async (req, res, next) => {
   try {
-    const item = await getTask(req.user.userId, req.params.id);
+    const item = await getTaskById(req.params.id);
     if (!item) return res.status(404).json({ error: 'not_found' });
     const format = req.query.format === 'video' ? 'video' : req.query.format === 'image' ? 'image' : 'text';
     const ext = format === 'video' ? 'mp4' : format === 'image' ? 'png' : 'txt';

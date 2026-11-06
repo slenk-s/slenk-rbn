@@ -97,6 +97,7 @@ function mapTask(row) {
   return {
     id: row.id,
     userId: row.user_id,
+    username: row.username || null,
     type: row.type,
     label: displayTaskLabel(row),
     status: row.status,
@@ -134,6 +135,33 @@ async function listTasks(userId, limit = 100) {
 async function getTask(userId, id) {
   const { rows } = await query('select * from slenk_notes_tasks where user_id = $1 and id = $2', [userId, id]);
   return rows[0] ? mapTask(rows[0]) : null;
+}
+
+// 任务结果全站共享：列表与详情不再按 user_id 过滤，附带生成者用户名用于前端署名。
+async function listAllTasks(limit = 200) {
+  const { rows } = await query(
+    `select t.*, u.username from slenk_notes_tasks t
+     left join slenk_notes_users u on u.id = t.user_id
+     order by t.created_at desc limit $1`,
+    [limit]
+  );
+  return rows.map(mapTask);
+}
+
+async function getTaskById(id) {
+  const { rows } = await query(
+    `select t.*, u.username from slenk_notes_tasks t
+     left join slenk_notes_users u on u.id = t.user_id
+     where t.id = $1`,
+    [id]
+  );
+  return rows[0] ? mapTask(rows[0]) : null;
+}
+
+// 管理员删除他人任务时使用；本人的任务仍走 deleteTask(userId, id)。
+async function deleteTaskById(id) {
+  const { rowCount } = await query('delete from slenk_notes_tasks where id = $1', [id]);
+  return rowCount > 0;
 }
 
 async function updateTask(userId, id, patch) {
@@ -348,9 +376,12 @@ export {
   deleteUser,
   addTask,
   listTasks,
+  listAllTasks,
   getTask,
+  getTaskById,
   updateTask,
   deleteTask,
+  deleteTaskById,
   listProviders,
   getProviderById,
   getProviderUnmaskedById,

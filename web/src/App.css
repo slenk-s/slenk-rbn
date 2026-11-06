@@ -1754,6 +1754,15 @@ button:hover { transform: translateY(-1px); }
   background: rgba(79, 70, 229, 0.08);
   color: var(--accent);
 }
+/* 任务全站共享后标注生成者，区分自己与他人的任务。 */
+.task-owner {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--text-dim, #64748b);
+}
 .sidebar-task-list li[data-status="done"] .sidebar-task-state { background: rgba(22, 163, 74, 0.10); color: #15803d; }
 .sidebar-task-list li[data-status="failed"] .sidebar-task-state { background: rgba(220, 38, 38, 0.10); color: #b91c1c; }
 .task-group-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; border: none; border-radius: 8px; background: transparent; cursor: pointer; font-size: 12px; color: var(--text-h); font-weight: 600; text-align: left; }
