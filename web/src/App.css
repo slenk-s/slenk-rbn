@@ -950,8 +950,56 @@ button:hover { transform: translateY(-1px); }
 .layout-image-heavy .panel-row:not(.panel-row-result) {
   grid-template-columns: 1fr 1.2fr;
 }
+/* 实况视频：选项区整块并入标题区（见下方 title-options-video），
+   第一行只剩标题单元格，独占整行。 */
 .layout-video-focused .panel-row:not(.panel-row-result) {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
+}
+.layout-video-focused .panel-row > .cell-options {
+  display: none;
+}
+/* 视频选项工具条：独占标题行下的一整行，控件自适应换行。 */
+.layout-video-focused .title-row .title-options-video {
+  /* order 靠后：让 模型/提交/重置 按钮留在第一行标题旁，工具条独占第二行。 */
+  order: 10;
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 10px 14px;
+  margin-top: 2px;
+  background: rgba(79, 70, 229, 0.04);
+  border: 1px solid rgba(79, 70, 229, 0.10);
+  border-radius: 12px;
+}
+.layout-video-focused .title-options-video select {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 34px;
+  padding: 7px 26px 7px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.layout-video-focused .title-options-video .range-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.layout-video-focused .title-options-video .range-item .option-label {
+  white-space: nowrap;
+}
+.layout-video-focused .title-options-video .range-item input[type="range"] {
+  width: 110px;
+  flex: 0 0 auto;
+}
+.layout-video-focused .title-options-video .duration-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 /* 替换生图：图片输入区独占一行在上，文本输入区独占一行在下；
    文本输入区里默认提示词与用户提示词左右并排。
