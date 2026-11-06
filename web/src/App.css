@@ -1794,6 +1794,17 @@ button:hover { transform: translateY(-1px); }
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* 批量删除的两步确认态：第一次点变红，再点一次才执行。 */
+.task-delete-btn.confirm-armed {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+  animation: confirmPulse 1s ease infinite;
+}
+@keyframes confirmPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(220, 38, 38, 0); }
+}
 /* 结果图可点击放大，复用现有 lightbox 弹层。 */
 .result-media img.zoomable {
   cursor: zoom-in;
