@@ -810,10 +810,6 @@ button:hover { transform: translateY(-1px); }
   font-weight: 600;
   white-space: nowrap;
 }
-.title-row .meta-chip.provider-chip {
-  background: rgba(124, 58, 237, 0.10);
-  color: var(--accent-2);
-}
 .title-row .title-actions {
   display: flex;
   gap: 8px;
@@ -1000,6 +996,13 @@ button:hover { transform: translateY(-1px); }
   align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
+}
+/* 提交/重置按钮收进工具条并靠右。 */
+.layout-video-focused .title-options-video .title-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 /* 替换生图：图片输入区独占一行在上，文本输入区独占一行在下；
    文本输入区里默认提示词与用户提示词左右并排。
@@ -2287,6 +2290,10 @@ button:hover { transform: translateY(-1px); }
   background: transparent;
   cursor: pointer;
   outline: none;
+  /* 通用 input 规则会漏进白底、边框和内边距，必须一并清掉，否则滑条像被套了个输入框。 */
+  border: none;
+  padding: 0;
+  height: 18px;
 }
 .option-row.range-row input[type="range"]::-webkit-slider-runnable-track {
   height: 6px;
