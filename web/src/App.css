@@ -1632,6 +1632,9 @@ button:hover { transform: translateY(-1px); }
   gap: 8px;
   max-height: 460px;
   overflow-y: auto;
+  /* grid 的 align-content 默认 stretch 会把行拉高填满容器，
+     任务少时每行被拉成大块空白；改为顶部紧凑排列。 */
+  align-content: start;
 }
 .task-list li {
   display: grid;
