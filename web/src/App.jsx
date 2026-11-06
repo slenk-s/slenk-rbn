@@ -24,6 +24,8 @@ const TYPE_TO_TAB = { rewrite: 'note-rewrite', image: 'replace-image', video: 'l
 const TAB_TO_TYPE = Object.fromEntries(Object.entries(TYPE_TO_TAB).map(([type, tab]) => [tab, type]));
 const TEXT_TABS = new Set(['note-rewrite']);
 const IMAGE_TABS = new Set(['replace-image', 'ai-image', 'layout-tool']);
+// 只有这两个页签的文本输入区有「二级提示词」，提交时按 默认+二级+用户 三层拼接。
+const SECONDARY_PROMPT_TABS = new Set(['replace-image', 'ai-image']);
 const IMAGE_HEAVY_TABS = new Set(['multiply', 'layout-tool']);
 const VIDEO_TABS = new Set(['live-video']);
 const FILE_TABS = new Set(['note-download']);
@@ -961,6 +963,7 @@ function Workspace({ token }) {
   const [lastToolTab, setLastToolTab] = useState('replace-image');
   const [textByTab, setTextByTab] = useState({});
   const [defaultPromptByTab, setDefaultPromptByTab] = useState({});
+  const [secondaryPromptByTab, setSecondaryPromptByTab] = useState({});
   const [filesByTab, setFilesByTab] = useState({});
   const [noteDrafts, setNoteDrafts] = useState({});
   const [canvasSizeByTab, setCanvasSizeByTab] = useState({});
@@ -1001,6 +1004,7 @@ function Workspace({ token }) {
 
   const text = textByTab[active] || '';
   const defaultPrompt = defaultPromptByTab[active] !== undefined ? defaultPromptByTab[active] : (PROMPTS[active] || '');
+  const secondaryPrompt = secondaryPromptByTab[active] || '';
   const files = filesByTab[active] || [];
   const noteDraft = noteDrafts[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] };
   const canvasSize = canvasSizeByTab[active] || '1080x1080';
@@ -1016,6 +1020,7 @@ function Workspace({ token }) {
   const setText = (v) => setTextByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
   const setNoteDraft = (v) => setNoteDrafts(prev => ({ ...prev, [active]: { ...(prev[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] }), ...(typeof v === 'function' ? v(prev[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] }) : v) } }));
   const setDefaultPrompt = (v) => setDefaultPromptByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
+  const setSecondaryPrompt = (v) => setSecondaryPromptByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
   const setFiles = (v) => setFilesByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || []) : v }));
   const setCanvasSize = (v) => setCanvasSizeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1080x1080') : v }));
   const setOutputCount = (v) => setOutputCountByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1') : v }));
@@ -1070,7 +1075,11 @@ function Workspace({ token }) {
       setFiles(prev => { const seen = new Set(prev.map(f => f.url)); const next = [...prev]; for (const file of uploaded) { if (!seen.has(file.url)) next.push(file); } return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 个素材已保存到本地存储路径。');
   }
   function submitCurrentTask() {
-    const submitText = text.trim() || defaultPrompt.trim() || PROMPTS[active] || '';
+    // AI 生图 / 替换生图：默认 + 二级 + 用户 三层提示词拼接（空层跳过）；
+    // 其余页签保持原回退逻辑：用户填了用用户的，否则用默认。
+    const submitText = SECONDARY_PROMPT_TABS.has(active)
+      ? [defaultPrompt.trim(), secondaryPrompt.trim(), text.trim()].filter(Boolean).join('\n')
+      : (text.trim() || defaultPrompt.trim() || PROMPTS[active] || '');
     if (IMAGE_TABS.has(active)) return createTask('image', { prompt: submitText, image: files[0]?.url, imageUrls: files.map(f => f.url), canvasSize, count: Number(outputCount) || 1, perReference, providerId: selectedProviderId, model: selectedModelName });
     if (VIDEO_TABS.has(active)) {
       const duration = durationMode === 'random' ? 8 : Number(customDuration) || 3;
@@ -1142,7 +1151,7 @@ function Workspace({ token }) {
 </select><button className="btn-primary action-primary" onClick={submitCurrentTask}>{IMAGE_TABS.has(active) ? '提交生成' : VIDEO_TABS.has(active) ? '提交视频任务' : '提交任务'}</button><button className="btn-secondary" onClick={resetPrompt}>重置提示词</button></div></div></div>
                 <div className="panel-cell cell-options"><div className="cell-head"><div className="section-title-block"><h3>选项区</h3><p>{hints.options}</p></div></div><div className="cell-body"><div className="option-row"><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>{IMAGE_TABS.has(active) && <select value={outputCount} onChange={e => setOutputCount(e.target.value)} aria-label="输出数量">{[1,2,3,4].map(n => <option key={n} value={String(n)}>{n} 张</option>)}</select>}{IMAGE_TABS.has(active) && <label className="option-check" title="多张参考图时按图号一一对应生成；需要多张参考图合成一张时取消勾选"><input type="checkbox" checked={perReference} onChange={e => setPerReference(e.target.checked)} /><span>按参考图一一对应</span></label>}{VIDEO_TABS.has(active) && <select value={motionEffect} onChange={e => setMotionEffect(e.target.value)} aria-label="运镜效果">{MOTION_EFFECTS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>}</div>{VIDEO_TABS.has(active) && <><div className="option-row range-row range-pair"><div className="range-item"><label className="option-label">运动强度</label><input type="range" min="0" max="100" value={shakeStrength} onChange={e => setShakeStrength(Number(e.target.value))} style={{ '--progress': shakeStrength + '%' }} /><span className="range-value">{shakeStrength}</span></div><div className="range-item"><label className="option-label">抖动频率</label><input type="range" min="0" max="100" value={shakeFrequency} onChange={e => setShakeFrequency(Number(e.target.value))} style={{ '--progress': shakeFrequency + '%' }} /><span className="range-value">{shakeFrequency}</span></div></div><div className="option-row duration-row"><span className="option-label">视频时长</span><div className="duration-options"><label className="radio-item duration-radio"><input type="radio" name="durationMode" value="random" checked={durationMode === 'random'} onChange={e => setDurationMode(e.target.value)} /><span>随机时长</span><span className="duration-hint">上限 8 秒</span></label><label className="radio-item duration-radio"><input type="radio" name="durationMode" value="fixed" checked={durationMode === 'fixed'} onChange={e => setDurationMode(e.target.value)} /><span>定时时长</span><input type="number" className="duration-input" min="1" max="30" value={customDuration} onChange={e => setCustomDuration(e.target.value)} /><span>秒</span></label></div></div></>}</div></div></div>
               <div className='panel-row'>
-                <div className={'panel-cell' + (isTextFocused ? ' cell-text-fullwidth' : '')}><div className="cell-head"><div className="section-title-block"><h3>文本输入区</h3><p>{hints.text}</p></div></div><div className="cell-body text-input-split"><div className="prompt-section"><div className="prompt-label">默认提示词</div><textarea className="prompt-default" value={defaultPrompt} onChange={e => setDefaultPrompt(e.target.value)} placeholder="暂无默认提示词" /></div><div className="prompt-section"><div className="prompt-label">用户提示词</div><textarea value={text} onChange={e => setText(e.target.value)} placeholder="在此输入或修改提示词..." /></div></div></div>
+                <div className={'panel-cell' + (isTextFocused ? ' cell-text-fullwidth' : '')}><div className="cell-head"><div className="section-title-block"><h3>文本输入区</h3><p>{hints.text}</p></div></div><div className="cell-body text-input-split"><div className="prompt-section"><div className="prompt-label">默认提示词</div><textarea className="prompt-default" value={defaultPrompt} onChange={e => setDefaultPrompt(e.target.value)} placeholder="暂无默认提示词" /></div>{SECONDARY_PROMPT_TABS.has(active) && <div className="prompt-section"><div className="prompt-label">二级提示词</div><textarea className="prompt-default prompt-secondary" value={secondaryPrompt} onChange={e => setSecondaryPrompt(e.target.value)} placeholder="可选：二级默认提示词；提交时按「默认 + 二级 + 用户」顺序拼接" /></div>}<div className="prompt-section"><div className="prompt-label">用户提示词</div><textarea value={text} onChange={e => setText(e.target.value)} placeholder="在此输入或修改提示词..." /></div></div></div>
                 {inputSection}
               </div>
               <div className="panel-row panel-row-result"><div className="panel-cell result-cell"><aside className="result-side"><div className="section-title-block"><h3>生成结果输出区</h3><p>{hints.result}</p></div>{currentTask ? <div className="result-meta"><span className={'pill ' + (currentTask.status === 'failed' ? 'pill-bad' : 'pill-ok')}>{currentTask.status === 'done' ? '已完成' : currentTask.status === 'failed' ? '失败' : currentTask.status === 'queued' ? '排队中' : '处理中'}</span><span className="result-meta-line">任务编号 {currentTask.id.slice(0, 8)}</span></div> : null}<div className="result-side-actions">{selectedTaskId ? <button type="button" className="btn-secondary" onClick={() => { clearedTabs.current.add(active); setSelectedTaskId(''); }}>清空选择</button> : null}</div></aside><div className="result-stage cell-body">{currentTask ? <TaskResultWithDownload task={currentTask} onZoom={(url, name) => setLightbox({ url, name, isVideo: false })} /> : <ResultEmptyState tabId={active} />}</div></div></div>
