@@ -1173,7 +1173,7 @@ function Workspace({ token }) {
       <div className="layout">
         <aside className="sidebar"><div className="sidebar-nav"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
-          {GROUPS.map(group => <div key={group.id} className="tab-group"><div className="tab-group-label"><span>{group.icon}</span>{group.label}</div><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
+          {GROUPS.map(group => <div key={group.id} className="tab-group"><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
           </div>
           {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{taskGroups.map(g => (
             <li key={g.key} className="task-group">
