@@ -1122,7 +1122,7 @@ function Workspace({ token }) {
     const data = await readJsonResponse(r); const uploaded = data.files || [];
       setFiles(prev => { const seen = new Set(prev.map(f => f.url)); const next = [...prev]; for (const file of uploaded) { if (!seen.has(file.url)) next.push(file); } return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 个素材已保存到本地存储路径。');
   }
-  function submitCurrentTask() {
+  async function submitCurrentTask() {
     // AI 生图 / 替换生图：默认 + 二级 + 用户 三层提示词拼接（空层跳过）；
     // 其余页签保持原回退逻辑：用户填了用用户的，否则用默认。
     const submitText = SECONDARY_PROMPT_TABS.has(active)
@@ -1132,7 +1132,21 @@ function Workspace({ token }) {
     if (VIDEO_TABS.has(active)) {
       // 随机时长入口已下线，统一按定时秒数提交。
       const duration = Number(customDuration) || 3;
-      return createTask('video', { prompt: submitText, mediaUrls: files.map(f => f.url), canvasSize, duration, durationMode: 'fixed', motionEffect, shakeStrength, shakeFrequency, providerId: selectedProviderId, model: selectedModelName });
+      const basePayload = { prompt: submitText, canvasSize, duration, durationMode: 'fixed', motionEffect, shakeStrength, shakeFrequency, providerId: selectedProviderId, model: selectedModelName };
+      const urls = files.map(f => f.url).filter(Boolean);
+      if (urls.length <= 1) return createTask('video', { ...basePayload, mediaUrls: urls });
+      // 多张图片：每张图各起一个视频任务，队列并行出片，而不是只用第一张图。
+      setStatus('正在提交 ' + urls.length + ' 个视频任务…');
+      let lastId = '';
+      for (const url of urls) {
+        const result = await api('/api/tasks', { method: 'POST', token, body: JSON.stringify({ type: 'video', tab: active, payload: { ...basePayload, mediaUrls: [url] } }) });
+        lastId = result.id || lastId;
+      }
+      clearedTabs.current.delete(active);
+      if (lastId) { pendingTaskId.current = lastId; setSelectedTaskId(lastId); }
+      setStatus(urls.length + ' 个视频任务已提交到队列。');
+      await refresh();
+      return;
     }
     return createTask('rewrite', { prompt: submitText, source: text.trim() || submitText, canvasSize, providerId: selectedProviderId, model: selectedModelName });
   }
