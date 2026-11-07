@@ -1783,7 +1783,20 @@ button:hover { transform: translateY(-1px); }
 .sidebar-tasks-head b { font-size: 13px; color: var(--text-h); }
 .sidebar-tasks-head span { font-size: 12px; color: var(--text); }
 
-.sidebar-task-list { max-height: min(300px, 38vh); }
+/* 行内容超出时截断而不是撑出横向滚动条。
+   隐式 grid 列是 auto（按内容定宽），会撑破容器；列表/组/组内列表三层都要
+   minmax(0,1fr) 把列宽钉死在容器内，配合 min-width:0 让标题和标签走省略号收缩。 */
+.sidebar-task-list,
+.sidebar-task-list .task-group,
+.sidebar-task-list .task-group-items { grid-template-columns: minmax(0, 1fr); }
+.sidebar-task-list { max-height: min(300px, 38vh); overflow-x: hidden; }
+.sidebar-task-list .task-group,
+.sidebar-task-list .task-group-head,
+.sidebar-task-list .task-group-items,
+/* grid 项目默认 min-width:auto 不肯缩到轨道以下，得逐个放行到行这一级。
+   且 li 自身的 grid 隐式列也是内容定宽，会让内部按钮反过来把它撑破——
+   侧栏行只有一个按钮子节点，改 display:block 让 width:100% 直接贴着行宽。 */
+.sidebar-task-list .task-group-items > li { min-width: 0; display: block; }
 .sidebar-task-list li { padding: 0; }
 .sidebar-task-list li.selected {
   border-color: var(--accent);
@@ -1797,8 +1810,8 @@ button:hover { transform: translateY(-1px); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 9px 11px;
+  gap: 5px;
+  padding: 7px 8px;
   background: transparent;
   border: 0;
   font-family: inherit;
@@ -1808,6 +1821,9 @@ button:hover { transform: translateY(-1px); }
 }
 .sidebar-task-item:hover { background: rgba(79, 70, 229, 0.05); }
 .sidebar-task-label {
+  /* flex:1 + min-width:0 才能真正收缩：缺了它内容会撑破容器出现横向滚动条。 */
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   font-weight: 700;
   color: var(--text-h);
@@ -1817,8 +1833,8 @@ button:hover { transform: translateY(-1px); }
 }
 .sidebar-task-state {
   flex: none;
-  font-size: 11px;
-  padding: 2px 8px;
+  font-size: 10px;
+  padding: 1px 6px;
   border-radius: 999px;
   background: rgba(79, 70, 229, 0.08);
   color: var(--accent);
