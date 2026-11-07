@@ -620,26 +620,29 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
   const [qr, setQr] = useState(null);
   const [notePrompts, setNotePrompts] = useState(loadNotePrompts);
   const [aiDiff, setAiDiff] = useState(null);
-  const [selectedImageIndex, setSelectedImageIndex] = useState(null);
-  const [regeneratingId, setRegeneratingId] = useState(null);
-  const [imageReplacePreview, setImageReplacePreview] = useState(null);
+  // 按图重生成支持并行：regeneratingIds 存进行中的图片 id，regenLimit 是用户可设的并行上限。
+  const [regeneratingIds, setRegeneratingIds] = useState(() => new Set());
+  const [regenLimit, setRegenLimit] = useState(2);
+  // 并行生成的结果排队等确认：imageReplacePreviews[0] 是当前弹窗展示的那张。
+  const [imageReplacePreviews, setImageReplacePreviews] = useState([]);
   function clearImageSelectionState() {
-    setSelectedImageIndex(null);
-    setRegeneratingId(null);
-    setImageReplacePreview(null);
+    // 专属提示词编辑器常驻显示，不再需要选中态；这里只清待确认的替换预览。
+    // 进行中的生成任务不清，它们结束后会自行从 regeneratingIds 移除。
+    setImageReplacePreviews([]);
   }
   // 按图重生成：以该图为参考走 /images/edits。参考图传原始存储值
   // （/notes-images、/uploads 相对路径或远程 URL），worker 会直接读本地缓存；
   // 不要传 resolveImageSrc() 拼出的带域名绝对地址。
   async function regenerateImage(index) {
     const img = images[index];
-    if (!img || img.isVideo || regeneratingId) return;
+    if (!img || img.isVideo || regeneratingIds.has(img.id)) return;
+    if (regeneratingIds.size >= regenLimit) { setStatus('已达并行上限（' + regenLimit + ' 个），等一个完成后再试。'); return; }
     // 专属提示词与默认提示词相互独立（同「替换生图」工作区）：填了用专属，留空用默认；再附标题/正文上下文。
     const custom = String(img.prompt || '').trim();
     const finalPrompt = [custom || notePrompts.imageReplace, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
     const reference = img.cachedUrl || img.url;
     if (!reference) { setStatus('该图片缺少可用地址，无法作为参考图。'); return; }
-    setRegeneratingId(img.id);
+    setRegeneratingIds(prev => new Set(prev).add(img.id));
     try {
       const task = await runTask(
         { type: 'image', purpose: 'noteImage', payload: { prompt: finalPrompt, imageUrls: [reference], perReference: true, canvasSize: '1080x1080', count: 1 } },
@@ -649,26 +652,31 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
       const result = parseJsonText(task.result) || {};
       const urls = Array.isArray(result.images) && result.images.length ? result.images : (result.image && typeof result.image === 'string' ? [result.image] : []);
       if (!urls.length) throw new Error('AI 没有返回图片');
-      setImageReplacePreview({ id: img.id, url: urls[0] });
+      setImageReplacePreviews(prev => [...prev, { id: img.id, url: urls[0] }]);
       setStatus('新图已生成，请确认是否替换。');
     } catch (err) {
       setStatus(err.message);
     } finally {
-      setRegeneratingId(null);
+      setRegeneratingIds(prev => { const next = new Set(prev); next.delete(img.id); return next; });
     }
   }
   function applyImageReplace() {
-    if (!imageReplacePreview) return;
-    const targetIndex = images.findIndex(item => item.id === imageReplacePreview.id);
-    if (targetIndex < 0) { setImageReplacePreview(null); setStatus('原图已被删除或移动，新图已弃用。'); return; }
+    const preview = imageReplacePreviews[0];
+    if (!preview) return;
+    const targetIndex = images.findIndex(item => item.id === preview.id);
+    if (targetIndex < 0) { setImageReplacePreviews(prev => prev.slice(1)); setStatus('原图已被删除或移动，新图已弃用。'); return; }
     setImages(prev => prev.map((item, i) => {
       if (i !== targetIndex) return item;
       // 旧 cachedUrl 指向旧图，必须丢弃；id/name/prompt 保留，顺序与封面逻辑不变。
       const { cachedUrl, ...rest } = item;
-      return { ...rest, url: imageReplacePreview.url };
+      return { ...rest, url: preview.url };
     }));
-    setImageReplacePreview(null);
+    setImageReplacePreviews(prev => prev.slice(1));
     setStatus('已替换为新图。');
+  }
+  function dismissImageReplace() {
+    // 取消只丢弃当前这张，队列里后面的还会接着弹出来。
+    setImageReplacePreviews(prev => prev.slice(1));
   }
   async function api(path, options = {}) {
     return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
@@ -858,21 +866,20 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
             </div>
           </div>)}
           <div className="note-section images">
-            <div className="section-title"><h3>图片管理</h3>{!isDownload && <div className="image-toolbar"><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label></div>}</div>
+            <div className="section-title"><h3>图片管理</h3>{!isDownload && <div className="image-toolbar"><label className="regen-limit" title="按图重生成时最多同时跑几个任务">并行上限<input type="number" min="1" max="9" value={regenLimit} onChange={e => setRegenLimit(Math.max(1, Math.min(9, Number(e.target.value) || 1)))} /></label><label className="btn-secondary btn-upload"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => uploadImages(e.target.files)} />上传图片</label></div>}</div>
             {!isDownload && <p className="section-desc">支持上传、下载、删除；直接用鼠标拖动图片调整顺序，第一张默认作为封面。</p>}
             {!isDownload && <PromptStrip promptKey="imageReplace" value={notePrompts.imageReplace} onChange={v => updateNotePrompt('imageReplace', v)} onPersist={persistNotePrompts} onReset={() => resetPromptField('imageReplace')} />}
             <div className="image-grid">{images.map((img, index) => (
               <figure
                 key={img.id || index}
-                className={'image-thumb' + (selectedImageIndex === index ? ' selected' : '')}
+                className="image-thumb"
                 draggable
                 onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }}
                 onDragOver={e => e.preventDefault()}
                 onDrop={() => { moveImage(dragIndex, index); clearImageSelectionState(); }}
-                onClick={() => { if (!img.isVideo) setSelectedImageIndex(selectedImageIndex === index ? null : index); }}
               >
                 {img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}
-                {regeneratingId === img.id && <div className="image-regen-overlay">生成中…</div>}
+                {regeneratingIds.has(img.id) && <div className="image-regen-overlay">生成中…</div>}
                 {img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} />}
                 <figcaption>
                   <span>{img.name || '图片 ' + (index + 1)}</span>
@@ -881,15 +888,15 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
                     <button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>
                   </div>
                 </figcaption>
-                {selectedImageIndex === index && !img.isVideo && (
+                {!img.isVideo && (
                   <div className="image-prompt-editor" onClick={e => e.stopPropagation()}>
                     <textarea
                       value={img.prompt || ''}
                       placeholder="可选：填写此图专属提示词；留空则使用上方默认提示词"
                       onChange={e => setImages(prev => prev.map((item, i) => i === index ? { ...item, prompt: e.target.value } : item))}
                     />
-                    <button type="button" className="btn-secondary" disabled={regeneratingId !== null} onClick={() => regenerateImage(index)}>
-                      {regeneratingId === img.id ? '生成中…' : '重新生成此图'}
+                    <button type="button" className="btn-secondary" disabled={regeneratingIds.has(img.id)} onClick={() => regenerateImage(index)}>
+                      {regeneratingIds.has(img.id) ? '生成中…' : '提交'}
                     </button>
                   </div>
                 )}
@@ -920,23 +927,24 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
           </div>
         </div>
       )}
-      {imageReplacePreview && (() => {
-        const targetIndex = images.findIndex(item => item.id === imageReplacePreview.id);
+      {imageReplacePreviews.length > 0 && (() => {
+        const preview = imageReplacePreviews[0];
+        const targetIndex = images.findIndex(item => item.id === preview.id);
         if (targetIndex < 0) return null;
         const target = images[targetIndex];
         return (
-          <div className="prompt-config-backdrop" onClick={() => setImageReplacePreview(null)}>
+          <div className="prompt-config-backdrop" onClick={dismissImageReplace}>
             <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
-              <button type="button" className="prompt-config-close" onClick={() => setImageReplacePreview(null)}>×</button>
-              <h3>替换图片确认</h3>
+              <button type="button" className="prompt-config-close" onClick={dismissImageReplace}>×</button>
+              <h3>替换图片确认{imageReplacePreviews.length > 1 ? '（还有 ' + (imageReplacePreviews.length - 1) + ' 张待确认）' : ''}</h3>
               <p>「{target.name || '图片 ' + (targetIndex + 1)}」将被替换为新图，原图不保留。</p>
               <div className="image-compare-grid">
                 <figure><img src={resolveImageSrc(target)} alt="原图" /><figcaption>原图</figcaption></figure>
                 <div className="image-compare-arrow">→</div>
-                <figure><img src={resolveImageSrc({ url: imageReplacePreview.url })} alt="新图" /><figcaption>新图</figcaption></figure>
+                <figure><img src={resolveImageSrc({ url: preview.url })} alt="新图" /><figcaption>新图</figcaption></figure>
               </div>
               <div className="prompt-config-actions">
-                <button type="button" className="btn-secondary" onClick={() => setImageReplacePreview(null)}>取消</button>
+                <button type="button" className="btn-secondary" onClick={dismissImageReplace}>取消</button>
                 <button type="button" className="btn-primary" onClick={applyImageReplace}>应用</button>
               </div>
             </div>
