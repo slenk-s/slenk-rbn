@@ -1268,6 +1268,33 @@ button:hover { transform: translateY(-1px); }
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 14px;
 }
+/* 任务结果弹框：媒体展示对齐「替换图片确认」弹框的观感——大图居中、更高上限。
+   选择器必须带 .result-gallery：基础画廊规则是 3 个类，少一级就压不住。 */
+.task-detail-modal .task-detail-result {
+  display: flex;
+  justify-content: center;
+}
+/* 注意特异性：还有一条 .task-detail-result .result-gallery 的 grid 规则，
+   这里必须写到 4 个类才能压过它。 */
+.task-detail-modal .task-detail-result .result-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+}
+.task-detail-modal .result-gallery .result-media {
+  width: auto;
+  max-width: min(640px, 100%);
+}
+.task-detail-modal .result-gallery .result-media img,
+.task-detail-modal .result-gallery .result-media video,
+.task-detail-modal .task-detail-result > .result-media img,
+.task-detail-modal .task-detail-result > .result-media video {
+  width: auto;
+  max-width: 100%;
+  max-height: 56vh;
+  margin: 0 auto;
+}
 .result-gallery .result-media {
   max-width: 100%;
 }

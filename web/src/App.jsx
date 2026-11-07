@@ -244,18 +244,50 @@ function resultMediaSrc(url) {
   const u = String(url || '');
   return /^https?:\/\//i.test(u) ? u : API + u;
 }
-function DownloadLink({ url, label, name }) {
-  const absolute = url.startsWith('http') ? url : API + url;
-  return <a href={absolute} download={name || ''}><button type="button">{label}</button></a>;
+// 统一下载：fetch 成 blob 再落地，这样 /api 接口能带鉴权头，
+// 跨域的云端 URL 也能真正存成文件（<a download> 对跨域地址会被浏览器忽略）。
+async function downloadAsset(url, name) {
+  const absolute = String(url || '').startsWith('http') ? String(url) : API + url;
+  const headers = absolute.startsWith(API) ? { Authorization: 'Bearer ' + localStorage.getItem('token') } : {};
+  const resp = await fetch(absolute, { headers });
+  if (!resp.ok) throw new Error('下载失败（HTTP ' + resp.status + '）');
+  const blob = await resp.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name || 'download';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
-function TaskResultWithDownload({ task, onZoom }) {
+function DownloadLink({ url, label, name }) {
+  return <button type="button" onClick={async (e) => { e.stopPropagation(); try { await downloadAsset(url, name); } catch { window.open(String(url || '').startsWith('http') ? url : API + url, '_blank'); } }}>{label}</button>;
+}
+// 任务结果整体下载：图片/视频直接拉 blob（多图逐张下），文本存成 txt。
+async function downloadTaskResult(task) {
+  const result = unwrapTaskResult(parseJsonText(task.result || '')) || {};
+  const mediaUrls = Array.isArray(result.images) && result.images.length ? result.images : [result.image, result.video].filter(Boolean);
+  if (mediaUrls.length) {
+    const isVideo = Boolean(result.video);
+    for (let i = 0; i < mediaUrls.length; i++) {
+      await downloadAsset(mediaUrls[i], task.id + '-' + task.type + (mediaUrls.length > 1 ? '-' + (i + 1) : '') + (isVideo ? '.mp4' : '.png'));
+    }
+    return;
+  }
+  const text = result.text || (Array.isArray(result.titles) ? result.titles.join('\n') : '') || '';
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = task.id + '-' + task.type + '.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   const result = unwrapTaskResult(parseJsonText(task.result || ''));
   if (!result) return <p className="muted">{task.status === 'failed' ? parseJsonText(task.error).error : '任务还没有结果内容。'}</p>;
-  const resultDownload = <DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" />;
-  if (result.text) return <><p className="result-text">{result.text}</p><div className="result-actions">{resultDownload}</div></>;
-  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img className="zoomable" src={resultMediaSrc(img)} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} /><figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}<DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} /></figcaption></figure>)}</div>;
-  if (result.image && typeof result.image === 'string') return <figure className="result-media"><img className="zoomable" src={resultMediaSrc(result.image)} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} /><figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption></figure>;
-  if (result.video) return <figure className="result-media"><video controls src={resultMediaSrc(result.video)} /><figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption></figure>;
+  const resultDownload = hideDownloads ? null : <DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" />;
+  if (result.text) return <><p className="result-text">{result.text}</p>{resultDownload && <div className="result-actions">{resultDownload}</div>}</>;
+  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img className="zoomable" src={resultMediaSrc(img)} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} />{(result.images.length > 1 || !hideDownloads) && <figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}{!hideDownloads && <DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} />}</figcaption>}</figure>)}</div>;
+  if (result.image && typeof result.image === 'string') return <figure className="result-media"><img className="zoomable" src={resultMediaSrc(result.image)} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} />{!hideDownloads && <figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption>}</figure>;
+  if (result.video) return <figure className="result-media"><video controls src={resultMediaSrc(result.video)} />{!hideDownloads && <figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption>}</figure>;
   const titleCandidates = Array.isArray(result.titles) ? result.titles.map(String) : [];
   const displayTitle = titleCandidates[0] || result.title || '';
   const displayContent = removeTopicTagMarkup(result.text || result.content || '');
@@ -944,6 +976,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
                 <figure><img src={resolveImageSrc({ url: preview.url })} alt="新图" /><figcaption>新图</figcaption></figure>
               </div>
               <div className="prompt-config-actions">
+                <button type="button" className="btn-secondary" onClick={() => downloadFile(preview.url, (target.name || '图片 ' + (targetIndex + 1)) + '-新图', 'image')}>下载新图</button>
                 <button type="button" className="btn-secondary" onClick={dismissImageReplace}>取消</button>
                 <button type="button" className="btn-primary" onClick={applyImageReplace}>应用</button>
               </div>
@@ -1196,10 +1229,10 @@ function Workspace({ token }) {
             </div>
             {taskDetail.error && <div className="task-detail-error">{parseJsonText(taskDetail.error).error || parseJsonText(taskDetail.error).text || taskDetail.error}</div>}
             <div className="task-detail-result">
-              <TaskResultWithDownload task={taskDetail} onZoom={(url, name) => setLightbox({ url, name, isVideo: false })} />
+              <TaskResultWithDownload task={taskDetail} hideDownloads onZoom={(url, name) => setLightbox({ url, name, isVideo: false })} />
             </div>
             <div className="prompt-config-actions">
-              <button type="button" className="btn-secondary" onClick={() => { setTaskDetailId(''); viewTask(taskDetail.id); }}>在输出区查看</button>
+              {taskDetail.status === 'done' && <button type="button" className="btn-secondary" onClick={() => downloadTaskResult(taskDetail)}>下载</button>}
               <button type="button" className="btn-primary" onClick={() => setTaskDetailId('')}>关闭</button>
             </div>
           </div>
