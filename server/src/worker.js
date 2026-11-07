@@ -11,6 +11,7 @@ import { updateTask, getProviderUnmaskedById, getActiveProvider } from './store.
 import { paths } from './paths.js';
 import { collectReferenceImages } from './lib/referenceImages.js';
 import { uploadResultAsset } from './cloudStorage.js';
+import { capImageSize } from './lib/imageFormat.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -364,14 +365,16 @@ async function extractImageAsset(data, id, index) {
   } else if (/^[A-Za-z0-9+/=\s]+$/.test(imageField)) buffer = Buffer.from(imageField, 'base64');
   else throw new Error('AI 图片返回格式无法识别');
   const suffix = index > 0 ? '-p' + index : '';
-  const out = path.join(videoDir, `${id}${suffix}.png`);
   // 重新编码剥掉 EXIF/XMP/ICC/文本块：部分上游会在图里写生成工具标记，带着发布容易被平台当成 AI 图。
   let clean = buffer;
   try { clean = await sharp(buffer).png().toBuffer(); } catch { /* 解码失败就按原样保存 */ }
-  fs.writeFileSync(out, clean);
+  // 超过 3MB 的结果自动转 JPEG 降质压缩，文件名和云端 Content-Type 跟着换。
+  const capped = await capImageSize(clean).catch(() => ({ buf: clean, ext: '.png', mime: 'image/png' }));
+  const out = path.join(videoDir, `${id}${suffix}${capped.ext}`);
+  fs.writeFileSync(out, capped.buf);
   const local = `/videos/${path.basename(out)}`;
   // 同步上传云存储：url 优先用公网地址（换机/丢本地文件后仍可用），上传失败回退本地路径。
-  const cloud = await uploadResultAsset(out, path.basename(out), 'image/png');
+  const cloud = await uploadResultAsset(out, path.basename(out), capped.mime);
   return { local, url: cloud || local };
 }
 

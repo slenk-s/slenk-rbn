@@ -28,3 +28,21 @@ export async function toStandardImage(buf) {
     return null;
   }
 }
+
+// 超过 maxBytes 的图自动压缩：PNG 是无损的压不动照片，转 JPEG 逐级降质直到达标。
+// 返回 { buf, ext, mime }；解码失败原样返回（保住内容优先）。
+export async function capImageSize(buf, maxBytes = 3 * 1024 * 1024) {
+  if (buf.length <= maxBytes) {
+    const fmt = sniffImageFormat(buf);
+    return { buf, ext: fmt === 'jpeg' ? '.jpg' : '.png', mime: fmt === 'jpeg' ? 'image/jpeg' : 'image/png' };
+  }
+  for (const q of [90, 80, 70, 60, 50]) {
+    try {
+      const jpeg = await sharp(buf, { failOn: 'none' }).flatten({ background: '#ffffff' }).jpeg({ quality: q }).toBuffer();
+      if (jpeg.length <= maxBytes || q === 50) return { buf: jpeg, ext: '.jpg', mime: 'image/jpeg' };
+    } catch {
+      return { buf, ext: '.png', mime: 'image/png' };
+    }
+  }
+  return { buf, ext: '.png', mime: 'image/png' };
+}
