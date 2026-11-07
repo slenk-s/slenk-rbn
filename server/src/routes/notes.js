@@ -7,6 +7,7 @@ import { verify } from '../auth.js';
 import { paths } from '../paths.js';
 import { saveNote, getNote } from '../store.js';
 import { enqueueTask } from './tasks.js';
+import { sniffImageFormat, toStandardImage } from '../lib/imageFormat.js';
 
 export const router = Router();
 
@@ -18,18 +19,6 @@ const CACHE_TIMEOUT_MS = 20000;
 const CACHE_BUDGET_MS = 25000;
 const CACHE_CONCURRENCY = 4;
 
-function imageMagic(buf) {
-  const bytes = Array.from(buf.subarray(0, 16));
-  if (buf.length > 1 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'jpeg';
-  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
-  if (buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
-  if (buf.length > 6 && buf.subarray(0, 6).toString('latin1') === 'GIF87a') return 'gif';
-  if (buf.length > 6 && buf.subarray(0, 6).toString('latin1') === 'GIF89a') return 'gif';
-  if (buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'ftyp' && (buf.subarray(4, 8).toString('latin1') === 'heic' || buf.subarray(4, 8).toString('latin1') === 'heix' || buf.subarray(4, 8).toString('latin1') === 'hevc' || buf.subarray(4, 8).toString('latin1') === 'mif1' || buf.subarray(4, 8).toString('latin1') === 'mif2')) return 'heic';
-  if (buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'ftyp' && (buf.subarray(4, 8).toString('latin1') === 'avif' || buf.subarray(4, 8).toString('latin1') === 'avis')) return 'avif';
-  return 'unknown';
-}
-
 function jpegFallbackUrl(rawUrl) {
   const base = String(rawUrl || '').split(/[?#]/)[0];
   return base + '?imageView2/2/w/1080/format/jpeg';
@@ -39,18 +28,15 @@ export async function cacheRemoteImage(rawUrl, referer, isFallback = false, dir 
   const url = normalizeImageUrl(rawUrl);
   if (!/^https?:\/\//.test(url)) return '';
   fs.mkdirSync(dir, { recursive: true });
-  const extMatch = String(url || '').split(/[?#]/)[0].match(/\.(jpe?g|png|webp|gif|avif|heic|heif)$/i);
-  const filename = crypto.createHash('sha256').update(url).digest('hex').slice(0, 32) + (extMatch ? '.' + extMatch[1].toLowerCase().replace('jpeg', 'jpg') : '.jpg');
-  const filePath = path.join(dir, filename);
-  const publicUrl = '/notes-images/' + filename;
-  if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-    const existingFormat = imageMagic(fs.readFileSync(filePath));
-    if (existingFormat !== 'jpeg' && existingFormat !== 'png' && existingFormat !== 'webp' && existingFormat !== 'gif') {
-      fs.unlinkSync(filePath);
-      // 不能返回远程地址：前端会把非空 cachedUrl 直接拼到 API 后面。交回空值让前端走原图，下次解析重下缓存。
-      return '';
+  const hash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 32);
+  // 落盘只存 jpg/png：命中检查两个候选；webp/gif 等旧格式缓存直接清掉重下转换。
+  for (const ext of ['.jpg', '.png']) {
+    const candidate = path.join(dir, hash + ext);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
+      const existingFormat = sniffImageFormat(fs.readFileSync(candidate));
+      if (existingFormat === 'jpeg' || existingFormat === 'png') return '/notes-images/' + hash + ext;
+      fs.unlinkSync(candidate);
     }
-    return publicUrl;
   }
 
   const controller = new AbortController();
@@ -67,23 +53,22 @@ export async function cacheRemoteImage(rawUrl, referer, isFallback = false, dir 
     if (!resp.ok) return '';
     const buf = Buffer.from(await resp.arrayBuffer());
     if (!buf.length) return '';
-    const originalFormat = imageMagic(buf);
-    if (originalFormat === 'heic' || originalFormat === 'avif' || originalFormat === 'unknown') {
+    const originalFormat = sniffImageFormat(buf);
+    if (originalFormat === 'heic' || originalFormat === 'unknown') {
       // 当前环境无法可靠解码这类格式，走 CDN 的 jpeg 变体；变体仍不可解码就放弃，避免死循环。
       if (isFallback) return '';
       return cacheRemoteImage(jpegFallbackUrl(url), referer, true, dir, deadline);
     }
-    const finalExt = originalFormat === 'jpeg' ? '.jpg' : '.' + originalFormat;
-    const finalName = filename.replace(/\.(jpe?g|png|webp|gif|avif|heic|heif)$/i, finalExt);
-    const finalPath = path.join(dir, finalName);
-    const tmp = finalPath + '.tmp-' + process.pid + '-' + Date.now();
-    fs.writeFileSync(tmp, buf);
-    fs.renameSync(tmp, finalPath);
-    if (finalPath !== filePath && !fs.existsSync(filePath)) {
-      // 同一 URL 再来时按原扩展名的键也能命中缓存。
-      fs.writeFileSync(filePath, buf);
+    const std = await toStandardImage(buf);
+    if (!std) {
+      if (isFallback) return '';
+      return cacheRemoteImage(jpegFallbackUrl(url), referer, true, dir, deadline);
     }
-    return '/notes-images/' + finalName;
+    const finalPath = path.join(dir, hash + std.ext);
+    const tmp = finalPath + '.tmp-' + process.pid + '-' + Date.now();
+    fs.writeFileSync(tmp, std.buf);
+    fs.renameSync(tmp, finalPath);
+    return '/notes-images/' + hash + std.ext;
   } catch (err) {
     console.warn('[notes] cache image failed', url, err.message);
     return '';

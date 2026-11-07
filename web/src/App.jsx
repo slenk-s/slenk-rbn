@@ -680,7 +680,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     setRegeneratingIds(prev => new Set(prev).add(img.id));
     try {
       const task = await runTask(
-        { type: 'image', purpose: 'noteImage', payload: { prompt: finalPrompt, imageUrls: [reference], perReference: true, canvasSize: '1080x1080', count: 1 } },
+        // 不传画布：worker 会按参考图原始比例出图，不再硬拉成方形。
+        { type: 'image', purpose: 'noteImage', payload: { prompt: finalPrompt, imageUrls: [reference], perReference: true, count: 1 } },
         '正在重新生成图片...',
         300000
       );

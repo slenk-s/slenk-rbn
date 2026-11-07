@@ -409,6 +409,23 @@ function splitPromptByReference(prompt, refCount) {
   return perRef.map(parts => [...shared, ...parts].join('\n').trim());
 }
 
+function dataUrlToBuffer(dataUrl) {
+  const m = String(dataUrl || '').match(/^data:[^;,]*;base64,(.*)$/is);
+  return m ? Buffer.from(m[1].replace(/\s/g, ''), 'base64') : null;
+}
+
+// 不固定画布时，按参考图原始宽高比推导输出尺寸（再过一遍 normalizeImageSize 对齐供应商约束）；
+// 读不出尺寸就回退 auto，交给供应商决定。
+async function sizeFromReference(buf) {
+  try {
+    const meta = await sharp(buf, { failOn: 'none' }).metadata();
+    if (!meta?.width || !meta?.height) return 'auto';
+    return normalizeImageSize(`${meta.width}x${meta.height}`);
+  } catch {
+    return 'auto';
+  }
+}
+
 async function runImage(payload, provider, id) {
   const prompt = payload.prompt || '';
   const count = Math.max(1, Math.min(4, Number(payload.count) || 1));
@@ -430,10 +447,21 @@ async function runImage(payload, provider, id) {
   const images = [];
   const localImages = [];
   let lastData = {};
+  // 指定了画布就严格按画布；不固定画布且有参考图时，按参考图原始比例出图（逐张缓存推导结果）。
+  const refSizeCache = new Map();
+  async function requestSize(refIndex) {
+    if (size !== 'auto' || !referenceCount) return size;
+    const idx = refIndex >= 0 ? refIndex : 0;
+    if (!refSizeCache.has(idx)) {
+      const buf = useFormApi ? referenceParts[idx]?.buf : dataUrlToBuffer(referenceImages[idx]);
+      refSizeCache.set(idx, buf ? await sizeFromReference(buf) : 'auto');
+    }
+    return refSizeCache.get(idx);
+  }
   console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests }));
   for (let i = 0; i < requests; i++) {
     const refIndex = perReference ? (i % referenceCount) : -1;
-    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n: 1, size };
+    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n: 1, size: await requestSize(refIndex) };
     let res;
     if (useFormApi) {
       const partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
