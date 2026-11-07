@@ -264,9 +264,11 @@ function DownloadLink({ url, label, name }) {
 // 任务结果整体下载：图片/视频直接拉 blob（多图逐张下），文本存成 txt。
 async function downloadTaskResult(task) {
   const result = unwrapTaskResult(parseJsonText(task.result || '')) || {};
-  const mediaUrls = Array.isArray(result.images) && result.images.length ? result.images : [result.image, result.video].filter(Boolean);
+  const mediaUrls = Array.isArray(result.videos) && result.videos.length ? result.videos
+    : Array.isArray(result.images) && result.images.length ? result.images
+    : [result.image, result.video].filter(Boolean);
   if (mediaUrls.length) {
-    const isVideo = Boolean(result.video);
+    const isVideo = Boolean(result.video) || (Array.isArray(result.videos) && result.videos.length > 0);
     for (let i = 0; i < mediaUrls.length; i++) {
       await downloadAsset(mediaUrls[i], task.id + '-' + task.type + (mediaUrls.length > 1 ? '-' + (i + 1) : '') + (isVideo ? '.mp4' : '.png'));
     }
@@ -287,6 +289,7 @@ function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   if (result.text) return <><p className="result-text">{result.text}</p>{resultDownload && <div className="result-actions">{resultDownload}</div>}</>;
   if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img className="zoomable" src={resultMediaSrc(img)} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} />{(result.images.length > 1 || !hideDownloads) && <figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}{!hideDownloads && <DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} />}</figcaption>}</figure>)}</div>;
   if (result.image && typeof result.image === 'string') return <figure className="result-media"><img className="zoomable" src={resultMediaSrc(result.image)} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} />{!hideDownloads && <figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption>}</figure>;
+  if (result.videos && Array.isArray(result.videos) && result.videos.length) return <div className="result-gallery">{result.videos.map((v, i) => <figure key={i} className="result-media"><video controls src={resultMediaSrc(v)} /><figcaption>{result.videos.length > 1 ? <span className="result-ref-label">视频 {i + 1}</span> : null}{!hideDownloads && <DownloadLink url={v} label="下载视频" name={task.id + '-' + task.type + '-' + (i + 1) + '.mp4'} />}</figcaption></figure>)}</div>;
   if (result.video) return <figure className="result-media"><video controls src={resultMediaSrc(result.video)} />{!hideDownloads && <figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption>}</figure>;
   const titleCandidates = Array.isArray(result.titles) ? result.titles.map(String) : [];
   const displayTitle = titleCandidates[0] || result.title || '';
@@ -1131,22 +1134,9 @@ function Workspace({ token }) {
     if (IMAGE_TABS.has(active)) return createTask('image', { prompt: submitText, image: files[0]?.url, imageUrls: files.map(f => f.url), canvasSize, count: Number(outputCount) || 1, perReference, providerId: selectedProviderId, model: selectedModelName });
     if (VIDEO_TABS.has(active)) {
       // 随机时长入口已下线，统一按定时秒数提交。
+      // 多张图由同一任务逐张出片（worker 产出 videos 数组），结果区并列展示所有视频。
       const duration = Number(customDuration) || 3;
-      const basePayload = { prompt: submitText, canvasSize, duration, durationMode: 'fixed', motionEffect, shakeStrength, shakeFrequency, providerId: selectedProviderId, model: selectedModelName };
-      const urls = files.map(f => f.url).filter(Boolean);
-      if (urls.length <= 1) return createTask('video', { ...basePayload, mediaUrls: urls });
-      // 多张图片：每张图各起一个视频任务，队列并行出片，而不是只用第一张图。
-      setStatus('正在提交 ' + urls.length + ' 个视频任务…');
-      let lastId = '';
-      for (const url of urls) {
-        const result = await api('/api/tasks', { method: 'POST', token, body: JSON.stringify({ type: 'video', tab: active, payload: { ...basePayload, mediaUrls: [url] } }) });
-        lastId = result.id || lastId;
-      }
-      clearedTabs.current.delete(active);
-      if (lastId) { pendingTaskId.current = lastId; setSelectedTaskId(lastId); }
-      setStatus(urls.length + ' 个视频任务已提交到队列。');
-      await refresh();
-      return;
+      return createTask('video', { prompt: submitText, mediaUrls: files.map(f => f.url), canvasSize, duration, durationMode: 'fixed', motionEffect, shakeStrength, shakeFrequency, providerId: selectedProviderId, model: selectedModelName });
     }
     return createTask('rewrite', { prompt: submitText, source: text.trim() || submitText, canvasSize, providerId: selectedProviderId, model: selectedModelName });
   }

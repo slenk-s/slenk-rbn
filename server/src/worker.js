@@ -571,12 +571,10 @@ function buildVideoFilter(payload, duration) {
   return parts.join(',');
 }
 
-function makeVideo(payload, id) {
+function renderOneVideo(input, output, payload, id) {
   return new Promise((resolve, reject) => {
-    const input = resolveUploadUrl(payload.mediaUrls?.[0]);
     if (!input) return reject(new Error('图片素材缺失，请先上传实况视频图片。'));
     if (input.startsWith(uploadDir) && !fs.existsSync(input)) return reject(new Error('input_file_missing'));
-    const output = path.join(videoDir, id + '.mp4');
     const duration = parseDuration(payload);
     const filter = buildVideoFilter(payload, duration);
     const startedAt = Date.now();
@@ -613,6 +611,27 @@ function makeVideo(payload, id) {
   });
 }
 
+// 多张图片：同一任务内逐张出片，videos/localVideos 按输入顺序回填，前端结果区并列展示。
+async function makeVideos(payload, id) {
+  const urls = (payload.mediaUrls || []).filter(Boolean);
+  if (!urls.length) throw new Error('图片素材缺失，请先上传实况视频图片。');
+  const videos = [];
+  const localVideos = [];
+  const localPaths = [];
+  for (let i = 0; i < urls.length; i++) {
+    const input = resolveUploadUrl(urls[i]);
+    const multi = urls.length > 1;
+    const out = path.join(videoDir, multi ? `${id}-${i + 1}.mp4` : `${id}.mp4`);
+    await renderOneVideo(input, out, payload, multi ? `${id}#${i + 1}` : id);
+    const local = `/videos/${path.basename(out)}`;
+    const cloud = await uploadResultAsset(out, path.basename(out), 'video/mp4');
+    videos.push(cloud || local);
+    localVideos.push(local);
+    localPaths.push(out);
+  }
+  return { videos, localVideos, localPaths };
+}
+
 new Worker('ai-tasks', async (job) => {
   const { id, payload, userId } = job.data;
   try {
@@ -635,7 +654,7 @@ new Worker('ai-tasks', async (job) => {
       return result;
     }
     if (job.name === 'video') {
-      const out = await makeVideo(payload, id);
+      const { videos, localVideos, localPaths } = await makeVideos(payload, id);
       const duration = parseDuration(payload);
       const options = {
         canvasSize: payload.canvasSize,
@@ -645,13 +664,12 @@ new Worker('ai-tasks', async (job) => {
         shakeStrength: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeStrength)) ? Number(payload.shakeStrength) : 0)),
         shakeFrequency: Math.max(0, Math.min(100, Number.isFinite(Number(payload.shakeFrequency)) ? Number(payload.shakeFrequency) : 0))
       };
-      const localVideo = `/videos/${path.basename(out)}`;
-      // 与图片一样上传云存储，video 写公网 URL，本地路径留作缓存。
-      const cloudVideo = await uploadResultAsset(out, path.basename(out), 'video/mp4');
       const videoResult = {
-        video: cloudVideo || localVideo,
-        localVideo,
-        localVideoPath: out,
+        video: videos[0],
+        videos,
+        localVideo: localVideos[0],
+        localVideos,
+        localVideoPath: localPaths[0],
         prompt: payload.prompt || '',
         options,
         raw: { ffmpeg: 'done', mediaUrls: payload.mediaUrls || [] }
