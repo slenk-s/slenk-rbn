@@ -52,7 +52,7 @@ const NOTE_PROMPT_FIELDS = [
   { key: 'title', label: '标题提示词', hint: '用于生成标题候选，支持 JSON 或编号列表。' },
   { key: 'content', label: '正文提示词', hint: '用于改写正文，要求适合小红书发布。' },
   { key: 'tags', label: '话题标签提示词', hint: '用于提取话题标签，支持 JSON 或 # 标签列表。' },
-  { key: 'imageReplace', label: '默认提示词', hint: '选中图片点「重新生成此图」且未填专属提示词时使用，生成时自动附带标题/正文。' },
+  { key: 'imageReplace', label: '默认提示词', hint: '图片未填专属提示词时使用，生成时附带标题/正文作主题上下文（不会画进图里）；填了专属提示词则完全以专属提示词为准。' },
 ];
 const AI_DIFF_FIELDS = {
   title: { label: '标题' },
@@ -669,9 +669,12 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
     const img = images[index];
     if (!img || img.isVideo || regeneratingIds.has(img.id)) return;
     if (regeneratingIds.size >= regenLimit) { setStatus('已达并行上限（' + regenLimit + ' 个），等一个完成后再试。'); return; }
-    // 专属提示词与默认提示词相互独立（同「替换生图」工作区）：填了用专属，留空用默认；再附标题/正文上下文。
+    // 填了专属提示词就完全以它为准：标题/正文不能再附在后面——模型会把标题当成要画进图里的文字，
+    // 直接顶掉用户「不要加入任何文字」这类指令（实测踩过）。
+    // 默认提示词路径仍保留标题/正文作为主题上下文，但明确禁止渲染成图中文字。
     const custom = String(img.prompt || '').trim();
-    const finalPrompt = [custom || notePrompts.imageReplace, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
+    const contextGuard = '（以下标题与正文仅用于理解笔记主题，是内容上下文，严禁以任何形式以文字出现在图片中）';
+    const finalPrompt = custom || [notePrompts.imageReplace, (title || content) && contextGuard, title && ('标题：' + title), content && ('正文：' + content)].filter(Boolean).join('\n');
     const reference = img.cachedUrl || img.url;
     if (!reference) { setStatus('该图片缺少可用地址，无法作为参考图。'); return; }
     setRegeneratingIds(prev => new Set(prev).add(img.id));
@@ -905,14 +908,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
               <figure
                 key={img.id || index}
                 className="image-thumb"
-                draggable
-                onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }}
                 onDragOver={e => e.preventDefault()}
-                onDrop={() => { moveImage(dragIndex, index); clearImageSelectionState(); }}
+                onDrop={() => { if (dragIndex === null || dragIndex === undefined) return; moveImage(dragIndex, index); clearImageSelectionState(); }}
               >
                 {img.isVideo ? <span className="cover-badge cover-badge-video">视频</span> : (index === 0 && <span className="cover-badge">封面</span>)}
                 {regeneratingIds.has(img.id) && <div className="image-regen-overlay">生成中…</div>}
-                {img.isVideo ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" /> : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} />}
+                {/* 拖动只从图片/视频本体发起；下方按钮区和提示词编辑区不参与拖拽，文字可以正常选中。
+                    dragend 复位 dragIndex，drop 前判空，避免拖选中的文字落进来时误触发排序。 */}
+                {img.isVideo
+                  ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" draggable onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }} onDragEnd={() => setDragIndex(null)} />
+                  : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} draggable onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }} onDragEnd={() => setDragIndex(null)} />}
                 <figcaption>
                   <span>{img.name || '图片 ' + (index + 1)}</span>
                   <div>

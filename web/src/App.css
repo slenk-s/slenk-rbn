@@ -1268,33 +1268,7 @@ button:hover { transform: translateY(-1px); }
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 14px;
 }
-/* 任务结果弹框：媒体展示对齐「替换图片确认」弹框的观感——大图居中、更高上限。
-   选择器必须带 .result-gallery：基础画廊规则是 3 个类，少一级就压不住。 */
-.task-detail-modal .task-detail-result {
-  display: flex;
-  justify-content: center;
-}
-/* 注意特异性：还有一条 .task-detail-result .result-gallery 的 grid 规则，
-   这里必须写到 4 个类才能压过它。 */
-.task-detail-modal .task-detail-result .result-gallery {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 16px;
-}
-.task-detail-modal .result-gallery .result-media {
-  width: auto;
-  max-width: min(640px, 100%);
-}
-.task-detail-modal .result-gallery .result-media img,
-.task-detail-modal .result-gallery .result-media video,
-.task-detail-modal .task-detail-result > .result-media img,
-.task-detail-modal .task-detail-result > .result-media video {
-  width: auto;
-  max-width: 100%;
-  max-height: 56vh;
-  margin: 0 auto;
-}
+/* 任务结果弹框的媒体样式统一维护在文件后段 .task-detail-result 区块，这里不重复定义。 */
 .result-gallery .result-media {
   max-width: 100%;
 }
@@ -2556,6 +2530,9 @@ button:hover { transform: translateY(-1px); }
 .image-thumb input[type='checkbox'] { position: absolute; z-index: 2; top: 8px; right: 8px; }
 .cover-badge { position: absolute; z-index: 2; top: 8px; left: 8px; padding: 3px 7px; border-radius: 999px; background: #ff2442; color: white; font-size: 10px; font-weight: 800; }
 .image-thumb img { width: 100%; height: 116px; object-fit: cover; display: block; background: var(--code-bg); }
+/* 拖动只从媒体本体发起（见 App.jsx），用光标提示可拖区域。 */
+.image-thumb > img, .image-thumb > video { cursor: grab; }
+.image-thumb > img:active, .image-thumb > video:active { cursor: grabbing; }
 .image-thumb figcaption { display: grid; gap: 6px; padding: 8px; font-size: 12px; color: var(--text); }
 .image-thumb figcaption div { display: flex; gap: 8px; align-items: center; }
 .image-thumb figcaption a, .image-thumb figcaption button { color: var(--text-h); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 4px 8px; background: #fff; cursor: pointer; }
@@ -2760,9 +2737,13 @@ button:hover { transform: translateY(-1px); }
 .task-detail-result { min-height: 260px; max-height: min(58vh, 620px); overflow: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 18px; background: #fff; padding: 16px; }
 .task-detail-result .result-text { white-space: pre-wrap; word-break: break-word; }
 .task-detail-result .result-actions { margin-top: 14px; }
-.task-detail-result .result-gallery { display: grid; gap: 12px; }
+/* 弹框内的结果图：大图居中、上限 46vh，弹框整体不超 88vh，不出上下/左右滚动条。 */
+.task-detail-result .result-gallery { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; }
+.task-detail-result .result-gallery .result-media { width: auto; max-width: min(640px, 100%); }
 .task-detail-result .result-gallery .result-media img,
-.task-detail-result .result-gallery .result-media video { max-width: 100%; max-height: 56vh; }
+.task-detail-result .result-gallery .result-media video,
+.task-detail-result > .result-media img,
+.task-detail-result > .result-media video { width: auto; max-width: 100%; max-height: 46vh; margin: 0 auto; }
 
 .task-detail-result .task-result-preview { display: grid; gap: 12px; }
 .task-detail-result .task-result-block { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 16px; background: #fff; }
