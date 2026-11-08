@@ -125,9 +125,9 @@ const MOTION_EFFECTS = [
 ];
 const FIXED_CANVAS = [
   { label: '不固定画布（模型自定）', value: '' },
-  { label: '1080×1080 · 方形封面', value: '1080x1080' },
-  { label: '1080×1440 · 竖版笔记（3:4 推荐）', value: '1080x1440' },
-  { label: '1920×1080 · 横版视频封面', value: '1920x1080' }
+  { label: '1080×1080 · 1:1', value: '1080x1080' },
+  { label: '1080×1440 · 3:4', value: '1080x1440' },
+  { label: '1920×1080 · 16:9', value: '1920x1080' }
 ];
 const UPLOAD_ACCEPT = {
   image: 'image/png,image/jpeg,image/webp',
@@ -281,6 +281,38 @@ async function downloadTaskResult(task) {
   a.download = task.id + '-' + task.type + '.txt';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+// 主题化下拉：原生 <select> 的弹层由系统渲染没法美化，换成自绘组件。
+// 点外部/Esc 收起，选中项高亮，样式跟工具条融合。
+function ThemedSelect({ value, onChange, options, ariaLabel, className }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+  const current = (options || []).find(o => o.value === value);
+  return (
+    <div className={'themed-select' + (className ? ' ' + className : '') + (open ? ' open' : '')} ref={ref}>
+      <button type="button" className="themed-select-trigger" aria-label={ariaLabel} aria-expanded={open} onClick={() => setOpen(v => !v)}>
+        <span className="themed-select-value">{current ? current.label : '未选择'}</span>
+        <span className="themed-select-chevron">{open ? '▴' : '▾'}</span>
+      </button>
+      {open && (
+        <div className="themed-select-pop" role="listbox">
+          {(options || []).map(o => (
+            <button type="button" role="option" aria-selected={o.value === value} key={String(o.value)} className={'themed-select-option' + (o.value === value ? ' active' : '')} onClick={() => { onChange(o.value); setOpen(false); }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   const result = unwrapTaskResult(parseJsonText(task.result || ''));
@@ -1059,7 +1091,8 @@ function Workspace({ token }) {
   const secondaryPrompt = secondaryPromptByTab[active] || '';
   const files = filesByTab[active] || [];
   const noteDraft = noteDrafts[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] };
-  const canvasSize = canvasSizeByTab[active] || '1080x1080';
+  // 默认画布：竖版 3:4（小红书笔记最常用的比例）。
+  const canvasSize = canvasSizeByTab[active] || '1080x1440';
   const outputCount = outputCountByTab[active] || '1';
   // 多张参考图时默认按图号一一对应生成；要「多张参考图合成一张」时关掉这个开关。
   const perReference = perReferenceByTab[active] !== false;
@@ -1074,7 +1107,7 @@ function Workspace({ token }) {
   const setDefaultPrompt = (v) => setDefaultPromptByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
   const setSecondaryPrompt = (v) => setSecondaryPromptByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
   const setFiles = (v) => setFilesByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || []) : v }));
-  const setCanvasSize = (v) => setCanvasSizeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1080x1080') : v }));
+  const setCanvasSize = (v) => setCanvasSizeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1080x1440') : v }));
   const setOutputCount = (v) => setOutputCountByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1') : v }));
   const setPerReference = (v) => setPerReferenceByTab(prev => ({ ...prev, [active]: v }));
   const fileInputRef = useRef(null);
@@ -1207,7 +1240,7 @@ function Workspace({ token }) {
             <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId, nextActiveTextProviderId, nextActiveImageProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); if (nextActiveTextProviderId !== undefined) setActiveTextProviderId(nextActiveTextProviderId || ''); if (nextActiveImageProviderId !== undefined) setActiveImageProviderId(nextActiveImageProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={openTaskDetail} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} onTasksDelete={async (ids) => { const r = await api('/api/tasks/batch-delete', { method: 'POST', token, body: JSON.stringify({ ids }) }); await refresh(); setStatus('已删除 ' + (r.deleted ?? ids.length) + ' 个任务。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? null : (
             <section className={'card tool-panel layout-' + layoutVariant + ' ' + (TEXT_TABS.has(active) ? 'text-focused' : IMAGE_HEAVY_TABS.has(active) ? 'image-heavy' : VIDEO_TABS.has(active) ? 'video-focused' : 'default') + ' ' + (isTextFocused ? 'row-text-only' : '')}>
-              <div className="panel-row"><div className="panel-cell panel-title-cell"><div className="title-row"><span className="title-label">{activeTabLabel}</span><div className="meta-chips"><span className="meta-chip">任务 {tasks.length}</span></div>{(active === 'replace-image' || active === 'ai-image') && <div className="option-row title-options"><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={outputCount} onChange={e => setOutputCount(e.target.value)} aria-label="输出数量">{[1,2,3,4].map(n => <option key={n} value={String(n)}>{n} 张</option>)}</select><label className="option-check" title="多张参考图时按图号一一对应生成；需要多张参考图合成一张时取消勾选"><input type="checkbox" checked={perReference} onChange={e => setPerReference(e.target.checked)} /><span>按参考图一一对应</span></label></div>}{VIDEO_TABS.has(active) && <div className="option-row range-row title-options title-options-video"><select className="model-select" value={selectedModel} onChange={e => setSelectedModels(prev => ({ ...prev, [active]: e.target.value }))} aria-label="本页模型"><option value={MODEL_EMPTY}>未选择</option>{modelOptionsFor(activeMode, providers).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={motionEffect} onChange={e => setMotionEffect(e.target.value)} aria-label="运镜效果">{MOTION_EFFECTS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select><div className="range-item"><label className="option-label">强度</label><input type="range" min="0" max="100" value={shakeStrength} onChange={e => setShakeStrength(Number(e.target.value))} style={{ '--progress': shakeStrength + '%' }} /><span className="range-value">{shakeStrength}</span></div><div className="range-item"><label className="option-label">频率</label><input type="range" min="0" max="100" value={shakeFrequency} onChange={e => setShakeFrequency(Number(e.target.value))} style={{ '--progress': shakeFrequency + '%' }} /><span className="range-value">{shakeFrequency}</span></div><div className="range-item"><label className="option-label">时长</label><input type="range" min="1" max="8" value={customDuration} onChange={e => setCustomDuration(e.target.value)} style={{ '--progress': ((Number(customDuration) || 3) - 1) / 7 * 100 + '%' }} /><span className="range-value">{customDuration} 秒</span></div><div className="title-actions"><button className="btn-primary action-primary" onClick={submitCurrentTask}>提交</button><button className="btn-secondary" onClick={resetPrompt}>重置</button></div></div>}{!VIDEO_TABS.has(active) && <div className="title-actions"><select className="model-select" value={selectedModel} onChange={e => setSelectedModels(prev => ({ ...prev, [active]: e.target.value }))} aria-label="本页模型"><option value={MODEL_EMPTY}>未选择</option>{modelOptionsFor(activeMode, providers).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><button className="btn-primary action-primary" onClick={submitCurrentTask}>提交</button><button className="btn-secondary" onClick={resetPrompt}>重置</button></div>}</div></div>
+              <div className="panel-row"><div className="panel-cell panel-title-cell"><div className="title-row"><span className="title-label">{activeTabLabel}</span><div className="meta-chips"><span className="meta-chip">任务 {tasks.length}</span></div>{(active === 'replace-image' || active === 'ai-image') && <div className="option-row title-options"><ThemedSelect value={canvasSize} onChange={setCanvasSize} options={FIXED_CANVAS} ariaLabel="画布比例" /><ThemedSelect value={outputCount} onChange={setOutputCount} options={[1, 2, 3, 4].map(n => ({ value: String(n), label: n + ' 张' }))} ariaLabel="输出数量" /><label className="option-check" title="多张参考图时按图号一一对应生成；需要多张参考图合成一张时取消勾选"><input type="checkbox" checked={perReference} onChange={e => setPerReference(e.target.checked)} /><span>按参考图一一对应</span></label></div>}{VIDEO_TABS.has(active) && <div className="option-row range-row title-options title-options-video"><ThemedSelect className="model-select" value={selectedModel} onChange={v => setSelectedModels(prev => ({ ...prev, [active]: v }))} options={[{ value: MODEL_EMPTY, label: '未选择' }, ...modelOptionsFor(activeMode, providers)]} ariaLabel="本页模型" /><ThemedSelect value={canvasSize} onChange={setCanvasSize} options={FIXED_CANVAS} ariaLabel="画布比例" /><ThemedSelect value={motionEffect} onChange={setMotionEffect} options={MOTION_EFFECTS} ariaLabel="运镜效果" /><div className="range-item"><label className="option-label">强度</label><input type="range" min="0" max="100" value={shakeStrength} onChange={e => setShakeStrength(Number(e.target.value))} style={{ '--progress': shakeStrength + '%' }} /><span className="range-value">{shakeStrength}</span></div><div className="range-item"><label className="option-label">频率</label><input type="range" min="0" max="100" value={shakeFrequency} onChange={e => setShakeFrequency(Number(e.target.value))} style={{ '--progress': shakeFrequency + '%' }} /><span className="range-value">{shakeFrequency}</span></div><div className="range-item"><label className="option-label">时长</label><input type="range" min="1" max="8" value={customDuration} onChange={e => setCustomDuration(e.target.value)} style={{ '--progress': ((Number(customDuration) || 3) - 1) / 7 * 100 + '%' }} /><span className="range-value">{customDuration} 秒</span></div><div className="title-actions"><button className="btn-primary action-primary" onClick={submitCurrentTask}>提交</button><button className="btn-secondary" onClick={resetPrompt}>重置</button></div></div>}{!VIDEO_TABS.has(active) && <div className="title-actions"><ThemedSelect className="model-select" value={selectedModel} onChange={v => setSelectedModels(prev => ({ ...prev, [active]: v }))} options={[{ value: MODEL_EMPTY, label: '未选择' }, ...modelOptionsFor(activeMode, providers)]} ariaLabel="本页模型" /><button className="btn-primary action-primary" onClick={submitCurrentTask}>提交</button><button className="btn-secondary" onClick={resetPrompt}>重置</button></div>}</div></div>
                 <div className="panel-cell cell-options"><div className="cell-head"><div className="section-title-block"><h3>选项区</h3><p>{hints.options}</p></div></div><div className="cell-body"><div className="option-row"><select value={canvasSize} onChange={e => setCanvasSize(e.target.value)} aria-label="画布比例">{FIXED_CANVAS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select>{IMAGE_TABS.has(active) && <select value={outputCount} onChange={e => setOutputCount(e.target.value)} aria-label="输出数量">{[1,2,3,4].map(n => <option key={n} value={String(n)}>{n} 张</option>)}</select>}{IMAGE_TABS.has(active) && <label className="option-check" title="多张参考图时按图号一一对应生成；需要多张参考图合成一张时取消勾选"><input type="checkbox" checked={perReference} onChange={e => setPerReference(e.target.checked)} /><span>按参考图一一对应</span></label>}</div></div></div></div>
               <div className='panel-row'>
                 <div className={'panel-cell' + (isTextFocused ? ' cell-text-fullwidth' : '')}><div className="cell-head"><div className="section-title-block"><h3>文本输入区</h3><p>{hints.text}</p></div></div><div className="cell-body text-input-split"><div className="prompt-section"><div className="prompt-label">默认提示词</div><textarea className="prompt-default" value={defaultPrompt} onChange={e => setDefaultPrompt(e.target.value)} placeholder="暂无默认提示词" /></div>{SECONDARY_PROMPT_TABS.has(active) && <div className="prompt-section"><div className="prompt-label">二级提示词</div><textarea className="prompt-default prompt-secondary" value={secondaryPrompt} onChange={e => setSecondaryPrompt(e.target.value)} placeholder="可选：二级默认提示词；提交时按「默认 + 二级 + 用户」顺序拼接" /></div>}<div className="prompt-section"><div className="prompt-label">用户提示词</div><textarea value={text} onChange={e => setText(e.target.value)} placeholder="在此输入或修改提示词..." /></div></div></div>

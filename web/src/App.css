@@ -2798,3 +2798,40 @@ button:hover { transform: translateY(-1px); }
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* ---- 主题化下拉（替代系统渲染的原生 select 弹层） ---- */
+.themed-select { position: relative; flex: 0 0 auto; }
+.themed-select-trigger {
+  display: inline-flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 34px; padding: 7px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: #fff;
+  font-size: 12px; font-family: inherit; color: var(--text-h);
+  cursor: pointer; white-space: nowrap;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.themed-select-trigger:hover { border-color: rgba(79, 70, 229, 0.45); }
+.themed-select.open .themed-select-trigger { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12); }
+.themed-select-value { overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.themed-select-chevron { color: var(--accent); font-size: 11px; flex: none; margin-left: auto; }
+.themed-select-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 1400;
+  min-width: 100%; max-width: 340px; max-height: 300px; overflow-y: auto;
+  background: #fff; border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.16);
+  padding: 6px; display: grid; gap: 2px;
+  animation: themedSelectPop .14s ease;
+}
+@keyframes themedSelectPop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.themed-select-option {
+  display: block; width: 100%; text-align: left;
+  padding: 8px 10px; border: 0; border-radius: 8px; background: transparent;
+  font-size: 12.5px; font-family: inherit; color: var(--text-h);
+  cursor: pointer; white-space: nowrap;
+}
+.themed-select-option:hover { background: rgba(79, 70, 229, 0.07); }
+.themed-select-option.active { background: rgba(79, 70, 229, 0.12); color: var(--accent); font-weight: 700; }
+/* 旧 .model-select 规则会给容器加边框内边距，改成触发器自带外观后要去掉。 */
+.themed-select.model-select { min-width: 150px; max-width: 240px; padding: 0; border: 0; background: none; }
