@@ -927,7 +927,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
                   <div>
                     <button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button>
                     <button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>
-                    {!img.isVideo && onSendToVideo && <button type="button" className="thumb-send-video" title="把这张图送到实况视频页的图片输入区" onClick={(e) => { e.stopPropagation(); onSendToVideo({ url: img.cachedUrl || img.url, name: img.name || ('图片 ' + (index + 1)) }); }}>传视频</button>}
+                    {!img.isVideo && onSendToVideo && <button type="button" className="thumb-send-video" title="把这张图送到实况视频页的图片输入区" onClick={(e) => { e.stopPropagation(); onSendToVideo({ url: img.cachedUrl || img.url, name: img.name || ('图片 ' + (index + 1)) }); }}>传入</button>}
                   </div>
                 </figcaption>
                 {!img.isVideo && (
