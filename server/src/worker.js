@@ -165,12 +165,13 @@ async function normalizeReferenceBuffer(buf) {
   const width = swapped ? meta.height : meta.width;
   const height = swapped ? meta.width : meta.height;
   const ratio = Math.max(width, height) / Math.min(width, height);
-  const fits = REF_FORMATS.has(meta.format)
-    && buf.length <= REF_MAX_BYTES
-    && Math.max(width, height) <= REF_MAX_EDGE
-    && Math.min(width, height) >= REF_MIN_EDGE
-    && ratio <= REF_MAX_RATIO;
-  if (fits) return null;
+  const needsResize = Math.max(width, height) > REF_MAX_EDGE || Math.min(width, height) < REF_MIN_EDGE;
+  const needsCrop = ratio > REF_MAX_RATIO;
+  // 始终重编码为 PNG：jpeg 参考图会被 Azure 通道偶发拒收（Invalid image file or mode），
+  // PNG 剥掉 EXIF/ICC 后兼容性最好。保留透明度，不 flatten。
+  if (!needsResize && !needsCrop) {
+    try { return await sharp(buf, { failOn: 'none' }).rotate().png().toBuffer(); } catch { return null; }
+  }
 
   let scale = 1;
   if (Math.max(width, height) > REF_MAX_EDGE) scale = REF_MAX_EDGE / Math.max(width, height);
@@ -200,9 +201,10 @@ async function normalizeReferenceBuffer(buf) {
     }
   }
 
-  const output = await image.flatten({ background: '#ffffff' }).jpeg({ quality: 90 }).toBuffer();
+  const output = await image.png().toBuffer();
+  // PNG 对超大图可能超 10MB：兜底压回 jpeg。
   if (output.length > REF_MAX_BYTES) {
-    return sharp(output).jpeg({ quality: 72 }).toBuffer();
+    return sharp(output).flatten({ background: '#ffffff' }).jpeg({ quality: 80 }).toBuffer();
   }
   return output;
 }
@@ -215,7 +217,8 @@ async function referencePart(buf, fallbackMime) {
   });
   if (!normalized) return { buf, mime: sniffImageMime(buf) || fallbackMime || 'image/png' };
   console.log('[worker] reference normalized', JSON.stringify({ bytesIn: buf.length, bytesOut: normalized.length }));
-  return { buf: normalized, mime: 'image/jpeg' };
+  // 归一化产物现在是 PNG（偶尔兜回 jpeg），mime 按实际内容嗅探，别硬编码。
+  return { buf: normalized, mime: sniffImageMime(normalized) || 'image/png' };
 }
 
 async function referenceDataUrl(buf, fallbackMime) {
@@ -478,6 +481,8 @@ async function runImage(payload, provider, id) {
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
+    // 中转站（litellm）会把上游 400 包进 HTTP 200 的 body：error 字段存在同样按失败抛出。
+    if (data?.error) { console.error('image api soft error', pathname, JSON.stringify(data.error)); errorFromApi(data, res, 'ai_image_error'); }
     lastData = data;
     const asset = await extractImageAsset(data, id, i);
     if (asset) {
@@ -486,7 +491,11 @@ async function runImage(payload, provider, id) {
       referenceIndexes.push(refIndex >= 0 ? refIndex + 1 : images.length);
     }
   }
-  if (!images.length) return { image: lastData, raw: lastData };
+  // 没出图就是失败：把上游错误信息带进任务，而不是把原始 JSON 当结果存起来。
+  if (!images.length) {
+    const apiErr = lastData?.error?.message || lastData?.error || null;
+    throw new Error('AI 没有返回图片' + (apiErr ? '：' + String(typeof apiErr === 'string' ? apiErr : JSON.stringify(apiErr)).slice(0, 200) : ''));
+  }
   const result = { images, image: images[0], localImages, localImage: localImages[0], raw: lastData };
   if (perReference) {
     result.perReference = true;
