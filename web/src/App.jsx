@@ -640,7 +640,7 @@ function StatusToast({ text }) {
   return <div className="status-toast" role="status">{text}</div>;
 }
 
-function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
+function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendToVideo }) {
   const isDownload = mode === 'download';
   const linkLabel = isDownload ? '商品链接' : '笔记链接';
   const resultLabel = isDownload ? '商品图片' : '图片';
@@ -927,6 +927,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false }) {
                   <div>
                     <button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button>
                     <button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>
+                    {!img.isVideo && onSendToVideo && <button type="button" className="thumb-send-video" title="把这张图送到实况视频页的图片输入区" onClick={(e) => { e.stopPropagation(); onSendToVideo({ url: img.cachedUrl || img.url, name: img.name || ('图片 ' + (index + 1)) }); }}>传视频</button>}
                   </div>
                 </figcaption>
                 {!img.isVideo && (
@@ -1116,6 +1117,14 @@ function Workspace({ token }) {
     pendingTaskId.current = result.id || '';
     setSelectedTaskId(result.id || ''); await refresh();
   }
+  // 笔记改写/商品下载的图片卡片一键把图送进实况视频页输入区：追加到最后，不跳转页面。
+  function sendImageToVideo(file) {
+    if (!file || !file.url) return;
+    const cur = filesByTab['live-video'] || [];
+    if (cur.some(f => f.url === file.url)) { setStatus('这张图已在实况视频输入区。'); return; }
+    setFilesByTab(prev => ({ ...prev, 'live-video': [...(prev['live-video'] || []), { url: file.url, name: file.name || '笔记图片' }].slice(0, 9) }));
+    setStatus('已传送到实况视频的图片输入区。');
+  }
   function viewTask(taskId) { setSelectedTaskId(taskId); const task = tasks.find(t => t.id === taskId); const targetTab = task ? (task.tab || TYPE_TO_TAB[task.type] || lastToolTab) : lastToolTab; clearedTabs.current.delete(targetTab); setActive(targetTab); setLastToolTab(targetTab); }
   function openTaskDetail(taskId) { setTaskDetailId(taskId); }
   async function uploadMany(list) {
@@ -1192,8 +1201,8 @@ function Workspace({ token }) {
           ))}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
         <main className="workspace">
-          <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} />
-          <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} />
+          <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} onSendToVideo={sendImageToVideo} />
+          <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} onSendToVideo={sendImageToVideo} />
           {active === 'dashboard' ? (
             <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId, nextActiveTextProviderId, nextActiveImageProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); if (nextActiveTextProviderId !== undefined) setActiveTextProviderId(nextActiveTextProviderId || ''); if (nextActiveImageProviderId !== undefined) setActiveImageProviderId(nextActiveImageProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={openTaskDetail} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} onTasksDelete={async (ids) => { const r = await api('/api/tasks/batch-delete', { method: 'POST', token, body: JSON.stringify({ ids }) }); await refresh(); setStatus('已删除 ' + (r.deleted ?? ids.length) + ' 个任务。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? null : (

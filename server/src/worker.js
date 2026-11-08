@@ -500,6 +500,8 @@ async function runImage(payload, provider, id) {
 function resolveUploadUrl(value) {
   if (!value) return '';
   if (value.startsWith('/uploads/')) return path.resolve(uploadDir, path.basename(value));
+  // 笔记缓存图（从笔记改写传过来的）在 notes-images 目录，之前会被错解析到 uploads 导致素材缺失。
+  if (value.startsWith('/notes-images/')) return path.resolve(notesImagesDir, path.basename(value));
   if (/^https?:\/\//i.test(value)) return value;
   return path.resolve(uploadDir, path.basename(value));
 }
