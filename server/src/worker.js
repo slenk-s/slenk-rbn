@@ -12,6 +12,7 @@ import { paths } from './paths.js';
 import { collectReferenceImages } from './lib/referenceImages.js';
 import { uploadResultAsset } from './cloudStorage.js';
 import { capImageSize } from './lib/imageFormat.js';
+import { publishNoteToXhs } from './lib/xhsPublish.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -703,6 +704,39 @@ new Worker('ai-tasks', async (job) => {
     concurrency: Number(process.env.QUEUE_CONCURRENCY || 2),
     lockDuration: jobLockDuration,
     lockRenewTime: jobLockDuration,
+    stalledInterval: workerStalledInterval,
+    maxStalledCount: jobMaxStalledCount
+  });
+
+// 小红书发布队列：单账号串行（并发锁 1），把风控压力降到最低。
+// 等待用户手动确认发布期间事件循环是空闲的，锁每分钟自动续约（30 分钟上限内不会被判 stalled）。
+new Worker('xhs-publish', async (job) => {
+  const { id, payload, userId } = job.data;
+  // result 只在有阶段说明时更新；传 undefined 也会被 updateTask 当成有效字段写库。
+  const report = (status, message) => {
+    const patch = { status };
+    if (message) patch.result = { stageMessage: message };
+    return updateTask(userId, id, patch);
+  };
+  try {
+    const result = await publishNoteToXhs(payload, { onStatus: report });
+    // 草稿箱方案：存成功 / 点了但没观察到确认，都视为流程走完（后者如实标注）。
+    const outcomeText = result.outcome === 'draft_saved' ? '已保存到小红书草稿箱' : '已点击暂存离开，请在小红书草稿箱确认';
+    await updateTask(userId, id, {
+      status: 'done',
+      result: { ...result, outcomeText }
+    });
+    return result;
+  } catch (err) {
+    console.error('[worker] xhs-publish failed', JSON.stringify({ jobId: id, message: err?.message }));
+    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'xhs_publish_error' }) });
+    throw err;
+  }
+}, {
+    connection: redis,
+    concurrency: 1,
+    lockDuration: jobLockDuration,
+    lockRenewTime: 60 * 1000,
     stalledInterval: workerStalledInterval,
     maxStalledCount: jobMaxStalledCount
   });

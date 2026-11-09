@@ -239,6 +239,10 @@ function parseJsonText(raw) {
     return parsed && typeof parsed === 'object' ? parsed : { text: String(raw) };
   } catch { return { text: String(raw) }; }
 }
+// 任务状态文案：发布任务有等待扫码/填充中/待确认等自定义状态，统一在这里翻译。
+function statusLabel(s) {
+  return { done: '已完成', failed: '失败', queued: '排队中', filling: '填充中', waiting_login: '等待扫码', waiting_confirm: '存草稿中', cancelled: '已取消' }[s] || '处理中';
+}
 // 任务结果可能是云端公网 URL（Supabase Storage）或本地 /videos 路径，两种都要能展示。
 function resultMediaSrc(url) {
   const u = String(url || '');
@@ -318,6 +322,16 @@ function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   const result = unwrapTaskResult(parseJsonText(task.result || ''));
   if (!result) return <p className="muted">{task.status === 'failed' ? parseJsonText(task.error).error : '任务还没有结果内容。'}</p>;
   const resultDownload = hideDownloads ? null : <DownloadLink url={'/api/tasks/' + task.id + '/download?format=text&name=' + task.id + '-' + task.type + '.txt'} label="下载 TXT" />;
+  // 发布任务的结果不是媒体，是流程状态 + 摘要。
+  if (task.type === 'publish') {
+    const outcomeText = result.outcomeText || '';
+    return <div className="task-result-preview">
+      {result.stageMessage && <div className="task-result-block"><span>当前阶段</span><strong>{result.stageMessage}</strong></div>}
+      {outcomeText && <div className="task-result-block"><span>发布结果</span><strong>{outcomeText}</strong></div>}
+      {result.title && <div className="task-result-block"><span>标题</span><strong>{result.title}{result.titleTruncated ? '（超过 20 字，已截断）' : ''}</strong></div>}
+      {!!result.imageCount && <div className="task-result-block"><span>图片</span><p>{result.imageCount} 张已上传到发布页</p></div>}
+    </div>;
+  }
   if (result.text) return <><p className="result-text">{result.text}</p>{resultDownload && <div className="result-actions">{resultDownload}</div>}</>;
   if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img className="zoomable" src={resultMediaSrc(img)} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} />{(result.images.length > 1 || !hideDownloads) && <figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}{!hideDownloads && <DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} />}</figcaption>}</figure>)}</div>;
   if (result.image && typeof result.image === 'string') return <figure className="result-media"><img className="zoomable" src={resultMediaSrc(result.image)} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} />{!hideDownloads && <figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption>}</figure>;
@@ -692,6 +706,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   const [regenLimit, setRegenLimit] = useState(2);
   // 并行生成的结果排队等确认：imageReplacePreviews[0] 是当前弹窗展示的那张。
   const [imageReplacePreviews, setImageReplacePreviews] = useState([]);
+  const [publishConfirm, setPublishConfirm] = useState(false);
   function clearImageSelectionState() {
     // 专属提示词编辑器常驻显示，不再需要选中态；这里只清待确认的替换预览。
     // 进行中的生成任务不清，它们结束后会自行从 regeneratingIds 移除。
@@ -861,6 +876,23 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     const ok = saveNotePrompts(next);
     setStatus(ok ? '已恢复默认提示词。' : '已恢复默认提示词（仅本次会话）。');
   }
+  // 去发布：图片传原始存储值（/notes-images 本地缓存或云端 URL），worker 统一解析成本地文件上传。
+  // 弹窗确认后提交，本机弹出 Chrome 自动填好内容，最后一步发布由用户手动点。
+  function openPublishConfirm() {
+    const publishImages = images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean);
+    if (!publishImages.length) { setStatus('发布需要至少 1 张图片。'); return; }
+    if (!title.trim() && !content.trim()) { setStatus('标题和正文至少填一项。'); return; }
+    setPublishConfirm(true);
+  }
+  async function submitPublish() {
+    const publishImages = images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9);
+    try {
+      setStatus('正在提交发布任务…');
+      await api('/api/publish', { method: 'POST', body: JSON.stringify({ title, content, images: publishImages, noteId: currentNoteId(), noteTitle: title.trim() || '未命名笔记' }) });
+      setPublishConfirm(false);
+      setStatus('发布任务已提交：本机即将弹出小红书窗口，填好内容后自动存入草稿箱。');
+    } catch (err) { setStatus(err.message); }
+  }
   // 真正落库：与生成二维码共用 POST /api/notes，保存后可通过 /p/:id 预览页访问。
   async function saveNoteDraft() {
     if (!title.trim() && !content.trim() && !images.length) { setStatus('标题、正文、图片至少有一项才能保存。'); return; }
@@ -981,7 +1013,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         {!isDownload && (<aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
           <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <img key={i} src={resolveImageSrc(img)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
-          <div className="publish-actions"><button className="btn-primary" onClick={saveNoteDraft}>保存笔记</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
+          <div className="publish-actions"><button className="btn-primary" onClick={openPublishConfirm}>去发布</button><button className="btn-secondary" onClick={saveNoteDraft}>保存笔记</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
         </aside>)}
       </div>
       <StatusToast text={status} />
@@ -1026,6 +1058,24 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           </div>
         );
       })()}
+      {publishConfirm && (
+        <div className="prompt-config-backdrop" onClick={() => setPublishConfirm(false)}>
+          <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
+            <button type="button" className="prompt-config-close" onClick={() => setPublishConfirm(false)}>×</button>
+            <h3>发布到小红书</h3>
+            <p>本机将弹出 Chrome 窗口，自动打开发布页填好以下内容，然后点击「暂存离开」存入小红书草稿箱，窗口随即关闭，不占用后续任务；你随时可以在小红书 App 或创作者中心的草稿箱里发布。首次使用需在弹出的窗口中扫码登录一次。</p>
+            <div className="task-result-preview">
+              <div className="task-result-block"><span>标题</span><strong>{title.trim() ? (title.length > 20 ? title.slice(0, 20) + '…（超过 20 字，发布时将截断）' : title) : '（未填写）'}</strong></div>
+              <div className="task-result-block"><span>正文</span><p>{content.trim() ? (content.length > 60 ? content.slice(0, 60) + '…' : content) : '（未填写）'}</p></div>
+              <div className="task-result-block"><span>图片</span><p>{images.filter(img => !img.isVideo).length} 张{images.filter(img => !img.isVideo).length > 9 ? '，超过 9 张，只发前 9 张' : ''}</p></div>
+            </div>
+            <div className="prompt-config-actions">
+              <button type="button" className="btn-secondary" onClick={() => setPublishConfirm(false)}>取消</button>
+              <button type="button" className="btn-primary" onClick={submitPublish}>提交</button>
+            </div>
+          </div>
+        </div>
+      )}
       {qr && (
         <div className="qr-backdrop" onClick={() => setQr(null)}>
           <div className="qr-modal" onClick={e => e.stopPropagation()}>
@@ -1229,7 +1279,7 @@ function Workspace({ token }) {
                 <span className="task-group-title" title={g.title}>{g.title.length > 14 ? g.title.slice(0, 14) + '…' : g.title}</span>
                 <span className="task-group-count">{g.tasks.length}</span>
               </button>
-              {!collapsedTaskGroups.has(g.key) && (<ul className="task-group-items">{g.tasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => openTaskDetail(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span>{t.username ? <span className="task-owner">{t.username}</span> : null}<span className="sidebar-task-state">{t.status}</span></button></li>)}</ul>)}
+              {!collapsedTaskGroups.has(g.key) && (<ul className="task-group-items">{g.tasks.map(t => <li key={t.id} data-status={t.status} className={t.id === selectedTaskId ? 'selected' : ''}><button type="button" className="sidebar-task-item" onClick={() => openTaskDetail(t.id)}><span className="sidebar-task-label">{t.label || t.type}</span>{t.username ? <span className="task-owner">{t.username}</span> : null}<span className="sidebar-task-state">{statusLabel(t.status)}</span></button></li>)}</ul>)}
             </li>
           ))}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
@@ -1246,7 +1296,7 @@ function Workspace({ token }) {
                 <div className={'panel-cell' + (isTextFocused ? ' cell-text-fullwidth' : '')}><div className="cell-head"><div className="section-title-block"><h3>文本输入区</h3><p>{hints.text}</p></div></div><div className="cell-body text-input-split"><div className="prompt-section"><div className="prompt-label">默认提示词</div><textarea className="prompt-default" value={defaultPrompt} onChange={e => setDefaultPrompt(e.target.value)} placeholder="暂无默认提示词" /></div>{SECONDARY_PROMPT_TABS.has(active) && <div className="prompt-section"><div className="prompt-label">二级提示词</div><textarea className="prompt-default prompt-secondary" value={secondaryPrompt} onChange={e => setSecondaryPrompt(e.target.value)} placeholder="可选：二级默认提示词；提交时按「默认 + 二级 + 用户」顺序拼接" /></div>}<div className="prompt-section"><div className="prompt-label">用户提示词</div><textarea value={text} onChange={e => setText(e.target.value)} placeholder="在此输入或修改提示词..." /></div></div></div>
                 {inputSection}
               </div>
-              <div className="panel-row panel-row-result"><div className="panel-cell result-cell"><aside className="result-side"><div className="section-title-block"><h3>生成结果输出区</h3><p>{hints.result}</p></div>{currentTask ? <div className="result-meta"><span className={'pill ' + (currentTask.status === 'failed' ? 'pill-bad' : 'pill-ok')}>{currentTask.status === 'done' ? '已完成' : currentTask.status === 'failed' ? '失败' : currentTask.status === 'queued' ? '排队中' : '处理中'}</span><span className="result-meta-line">任务编号 {currentTask.id.slice(0, 8)}</span></div> : null}<div className="result-side-actions">{selectedTaskId ? <button type="button" className="btn-secondary" onClick={() => { clearedTabs.current.add(active); setSelectedTaskId(''); }}>清空选择</button> : null}</div></aside><div className="result-stage cell-body">{currentTask ? <TaskResultWithDownload task={currentTask} onZoom={(url, name) => setLightbox({ url, name, isVideo: false })} /> : <ResultEmptyState tabId={active} />}</div></div></div>
+              <div className="panel-row panel-row-result"><div className="panel-cell result-cell"><aside className="result-side"><div className="section-title-block"><h3>生成结果输出区</h3><p>{hints.result}</p></div>{currentTask ? <div className="result-meta"><span className={'pill ' + (currentTask.status === 'failed' ? 'pill-bad' : currentTask.status === 'done' ? 'pill-ok' : '')}>{statusLabel(currentTask.status)}</span><span className="result-meta-line">任务编号 {currentTask.id.slice(0, 8)}</span></div> : null}<div className="result-side-actions">{selectedTaskId ? <button type="button" className="btn-secondary" onClick={() => { clearedTabs.current.add(active); setSelectedTaskId(''); }}>清空选择</button> : null}</div></aside><div className="result-stage cell-body">{currentTask ? <TaskResultWithDownload task={currentTask} onZoom={(url, name) => setLightbox({ url, name, isVideo: false })} /> : <ResultEmptyState tabId={active} />}</div></div></div>
             </section>
           )}
         </main>
@@ -1270,8 +1320,8 @@ function Workspace({ token }) {
                 <h3>{taskDetail.label || taskDetail.type} · 任务结果</h3>
                 <p>点击任务列表即可查看完整输出；关闭后不会切换或清空当前功能区。</p>
               </div>
-              <span className={'pill ' + (taskDetail.status === 'failed' ? 'pill-bad' : 'pill-ok')}>
-                {taskDetail.status === 'done' ? '已完成' : taskDetail.status === 'failed' ? '失败' : taskDetail.status === 'queued' ? '排队中' : '处理中'}
+              <span className={'pill ' + (taskDetail.status === 'failed' ? 'pill-bad' : taskDetail.status === 'done' ? 'pill-ok' : '')}>
+                {statusLabel(taskDetail.status)}
               </span>
             </div>
             <div className="task-detail-meta">
@@ -1284,7 +1334,7 @@ function Workspace({ token }) {
               <TaskResultWithDownload task={taskDetail} hideDownloads onZoom={(url, name) => setLightbox({ url, name, isVideo: false })} />
             </div>
             <div className="prompt-config-actions">
-              {taskDetail.status === 'done' && <button type="button" className="btn-secondary" onClick={() => downloadTaskResult(taskDetail)}>下载</button>}
+              {taskDetail.status === 'done' && taskDetail.type !== 'publish' && <button type="button" className="btn-secondary" onClick={() => downloadTaskResult(taskDetail)}>下载</button>}
               <button type="button" className="btn-primary" onClick={() => setTaskDetailId('')}>关闭</button>
             </div>
           </div>

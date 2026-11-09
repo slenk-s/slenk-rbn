@@ -74,6 +74,7 @@ function typeLabel(type) {
   if (type === 'image') return 'AI生图';
   if (type === 'video') return '实况视频';
   if (type === 'rewrite') return '文案改写';
+  if (type === 'publish') return '小红书发布';
   return String(type || '任务');
 }
 
