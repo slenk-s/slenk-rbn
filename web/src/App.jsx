@@ -1063,7 +1063,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
             <button type="button" className="prompt-config-close" onClick={() => setPublishConfirm(false)}>×</button>
             <h3>发布到小红书</h3>
-            <p>本机将弹出 Chrome 窗口，自动打开发布页填好以下内容，然后点击「暂存离开」存入小红书草稿箱，窗口随即关闭，不占用后续任务；你随时可以在小红书 App 或创作者中心的草稿箱里发布。首次使用需在弹出的窗口中扫码登录一次。</p>
+            <p>本机将弹出 Chrome 窗口，自动打开发布页填好以下内容，然后点击「暂存离开」存入小红书草稿箱；窗口会保持打开，下次发布直接复用。你随时可以在小红书 App 或创作者中心的草稿箱里发布。首次使用需在弹出的窗口中扫码登录一次。</p>
             <div className="task-result-preview">
               <div className="task-result-block"><span>标题</span><strong>{title.trim() ? (title.length > 20 ? title.slice(0, 20) + '…（超过 20 字，发布时将截断）' : title) : '（未填写）'}</strong></div>
               <div className="task-result-block"><span>正文</span><p>{content.trim() ? (content.length > 60 ? content.slice(0, 60) + '…' : content) : '（未填写）'}</p></div>

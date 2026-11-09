@@ -172,6 +172,40 @@ async function saveAsDraft(page) {
   return 'unconfirmed';
 }
 
+// 浏览器单例：任务结束后窗口保持打开，下次发布直接复用，跳过启动和登录等待。
+// worker 是常驻进程，模块级变量即可持有；用户手动关窗时 close 事件把单例清掉。
+let sharedContext = null;
+
+async function getSharedContext() {
+  if (sharedContext) {
+    try {
+      sharedContext.pages(); // 活性探测：窗口被用户关掉时这里会抛 Target closed
+      return { context: sharedContext, fresh: false };
+    } catch {
+      sharedContext = null;
+    }
+  }
+  fs.mkdirSync(profileDir, { recursive: true });
+  // persistent context：Cookie 自动落盘在 xhs-profile，扫码一次长期免登录。
+  const context = await chromium.launchPersistentContext(profileDir, {
+    channel: 'chrome',
+    headless: false,
+    viewport: { width: 1280, height: 880 },
+    args: ['--disable-blink-features=AutomationControlled']
+  });
+  // 「暂存离开/发布」按钮在 xhs-publish-btn 的 closed shadow DOM 里，常规手段都够不到；
+  // 在页面脚本执行前把 attachShadow 强制改成 open，之后 host.shadowRoot 就能正常访问。
+  await context.addInitScript(() => {
+    const real = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) {
+      return real.call(this, { ...(init || {}), mode: 'open' });
+    };
+  });
+  context.on('close', () => { sharedContext = null; });
+  sharedContext = context;
+  return { context, fresh: true };
+}
+
 export async function publishNoteToXhs(payload, { onStatus = async () => {} } = {}) {
   const taskId = payload.taskId || String(Date.now());
   const title = String(payload.title || '').trim().slice(0, TITLE_MAX);
@@ -186,24 +220,10 @@ export async function publishNoteToXhs(payload, { onStatus = async () => {} } = 
       localFiles.push(await localizeImage(imageUrls[i], i, taskId));
     }
 
-    await onStatus('filling', '正在打开浏览器…');
-    fs.mkdirSync(profileDir, { recursive: true });
-    // persistent context：Cookie 自动落盘在 xhs-profile，扫码一次长期免登录。
-    const context = await chromium.launchPersistentContext(profileDir, {
-      channel: 'chrome',
-      headless: false,
-      viewport: { width: 1280, height: 880 },
-      args: ['--disable-blink-features=AutomationControlled']
-    });
-    // 「暂存离开/发布」按钮在 xhs-publish-btn 的 closed shadow DOM 里，常规手段都够不到；
-    // 在页面脚本执行前把 attachShadow 强制改成 open，之后 host.shadowRoot 就能正常访问。
-    await context.addInitScript(() => {
-      const real = Element.prototype.attachShadow;
-      Element.prototype.attachShadow = function (init) {
-        return real.call(this, { ...(init || {}), mode: 'open' });
-      };
-    });
-    const page = context.pages()[0] || await context.newPage();
+    const { context, fresh } = await getSharedContext();
+    await onStatus('filling', fresh ? '正在打开浏览器…' : '复用已打开的浏览器窗口…');
+    // 复用现存页签（可能停在草稿箱/笔记管理页），没有就开新页。
+    const page = context.pages().find(p => !p.isClosed()) || await context.newPage();
     try {
       await ensureLoggedIn(page, context, onStatus);
       await onStatus('filling', '已登录，正在填入笔记内容…');
@@ -226,9 +246,8 @@ export async function publishNoteToXhs(payload, { onStatus = async () => {} } = 
         err.message += `（页面截图：${shot}）`;
       } catch { /* 截图失败就算了 */ }
       throw err;
-    } finally {
-      await context.close().catch(() => {});
     }
+    // 注意：这里不关浏览器。窗口常驻留给下次任务复用；worker 进程退出时浏览器随之回收。
   } finally {
     // 临时图片用完即清。
     for (const f of localFiles) fs.rmSync(f, { force: true });
