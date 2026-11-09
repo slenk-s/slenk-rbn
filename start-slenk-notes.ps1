@@ -29,8 +29,15 @@ function Find-Redis {
   $srvFromPath = (Get-Command redis-server.exe -ErrorAction SilentlyContinue).Source
   $cliFromPath = (Get-Command redis-cli.exe -ErrorAction SilentlyContinue).Source
   if ($srvFromPath) { $candidates += [pscustomobject]@{ Server = $srvFromPath; Cli = $cliFromPath } }
-  # legacy E:\Redis
-  if (Test-Path 'E:\Redis\redis-server.exe') { $candidates += [pscustomobject]@{ Server = 'E:\Redis\redis-server.exe'; Cli = 'E:\Redis\redis-cli.exe' } }
+  # legacy fixed paths (E:\Redis, D:\slenk\YLan\Redis)
+  foreach ($legacy in @('E:\Redis', 'D:\slenk\YLan\Redis')) {
+    # Build the path as a string; Test-Path on a missing drive would throw during arg evaluation.
+    $legacySrv = "$legacy\redis-server.exe"
+    $legacyCli = "$legacy\redis-cli.exe"
+    if (Test-Path -LiteralPath $legacySrv -ErrorAction SilentlyContinue) {
+      $candidates += [pscustomobject]@{ Server = $legacySrv; Cli = $legacyCli }
+    }
+  }
   return $candidates | Select-Object -First 1
 }
 
