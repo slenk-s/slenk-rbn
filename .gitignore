@@ -30,3 +30,6 @@ docs.html
 .mcp.json
 skills-lock.json
 *.backup
+# Temporary / runtime artifacts
+fftmp/
+server/*.log

@@ -5,16 +5,18 @@ title Slenk Notes Stopper
 
 echo Stopping Slenk Notes ...
 
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":3001 " ^| findstr "LISTENING"') do (
-  taskkill /PID %%p /T /F >nul 2>&1 && echo   stopped pid %%p (port 3001)
-)
+rem Delegate cleanup to PowerShell for robust process handling.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$root = Split-Path -Parent $PSCommandPath; " ^
+  "$procs = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'src[\\/](index|worker)\\.js' }; " ^
+  "foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Write-Host \"  stopped pid $($p.ProcessId)\" }; " ^
+  "$conn = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue; " ^
+  "foreach ($c in $conn) { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue; Write-Host \"  stopped pid $($c.OwningProcess) (port 3001)\" }; " ^
+  "$cli = (Get-Command redis-cli.exe -ErrorAction SilentlyContinue).Source; " ^
+  "if (-not $cli) { $d = Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\WinGet\\Packages\" -Directory -Filter '*redis-windows*' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($d) { $cli = Join-Path $d.FullName 'redis-cli.exe' } }; " ^
+  "if (-not $cli -and (Test-Path 'E:\\Redis\\redis-cli.exe')) { $cli = 'E:\\Redis\\redis-cli.exe' }; " ^
+  "if ($cli) { & $cli shutdown nosave 2>$null | Out-Null; Write-Host '  Redis stop requested.' } else { Write-Host '  [WARN] redis-cli not found; Redis stop skipped.' }"
 
-wmic process where "name='cmd.exe' and commandline like '%%Slenk Notes%%'" get processid /value 2>nul | findstr "processid" | for /f "tokens=2 delims==" %%p do (
-  taskkill /PID %%p /T /F >nul 2>&1
-)
-
-"E:\Redis\redis-cli.exe" shutdown nosave >nul 2>&1
-echo   Redis stop requested.
 echo.
 echo Done. Re-run start-slenk-notes.bat to launch again.
 pause

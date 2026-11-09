@@ -45,5 +45,5 @@ npm run dev:web      # 可选：前端开发模式，http://localhost:5173
 
 ## 注意
 
-- `start-slenk-notes.bat` 硬编码了 `E:\Redis` 路径，新机器 Redis 不在该路径时不要用这个 bat，按上面命令启动。
+- 一键启动 `start-slenk-notes.bat`（或 `start-slenk-notes.ps1`）会自动探测 Node 与 Redis 的位置（winget 包 → PATH → 旧路径 `E:\Redis` / `F:\Node`），无需手动改路径。
 - 首次登录：admin / 123456（云端数据库共享，账号与旧机器一致；登录后建议改密）。

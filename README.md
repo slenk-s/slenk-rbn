@@ -11,19 +11,19 @@
 - 数据层：Supabase Postgres（见下文「数据层」一节）
 
 ## 本地依赖位置
-Redis 已安装到：`E:\Redis`
-- 启动：`E:\Redis\redis-server.exe redis.windows.conf`
-- 检测：`E:\Redis\redis-cli.exe ping`
+Redis 由 winget 安装（`taizod1024.redis-windows-fork`），路径自动探测：
+- 启动：`redis-server.exe --port 6379`（或双击 `start-slenk-notes.bat`）
+- 检测：`redis-cli.exe ping`
 
-FFmpeg 已安装到：`E:\FFmpeg`
-- `E:\FFmpeg\ffmpeg.exe`
-- `E:\FFmpeg\ffprobe.exe`
+FFmpeg 使用项目内置 `ffmpeg-static`（`server/node_modules/ffmpeg-static/ffmpeg.exe`）：
+- 配置：`.env` 中 `FFMPEG_PATH` / `FFMPEG_FFPROBE_PATH` 指向该 exe
+- 也可自备 FFmpeg 并改 `.env` 指向自定义路径
 
 项目 `.env` 已配置：
 ```env
 REDIS_URL=redis://localhost:6379
-FFMPEG_PATH=E:/FFmpeg/ffmpeg.exe
-FFMPEG_FFPROBE_PATH=E:/FFmpeg/ffprobe.exe
+FFMPEG_PATH=./server/node_modules/ffmpeg-static/ffmpeg.exe
+FFMPEG_FFPROBE_PATH=./server/node_modules/ffmpeg-static/ffmpeg.exe
 ```
 
 ## AI 供应商管理

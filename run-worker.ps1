@@ -6,8 +6,13 @@ $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSCommandPath
 Set-Location -LiteralPath $root
 
-if (Test-Path 'F:\Node\node.exe') { $env:PATH = 'F:\Node;' + $env:PATH }
-$npm = if (Test-Path 'F:\Node\npm.cmd') { 'F:\Node\npm.cmd' } else { 'npm.cmd' }
+# Auto-detect: system PATH first, then legacy F:\Node.
+$nodeDir = $null
+$nodeCmd = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
+if ($nodeCmd) { $nodeDir = Split-Path -Parent $nodeCmd }
+elseif (Test-Path 'F:\Node\node.exe') { $nodeDir = 'F:\Node' }
+if ($nodeDir) { $env:PATH = "$nodeDir;" + $env:PATH }
+$npm = if ($nodeDir -and (Test-Path (Join-Path $nodeDir 'npm.cmd'))) { Join-Path $nodeDir 'npm.cmd' } else { 'npm.cmd' }
 
 $logDir = Join-Path $root 'logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
