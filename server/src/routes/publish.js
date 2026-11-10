@@ -33,6 +33,10 @@ router.post('/', async (req, res, next) => {
     const running = mine.find(t => t.type === 'publish' && ACTIVE_STATUS.has(t.status));
     if (running) return res.status(409).json({ error: '你还有一个发布任务在进行中，请先完成或等待它结束' });
 
+    // worker 没跑时任务会永远卡在排队中，提交前直接拦截报错。
+    const workers = await publishQueue.getWorkers().catch(() => []);
+    if (!workers.length) return res.status(503).json({ error: '发布 worker 未运行，请先启动：npm run dev:queue' });
+
     const id = nanoid(16);
     const count = mine.filter(t => t.type === 'publish').length + 1;
     const payload = {

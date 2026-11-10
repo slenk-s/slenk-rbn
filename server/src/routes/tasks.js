@@ -75,6 +75,9 @@ router.use(verify);
 
 router.post('/', async (req, res, next) => {
   try {
+    // worker 没跑时任务会永远卡在排队中，提交前直接拦截报错。
+    const workers = await queue.getWorkers().catch(() => []);
+    if (!workers.length) return res.status(503).json({ error: '任务 worker 未运行，请先启动：npm run dev:queue' });
     res.json(await enqueueTask(req.body.type, req.body.payload, req.user.userId, req.body.tab));
   } catch (err) {
     if (err.code === 'redis_queue_error') return res.status(503).json({ error: err.message || 'queue_error' });
