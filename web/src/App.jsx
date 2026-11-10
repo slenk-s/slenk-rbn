@@ -707,6 +707,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   // 并行生成的结果排队等确认：imageReplacePreviews[0] 是当前弹窗展示的那张。
   const [imageReplacePreviews, setImageReplacePreviews] = useState([]);
   const [publishConfirm, setPublishConfirm] = useState(false);
+  const [publishChannel, setPublishChannel] = useState('draft');
+  const [publishBusy, setPublishBusy] = useState(false);
   function clearImageSelectionState() {
     // 专属提示词编辑器常驻显示，不再需要选中态；这里只清待确认的替换预览。
     // 进行中的生成任务不清，它们结束后会自行从 regeneratingIds 移除。
@@ -893,6 +895,26 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       setStatus('发布任务已提交：本机即将弹出小红书窗口，填好内容后自动存入草稿箱。');
     } catch (err) { setStatus(err.message); }
   }
+  // 小工具渠道：笔记打包成离线小工具上传，返回预览二维码；小红书 App 扫码后直达预填好的发布页。
+  async function submitMinitoolPublish() {
+    const publishImages = images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9);
+    setPublishBusy(true);
+    try {
+      setStatus('正在打包小工具并上传，约需 30~60 秒…');
+      const data = await api('/api/publish/minitool', { method: 'POST', body: JSON.stringify({ title, content, tags, images: publishImages }) });
+      setPublishConfirm(false);
+      if (data.qrImage) {
+        setQr({ url: data.previewUrl || '', image: data.qrImage, tip: '用小红书 App 扫码，打开后点「发布到小红书」即可直达预填好的发布页' });
+        setStatus('预览二维码已生成，用小红书 App 扫码发布。');
+      } else if (data.previewUrl) {
+        setQr({ url: data.previewUrl, image: null, tip: '二维码生成失败，请在手机浏览器打开此链接' });
+        setStatus('预览链接已生成（二维码不可用）。');
+      } else {
+        setStatus('上传成功，但未返回二维码和预览链接。');
+      }
+    } catch (err) { setStatus(err.message); }
+    finally { setPublishBusy(false); }
+  }
   // 真正落库：与生成二维码共用 POST /api/notes，保存后可通过 /p/:id 预览页访问。
   async function saveNoteDraft() {
     if (!title.trim() && !content.trim() && !images.length) { setStatus('标题、正文、图片至少有一项才能保存。'); return; }
@@ -1063,7 +1085,10 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
             <button type="button" className="prompt-config-close" onClick={() => setPublishConfirm(false)}>×</button>
             <h3>发布到小红书</h3>
-            <p>本机将弹出 Chrome 窗口，自动打开发布页填好以下内容，然后点击「暂存离开」存入小红书草稿箱；窗口会保持打开，下次发布直接复用。你随时可以在小红书 App 或创作者中心的草稿箱里发布。首次使用需在弹出的窗口中扫码登录一次。</p>
+            <div className="publish-channel">
+              <label className={'channel-opt' + (publishChannel === 'draft' ? ' active' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'draft'} onChange={() => setPublishChannel('draft')} /><b>存入草稿箱</b><span>本机弹出浏览器自动填好并存草稿，之后在 App 草稿箱发布</span></label>
+              <label className={'channel-opt' + (publishChannel === 'minitool' ? ' active' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'minitool'} onChange={() => setPublishChannel('minitool')} /><b>扫码直达</b><span>打包成小工具生成二维码，App 扫码直达预填好的发布页</span></label>
+            </div>
             <div className="task-result-preview">
               <div className="task-result-block"><span>标题</span><strong>{title.trim() ? (title.length > 20 ? title.slice(0, 20) + '…（超过 20 字，发布时将截断）' : title) : '（未填写）'}</strong></div>
               <div className="task-result-block"><span>正文</span><p>{content.trim() ? (content.length > 60 ? content.slice(0, 60) + '…' : content) : '（未填写）'}</p></div>
@@ -1071,7 +1096,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
             </div>
             <div className="prompt-config-actions">
               <button type="button" className="btn-secondary" onClick={() => setPublishConfirm(false)}>取消</button>
-              <button type="button" className="btn-primary" onClick={submitPublish}>提交</button>
+              <button type="button" className="btn-primary" disabled={publishBusy} onClick={publishChannel === 'minitool' ? submitMinitoolPublish : submitPublish}>{publishBusy ? '处理中…' : '提交'}</button>
             </div>
           </div>
         </div>
@@ -1081,9 +1106,9 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           <div className="qr-modal" onClick={e => e.stopPropagation()}>
             <button type="button" className="qr-close" onClick={() => setQr(null)}>×</button>
             <h3>小红书笔记预览</h3>
-            <img src={qr.image} alt="笔记预览二维码" />
+            {qr.image ? <img src={qr.image} alt="笔记预览二维码" /> : null}
             <p className="qr-url">{qr.url}</p>
-            <p className="qr-tip">手机与电脑在同一局域网时，扫码即可打开预览</p>
+            <p className="qr-tip">{qr.tip || '手机与电脑在同一局域网时，扫码即可打开预览'}</p>
           </div>
         </div>
       )}

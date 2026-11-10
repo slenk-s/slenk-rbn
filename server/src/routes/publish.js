@@ -1,10 +1,16 @@
 // 小红书半自动发布：校验入参 → 建任务 → 入 xhs-publish 队列（worker 串行执行）。
 import { Router } from 'express';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { nanoid } from 'nanoid';
 import { addTask, updateTask, listTasks } from '../store.js';
 import { verify } from '../auth.js';
+import { buildMiniToolZip } from '../lib/minitoolBuild.js';
+import { ensureRedappCli, uploadPackage, createPreview } from '../lib/redappCli.js';
 
 const conn = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 export const publishQueue = new Queue('xhs-publish', { connection: conn });
@@ -54,6 +60,57 @@ router.post('/', async (req, res, next) => {
       return res.status(503).json({ error: '任务队列不可用，请确认 Redis 已启动' });
     }
     res.json({ id, status: 'queued' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 小工具渠道：笔记打包成离线 zip → redapp 上传 → 预览二维码。同步请求，整体约 30~60 秒。
+const AUDIT_SCRIPT = path.join(os.homedir(), '.claude', 'skills', 'minitool-zip-builder', 'scripts', 'audit_artifact.mjs');
+
+function runAudit(target) {
+  if (!fs.existsSync(AUDIT_SCRIPT)) return { target, output: '（审计脚本不存在，未运行）' };
+  const r = spawnSync(process.execPath, [AUDIT_SCRIPT, target], { encoding: 'utf8', timeout: 60000 });
+  return { target, output: String(r.stdout || '') + String(r.stderr || '') };
+}
+
+router.post('/minitool', async (req, res, next) => {
+  try {
+    const title = String(req.body?.title || '').trim();
+    const content = String(req.body?.content || '').trim();
+    const tags = Array.isArray(req.body?.tags) ? req.body.tags : [];
+    const images = (Array.isArray(req.body?.images) ? req.body.images : []).map(String).filter(Boolean).slice(0, 9);
+    if (!images.length) return res.status(400).json({ error: '发布需要至少 1 张图片（最多 9 张）' });
+    if (!title && !content) return res.status(400).json({ error: '标题和正文至少填一项' });
+
+    // 1. 打包（图片压缩、note.js 烧入、mini_tool.json 标记）
+    const buildId = nanoid(12);
+    const built = await buildMiniToolZip({ buildId, title, content, tags, imageUrls: images });
+
+    // 2. 按 Skill 规范跑产物审计；zip 超 10MiB 是 ERROR，直接拒绝。
+    const audits = [runAudit(built.dir), runAudit(built.zipPath)];
+    const auditLog = audits.map(a => `[${path.basename(a.target)}]\n${a.output.trim()}`).join('\n');
+    if (/^ERROR/m.test(audits[1].output)) {
+      return res.status(422).json({ error: '产物审计未通过：包体超过上传上限', audit: auditLog });
+    }
+
+    // 3. CLI 版本门禁 → 上传 → 预览二维码
+    const cli = ensureRedappCli();
+    const uploaded = uploadPackage(built.zipPath);
+    const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
+    const preview = createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut });
+
+    const qrPath = preview.qrCodePath && fs.existsSync(preview.qrCodePath) ? preview.qrCodePath : (fs.existsSync(qrOut) ? qrOut : null);
+    const qrImage = qrPath ? 'data:image/png;base64,' + fs.readFileSync(qrPath).toString('base64') : null;
+
+    res.json({
+      ok: true,
+      qrImage,
+      previewUrl: preview.previewUrl || '',
+      cli: { version: cli.version, status: cli.status },
+      package: { size: built.size, imageCount: built.imageCount },
+      audit: auditLog
+    });
   } catch (err) {
     next(err);
   }
