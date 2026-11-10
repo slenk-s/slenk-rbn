@@ -77,9 +77,10 @@
 
     function doPost() {
       setStatus('正在唤起发布页…');
+      // publishContent 含 #话题[话题]# 原生标记（发布页识别为真实话题）；展示用 content 保持干净。
       Promise.resolve(miniTool.postNote({
         title: data.title || '',
-        content: data.content || '',
+        content: data.publishContent || data.content || '',
         pageType: 'photo_publish',
         mediaInfo: {
           image_resources: paths.map(function (p) { return { url: p }; })

@@ -1089,11 +1089,6 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
               <label className={'channel-opt' + (publishChannel === 'draft' ? ' active' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'draft'} onChange={() => setPublishChannel('draft')} /><b>存入草稿箱</b><span>本机弹出浏览器自动填好并存草稿，之后在 App 草稿箱发布</span></label>
               <label className={'channel-opt' + (publishChannel === 'minitool' ? ' active' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'minitool'} onChange={() => setPublishChannel('minitool')} /><b>扫码直达</b><span>打包成小工具生成二维码，App 扫码直达预填好的发布页</span></label>
             </div>
-            <div className="task-result-preview">
-              <div className="task-result-block"><span>标题</span><strong>{title.trim() ? (title.length > 20 ? title.slice(0, 20) + '…（超过 20 字，发布时将截断）' : title) : '（未填写）'}</strong></div>
-              <div className="task-result-block"><span>正文</span><p>{content.trim() ? (content.length > 60 ? content.slice(0, 60) + '…' : content) : '（未填写）'}</p></div>
-              <div className="task-result-block"><span>图片</span><p>{images.filter(img => !img.isVideo).length} 张{images.filter(img => !img.isVideo).length > 9 ? '，超过 9 张，只发前 9 张' : ''}</p></div>
-            </div>
             <div className="prompt-config-actions">
               <button type="button" className="btn-secondary" onClick={() => setPublishConfirm(false)}>取消</button>
               <button type="button" className="btn-primary" disabled={publishBusy} onClick={publishChannel === 'minitool' ? submitMinitoolPublish : submitPublish}>{publishBusy ? '处理中…' : '提交'}</button>

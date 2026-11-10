@@ -40,11 +40,22 @@ async function compressForBundle(buf, maxEdge, quality) {
 }
 
 // 文案中的 < 统一转义，防止 note.js 内容里出现 </script> 之类的注入面。
+// publishContent 追加小红书原生话题标记 #xxx[话题]#（与官方 desc 格式一致），
+// 让发布页把话题识别为真实话题实体；展示用 content 保持干净。
 function bakeNoteJs({ title, content, tags, imageCount }) {
+  const cleanTags = (Array.isArray(tags) ? tags : []).map(t => String(t).replace(/^#/, '').trim()).filter(Boolean).slice(0, 20);
+  const cleanContent = String(content || '').slice(0, CONTENT_MAX);
+  let publishContent = cleanContent;
+  for (const t of cleanTags) {
+    const piece = ` #${t}[话题]#`;
+    if ((publishContent + piece).length > CONTENT_MAX) break;
+    publishContent += piece;
+  }
   const data = {
     title: String(title || '').slice(0, TITLE_MAX),
-    content: String(content || '').slice(0, CONTENT_MAX),
-    tags: (Array.isArray(tags) ? tags : []).map(t => String(t).replace(/^#/, '').trim()).filter(Boolean).slice(0, 20),
+    content: cleanContent,
+    publishContent,
+    tags: cleanTags,
     images: Array.from({ length: imageCount }, (_, i) => `./images/${i + 1}.jpg`)
   };
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
