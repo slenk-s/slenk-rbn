@@ -323,12 +323,14 @@ function ThemedSelect({ value, onChange, options, ariaLabel, className }) {
 function SmartImg({ sources, alt, className, onClick, draggable, onDragStart, onDragEnd }) {
   const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
   const key = list.join('|');
-  const [state, setState] = useState({ key, i: 0 });
-  if (state.key !== key) setState({ key, i: 0 });
+  const [state, setState] = useState({ key, i: 0, loaded: false });
+  if (state.key !== key) setState({ key, i: 0, loaded: false });
   const i = state.key === key ? state.i : 0;
+  const loaded = state.key === key && state.loaded;
   if (!list.length || i > list.length) return <div className={'img-broken ' + (className || '')}>图片加载失败</div>;
   const src = i < list.length ? list[i] : list[0] + (list[0].includes('?') ? '&' : '?') + 'r=' + key.length + i;
-  return <img src={src} alt={alt || ''} className={className} onClick={onClick} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd} onError={() => setState({ key, i: i + 1 })} />;
+  // 加载中显示微光骨架屏，避免大图加载期间一片空白；完成后淡入。
+  return <img src={src} alt={loaded ? (alt || '') : ''} className={(className || '') + (loaded ? ' smart-img-loaded' : ' smart-img-loading')} onClick={onClick} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd} onLoad={() => setState({ key, i, loaded: true })} onError={() => setState({ key, i: i + 1, loaded: false })} />;
 }
 // 远端图片经本地服务端代理转发：浏览器直连境外 CDN 会被本机网络断连（实测 ERR_CONNECTION_CLOSED），
 // 而服务端 fetch 正常（curl 同源验证过），代理一层后展示稳定。
