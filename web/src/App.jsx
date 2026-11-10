@@ -318,6 +318,36 @@ function ThemedSelect({ value, onChange, options, ariaLabel, className }) {
     </div>
   );
 }
+// 带兜底链的图片：sources 依次尝试，全部失败后再带时间戳重试第一个源，仍失败显示占位。
+// 解决两类裂图：Supabase 云端 URL 网络抖动（回退本地副本）、本地缓存被清理（回退远端/代理）。
+function SmartImg({ sources, alt, className, onClick, draggable, onDragStart, onDragEnd }) {
+  const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
+  const key = list.join('|');
+  const [state, setState] = useState({ key, i: 0 });
+  if (state.key !== key) setState({ key, i: 0 });
+  const i = state.key === key ? state.i : 0;
+  if (!list.length || i > list.length) return <div className={'img-broken ' + (className || '')}>图片加载失败</div>;
+  const src = i < list.length ? list[i] : list[0] + (list[0].includes('?') ? '&' : '?') + 'r=' + key.length + i;
+  return <img src={src} alt={alt || ''} className={className} onClick={onClick} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd} onError={() => setState({ key, i: i + 1 })} />;
+}
+// 远端图片经本地服务端代理转发：浏览器直连境外 CDN 会被本机网络断连（实测 ERR_CONNECTION_CLOSED），
+// 而服务端 fetch 正常（curl 同源验证过），代理一层后展示稳定。
+function proxiedInline(url) { return API + '/api/download?inline=1&url=' + encodeURIComponent(url); }
+// 结果图三来源：本地副本（最快）→ 代理云端（最稳）→ 直连云端（最后兜底）。
+function resultImageSources(cloudUrl, localPath) {
+  return [localPath ? API + localPath : null, cloudUrl ? proxiedInline(cloudUrl) : null, cloudUrl || null];
+}
+// 笔记图片的来源链：本地缓存优先，云端走代理，直连兜底。
+function noteImageSources(img) {
+  const out = [];
+  if (img && img.cachedUrl) out.push(API + img.cachedUrl);
+  const u = String(img && img.url || '');
+  if (u) {
+    if (/^https?:\/\//.test(u)) { out.push(proxiedInline(u)); out.push(u); }
+    else out.push(API + u);
+  }
+  return out;
+}
 function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   const result = unwrapTaskResult(parseJsonText(task.result || ''));
   if (!result) return <p className="muted">{task.status === 'failed' ? parseJsonText(task.error).error : '任务还没有结果内容。'}</p>;
@@ -333,8 +363,10 @@ function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
     </div>;
   }
   if (result.text) return <><p className="result-text">{result.text}</p>{resultDownload && <div className="result-actions">{resultDownload}</div>}</>;
-  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><img className="zoomable" src={resultMediaSrc(img)} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} />{(result.images.length > 1 || !hideDownloads) && <figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}{!hideDownloads && <DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} />}</figcaption>}</figure>)}</div>;
-  if (result.image && typeof result.image === 'string') return <figure className="result-media"><img className="zoomable" src={resultMediaSrc(result.image)} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} />{!hideDownloads && <figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption>}</figure>;
+  // 结果图三来源：本地副本 → 服务端代理云端 → 直连云端（网络抖动逐级兜底）。
+  const localImages = Array.isArray(result.localImages) ? result.localImages : [];
+  if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><SmartImg className="zoomable" sources={/^https?:\/\//.test(String(img)) ? resultImageSources(img, localImages[i]) : [API + img]} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} />{(result.images.length > 1 || !hideDownloads) && <figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}{!hideDownloads && <DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} />}</figcaption>}</figure>)}</div>;
+  if (result.image && typeof result.image === 'string') return <figure className="result-media"><SmartImg className="zoomable" sources={/^https?:\/\//.test(String(result.image)) ? resultImageSources(result.image, result.localImage) : [API + result.image]} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} />{!hideDownloads && <figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption>}</figure>;
   if (result.videos && Array.isArray(result.videos) && result.videos.length) return <div className="result-gallery">{result.videos.map((v, i) => <figure key={i} className="result-media"><video controls src={resultMediaSrc(v)} /><figcaption>{result.videos.length > 1 ? <span className="result-ref-label">视频 {i + 1}</span> : null}{!hideDownloads && <DownloadLink url={v} label="下载视频" name={task.id + '-' + task.type + '-' + (i + 1) + '.mp4'} />}</figcaption></figure>)}</div>;
   if (result.video) return <figure className="result-media"><video controls src={resultMediaSrc(result.video)} />{!hideDownloads && <figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption>}</figure>;
   const titleCandidates = Array.isArray(result.titles) ? result.titles.map(String) : [];
@@ -740,7 +772,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       const result = parseJsonText(task.result) || {};
       const urls = Array.isArray(result.images) && result.images.length ? result.images : (result.image && typeof result.image === 'string' ? [result.image] : []);
       if (!urls.length) throw new Error('AI 没有返回图片');
-      setImageReplacePreviews(prev => [...prev, { id: img.id, url: urls[0] }]);
+      setImageReplacePreviews(prev => [...prev, { id: img.id, url: urls[0], localUrl: Array.isArray(result.localImages) ? result.localImages[0] : (result.localImage || '') }]);
       setStatus('新图已生成，请确认是否替换。');
     } catch (err) {
       setStatus(err.message);
@@ -1007,7 +1039,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
                     dragend 复位 dragIndex，drop 前判空，避免拖选中的文字落进来时误触发排序。 */}
                 {img.isVideo
                   ? <video src={API + '/api/download?inline=1&url=' + encodeURIComponent(img.url)} controls preload="metadata" draggable onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }} onDragEnd={() => setDragIndex(null)} />
-                  : <img src={resolveImageSrc(img)} alt={img.name || '笔记图片'} draggable onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }} onDragEnd={() => setDragIndex(null)} />}
+                  : <SmartImg sources={noteImageSources(img)} alt={img.name || '笔记图片'} draggable onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }} onDragEnd={() => setDragIndex(null)} />}
                 <figcaption>
                   <span>{img.name || '图片 ' + (index + 1)}</span>
                   <div>
@@ -1034,7 +1066,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         </div>
         {!isDownload && (<aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
-          <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <img key={i} src={resolveImageSrc(img)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
+          <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <SmartImg key={i} sources={noteImageSources(img)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
           <div className="publish-actions"><button className="btn-primary" onClick={openPublishConfirm}>去发布</button><button className="btn-secondary" onClick={saveNoteDraft}>保存笔记</button><button className="btn-secondary" onClick={generateQr}>生成小红书直发二维码</button></div>
         </aside>)}
       </div>
@@ -1067,9 +1099,9 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
               <h3>替换图片确认{imageReplacePreviews.length > 1 ? '（还有 ' + (imageReplacePreviews.length - 1) + ' 张待确认）' : ''}</h3>
               <p>「{target.name || '图片 ' + (targetIndex + 1)}」将被替换为新图，原图不保留。</p>
               <div className="image-compare-grid">
-                <figure><img src={resolveImageSrc(target)} alt="原图" /><figcaption>原图</figcaption></figure>
+                <figure><SmartImg sources={noteImageSources(target)} alt="原图" /><figcaption>原图</figcaption></figure>
                 <div className="image-compare-arrow">→</div>
-                <figure><img src={resolveImageSrc({ url: preview.url })} alt="新图" /><figcaption>新图</figcaption></figure>
+                <figure><SmartImg sources={/^https?:\/\//.test(String(preview.url || '')) ? resultImageSources(preview.url, preview.localUrl) : [API + preview.url]} alt="新图" /><figcaption>新图</figcaption></figure>
               </div>
               <div className="prompt-config-actions">
                 <button type="button" className="btn-secondary" onClick={() => downloadFile(preview.url, (target.name || '图片 ' + (targetIndex + 1)) + '-新图', 'image')}>下载新图</button>
@@ -1404,7 +1436,7 @@ function NotePreviewPage({ noteId }) {
   return (
     <div className="note-page">
       <article className="note-page-card">
-        <div className="note-page-images">{note.images.map((img, i) => <img key={i} src={resolveImageSrc(img)} alt={img.name || ('图片 ' + (i + 1))} />)}</div>
+        <div className="note-page-images">{note.images.map((img, i) => <SmartImg key={i} sources={noteImageSources(img)} alt={img.name || ('图片 ' + (i + 1))} />)}</div>
         <h1>{note.title || '笔记标题'}</h1>
         <p className="note-page-content">{note.content}</p>
         <div className="topic-tags">{note.tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div>

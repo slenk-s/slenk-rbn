@@ -36,30 +36,31 @@ async function ensureBucket() {
   console.log('[cloud] storage bucket ready:', BUCKET);
 }
 
-// 上传本地文件到 bucket 并返回公网 URL；未配置或上传失败返回 null，调用方回退到本地路径。
+// 上传本地文件到 bucket 并返回公网 URL；未配置或重试后仍失败返回 null，调用方回退到本地路径。
+// 网络抖动是常态，单次失败直接回退会让结果只留在本地（丢失即裂图），所以带 3 次指数退避重试。
 export async function uploadResultAsset(localPath, key, contentType) {
   if (!cloudStorageEnabled()) return null;
-  try {
-    await ensureBucket();
-    const body = fs.readFileSync(localPath);
-    const safeKey = path.basename(key);
-    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURIComponent(safeKey)}`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${SUPABASE_KEY}`,
-        'content-type': contentType || 'application/octet-stream',
-        'x-upsert': 'true'
-      },
-      body
-    });
-    if (!res.ok) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await ensureBucket();
+      const body = fs.readFileSync(localPath);
+      const safeKey = path.basename(key);
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURIComponent(safeKey)}`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${SUPABASE_KEY}`,
+          'content-type': contentType || 'application/octet-stream',
+          'x-upsert': 'true'
+        },
+        body
+      });
+      if (res.ok) return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${safeKey}`;
       const text = await res.text().catch(() => '');
-      console.warn('[cloud] upload failed:', res.status, text.slice(0, 200));
-      return null;
+      console.warn(`[cloud] upload failed (attempt ${attempt + 1}/3):`, res.status, text.slice(0, 200));
+    } catch (err) {
+      console.warn(`[cloud] upload error (attempt ${attempt + 1}/3):`, err.message);
     }
-    return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${safeKey}`;
-  } catch (err) {
-    console.warn('[cloud] upload error:', err.message);
-    return null;
+    if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
   }
+  return null;
 }

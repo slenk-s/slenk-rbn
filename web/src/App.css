@@ -2844,3 +2844,6 @@ button:hover { transform: translateY(-1px); }
 .channel-opt span { font-size: 12px; color: #888; line-height: 1.5; }
 .channel-opt.active { border-color: var(--accent); background: rgba(79, 70, 229, 0.06); }
 .channel-opt.active b { color: var(--accent); }
+
+/* 图片加载失败的占位（兜底链全部用尽后） */
+.img-broken { display: flex; align-items: center; justify-content: center; min-height: 80px; width: 100%; background: #f3f4f6; color: #9ca3af; font-size: 12px; border-radius: 8px; }
