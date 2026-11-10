@@ -6,6 +6,7 @@ storage/
 server/storage/
 tools/
 .codex-tmp/
+.codex/
 *.local
 .env
 public-build.js

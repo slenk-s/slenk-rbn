@@ -105,3 +105,20 @@ stop-slenk-notes.bat
 ```
 
 然后重新启动。
+
+## 内置 Skill（小红书小工具）
+
+项目在 `.skills/` 内置两个小红书小工具 Skill，通过 `setup-skills.ps1` 创建
+目录联接（junction），让 Codex（`.codex/skills/`）和 Claude Code
+（`.claude/skills/`）都能发现：
+
+- `redapp-cli` — 管理/CLI：本地调试、查询、上传、预览、送审、编辑小工具
+- `minitool-zip-builder` — 开发规范：把 H5 打包成合规离线 `.zip` 并校验
+
+新机器克隆后先运行一次：
+
+```powershell
+.\setup-skills.ps1
+```
+
+详见 `AGENTS.md`。

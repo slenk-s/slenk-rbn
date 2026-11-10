@@ -1,0 +1,4 @@
+interface:
+  display_name: "小红书小工具 CLI"
+  short_description: "使用 CLI 查询小工具、上传素材、生成预览、送审版本并排查接口错误"
+  default_prompt: "使用 $redapp-cli 帮我查询小工具、上传素材、预览和送审；如需 Beta 环境我会明确说明。"
