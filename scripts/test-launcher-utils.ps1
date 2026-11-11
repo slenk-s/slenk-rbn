@@ -29,7 +29,9 @@ try {
   $onlyServer = Resolve-RedisTools -PathValue "$env:SystemRoot\System32" -WingetRoot '' -FallbackDirs @($fakeRedis)
   Assert ($null -eq $onlyServer) 'Redis server without redis-cli must be rejected'
   New-Item -ItemType File -Path (Join-Path $fakeRedis 'redis-cli.exe') | Out-Null
-  $pair = Resolve-RedisTools -PathValue "$env:SystemRoot\System32" -WingetRoot '' -FallbackDirs @($fakeRedis)
+  # Missing drives/directories must be skipped instead of terminating the launcher
+  # under ErrorActionPreference=Stop.
+  $pair = Resolve-RedisTools -PathValue "$env:SystemRoot\System32" -WingetRoot '' -FallbackDirs @('Z:\definitely-missing', $fakeRedis)
   Assert ($pair.Server -eq (Join-Path $fakeRedis 'redis-server.exe')) 'Redis server path mismatch'
   Assert ($pair.Cli -eq (Join-Path $fakeRedis 'redis-cli.exe')) 'Redis cli path mismatch'
 } finally { Remove-Item -LiteralPath $fakeRedis -Recurse -Force }
