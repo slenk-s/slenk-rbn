@@ -53,6 +53,7 @@ export function createAsyncProcessRunner({
       let stderrBytes = 0;
       let timer = null;
       let settled = false;
+      let terminatingError = null;
 
       const append = (chunks, byteCount, chunk) => {
         const remaining = maxOutputBytes - byteCount;
@@ -64,7 +65,14 @@ export function createAsyncProcessRunner({
       };
       const onStdout = chunk => { stdoutBytes = append(stdoutChunks, stdoutBytes, chunk); };
       const onStderr = chunk => { stderrBytes = append(stderrChunks, stderrBytes, chunk); };
-      const onAbort = () => finalize(null, 'aborted', true);
+      const requestTermination = errorMarker => {
+        if (settled || terminatingError) return;
+        terminatingError = errorMarker;
+        if (timer !== null) { clearTimer(timer); timer = null; }
+        signal?.removeEventListener?.('abort', onAbort);
+        try { child?.kill?.(); } catch { finalize(null, errorMarker); }
+      };
+      const onAbort = () => requestTermination('aborted');
       const cleanup = () => {
         if (timer !== null) {
           clearTimer(timer);
@@ -76,12 +84,9 @@ export function createAsyncProcessRunner({
         child?.off?.('error', onError);
         child?.off?.('close', onClose);
       };
-      const finalize = (status, errorMarker, kill = false) => {
+      const finalize = (status, errorMarker) => {
         if (settled) return;
         settled = true;
-        if (kill) {
-          try { child?.kill?.(); } catch {}
-        }
         cleanup();
         resolve({
           status,
@@ -90,8 +95,8 @@ export function createAsyncProcessRunner({
           error: errorMarker ? new Error(errorMarker) : null
         });
       };
-      const onError = () => finalize(null, 'process_error', true);
-      const onClose = status => finalize(status, null);
+      const onError = () => finalize(null, terminatingError || 'process_error');
+      const onClose = status => finalize(status, terminatingError);
 
       try {
         child = spawnProcess(process.execPath, args, {
@@ -113,7 +118,7 @@ export function createAsyncProcessRunner({
         return;
       }
       signal?.addEventListener?.('abort', onAbort, { once: true });
-      timer = setTimer(() => finalize(null, 'timeout', true), timeoutMs);
+      timer = setTimer(() => requestTermination('timeout'), timeoutMs);
       timer?.unref?.();
     });
   };

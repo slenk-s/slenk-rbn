@@ -46,6 +46,44 @@ test('canonical request matches operation values and has stable SHA-256 fingerpr
   assert.deepEqual(one.request, { title: 'title', content: 'body', tags: ['tag'], images: ['/uploads/a.png'] });
   assert.match(one.fingerprint, /^[a-f0-9]{64}$/);
   assert.equal(one.fingerprint, two.fingerprint);
+  const hashes = canonicalizeMiniToolPublishRequest({ ...valid, tags: ['##tag'] });
+  assert.equal(one.fingerprint, hashes.fingerprint);
+});
+
+test('canonical title exactly matches the builder 20-character operation value', () => {
+  const prefix = '12345678901234567890';
+  const one = canonicalizeMiniToolPublishRequest({ ...valid, title: `${prefix}first suffix` });
+  const two = canonicalizeMiniToolPublishRequest({ ...valid, title: `${prefix}other suffix` });
+  assert.equal(one.request.title, prefix);
+  assert.equal(one.fingerprint, two.fingerprint);
+});
+
+test('ninth fingerprint alias recovers stable canonical attempt without registration', async () => {
+  let release;
+  const registry = createMiniToolPublishJobRegistry({ maxAliasesPerJob: 2 });
+  const canonical = registry.createOrReuse('u', 'attempt-one', 'fp', () => new Promise(resolve => { release = resolve; }));
+  registry.createOrReuse('u', 'attempt-two', 'fp', async () => ({ duplicate: true }));
+  const saturated = registry.createOrReuse('u', 'attempt-three', 'fp', async () => ({ duplicate: true }));
+  assert.equal(saturated, canonical);
+  assert.equal(registry.get('u', 'attempt-three'), canonical);
+  assert.equal(registry.toDto(saturated, 'attempt-three').attemptId, 'attempt-one');
+  assert.equal(registry.toDto(saturated, 'attempt-three').requestedAttemptId, 'attempt-three');
+  await tick(); release({ ok: true }); await canonical.promise; registry.dispose();
+});
+
+test('existing owner reuse and conflict are resolved before redapp auth', async () => {
+  let authCalls = 0;
+  const registry = createMiniToolPublishJobRegistry();
+  const first = registry.createOrReuse('u1', valid.attemptId, canonicalizeMiniToolPublishRequest(valid).fingerprint, async () => ({ ok: true }));
+  await first.promise;
+  const handler = createMiniToolPublishHandler(operationDeps({ registry, authManager: { getStatus: async () => { authCalls++; return { available: true, loggedIn: false }; } } }));
+  const reuse = await invoke(handler, valid);
+  assert.equal(reuse.statusCode, 200);
+  assert.equal(reuse.body.status, 'done');
+  const conflict = await invoke(handler, { ...valid, title: 'different' });
+  assert.equal(conflict.statusCode, 409);
+  assert.equal(authCalls, 0);
+  registry.dispose();
 });
 
 test('same attempt conflicts on another fingerprint and same fingerprint aliases one job', async () => {
@@ -58,7 +96,8 @@ test('same attempt conflicts on another fingerprint and same fingerprint aliases
   await tick();
   assert.equal(first, alias);
   assert.equal(calls, 1);
-  assert.equal(registry.toDto(alias, 'attempt-two').attemptId, 'attempt-two');
+  assert.equal(registry.toDto(alias, 'attempt-two').attemptId, 'attempt-one');
+  assert.equal(registry.toDto(alias, 'attempt-two').requestedAttemptId, 'attempt-two');
   finish({ ok: true }); await first.promise;
   registry.dispose();
 });
@@ -91,6 +130,44 @@ test('registry queues globally, enforces per-user admission, and starts next aft
   assert.equal(queued.status, 'done');
   assert.deepEqual(starts, ['one', 'two']);
   registry.dispose();
+});
+
+test('registry keeps physical slot until abort-ignoring execution settles', async () => {
+  const timers = [];
+  let settleFirst;
+  const starts = [];
+  const registry = createMiniToolPublishJobRegistry({
+    maxConcurrent: 1, perUserLimit: 1,
+    setTimer(fn) { const timer = { fn, unref() {} }; timers.push(timer); return timer; },
+    clearTimer() {}
+  });
+  const first = registry.createOrReuse('u1', 'attempt-one', 'fp1', async () => {
+    starts.push('one');
+    return new Promise(resolve => { settleFirst = resolve; });
+  });
+  const second = registry.createOrReuse('u2', 'attempt-two', 'fp2', async () => { starts.push('two'); return { ok: true }; });
+  await tick();
+  first.deadlineTimer.fn();
+  await first.promise;
+  assert.equal(first.status, 'failed');
+  assert.equal(second.status, 'queued');
+  assert.deepEqual(starts, ['one']);
+  settleFirst({ late: true });
+  await tick(); await second.promise;
+  assert.deepEqual(starts, ['one', 'two']);
+  assert.equal(first.status, 'failed');
+  registry.dispose();
+});
+
+test('dispose resolves public running completion without waiting for physical execution', async () => {
+  let settle;
+  const registry = createMiniToolPublishJobRegistry();
+  const running = registry.createOrReuse('u', 'attempt-one', 'fp1', () => new Promise(resolve => { settle = resolve; }));
+  await tick(); registry.dispose();
+  assert.equal(await Promise.race([running.promise.then(() => 'resolved'), new Promise(resolve => setTimeout(() => resolve('hung'), 20))]), 'resolved');
+  assert.equal(running.status, 'failed');
+  settle({ late: true }); await tick();
+  assert.equal(running.status, 'failed');
 });
 
 test('dispose aborts running work, clears queue, and ignores late results', async () => {
@@ -148,6 +225,19 @@ test('failed terminal POST is authoritative and fingerprint conflict is safe 409
   registry.dispose();
 });
 
+test('QR candidate paths are deduplicated before bounded read', async () => {
+  const reads = [];
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({
+    registry,
+    createPreview: async ({ qrOut }) => ({ qrCodePath: qrOut, previewUrl: '' }),
+    readQrImage: candidate => { reads.push(candidate); throw new Error('invalid'); }
+  }));
+  await invoke(handler, valid); const job = registry.get('u1', valid.attemptId); await job.promise;
+  assert.equal(reads.length, 1);
+  registry.dispose();
+});
+
 test('QR stale path falls back to bounded valid PNG output', async () => {
   const png = Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]), Buffer.from('x')]);
   const reads = [];
@@ -164,14 +254,16 @@ test('QR stale path falls back to bounded valid PNG output', async () => {
   registry.dispose();
 });
 
-test('async process runner abort signal kills and cleans up child', async () => {
+test('async process runner abort signal kills then resolves only after child close', async () => {
   const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.killCount = 0; child.kill = () => { child.killCount++; };
   const controller = new AbortController();
   const run = cli.createAsyncProcessRunner({ spawnProcess: () => child });
-  const pending = run(['fake'], 1000, { signal: controller.signal });
-  controller.abort();
-  const result = await pending;
-  assert.equal(result.error.message, 'aborted'); assert.equal(child.killCount, 1);
+  let settled = false;
+  const pending = run(['fake'], 1000, { signal: controller.signal }).then(result => { settled = true; return result; });
+  controller.abort(); await tick();
+  assert.equal(child.killCount, 1); assert.equal(settled, false);
+  child.emit('close', null); const result = await pending;
+  assert.equal(result.error.message, 'aborted');
   assert.equal(child.listenerCount('close'), 0); assert.equal(controller.signal.onabort, null);
 });
 

@@ -160,3 +160,38 @@ GREEN verification:
 ### Remaining concerns
 
 The registry is intentionally process-local: server restart loses status and multi-process deployments do not share jobs. No real CLI/network operation was used; all new coverage uses fakes. Browser interaction was not exercised live.
+
+## Hardened architecture review closure — 2026-11-12
+
+Closed the remaining 7 Important and 4 Minor findings from the hardened review on top of `92c5328`.
+
+### Changes
+
+- Post-dispatch cancellation now retains/adopts the exact server attempt for every auth-cancel outcome and restarts polling with a fresh controller; pre-replay auth cancellation can release normally.
+- Structured pre-creation errors are authoritative. Alias saturation returns and registers a bounded canonical recovery identity; the browser adopts the server `attemptId`.
+- Deadlines and disposal resolve the public terminal promise exactly once while physical slots remain held until execution settles. Async subprocess abort/timeout now resolves after child close.
+- Remote images use a reusable DNS/public-address/redirect policy. Private, loopback, link-local, CGNAT, multicast, unspecified, mapped-private IPv6, credentials, and non-HTTP(S) URLs are rejected with a fixed error.
+- Image reads enforce 25 MiB per source and 100 MiB aggregate budgets using streamed remote reads and single-handle local `fstat`/bounded reads; response bodies are cancelled on overflow/abort and Sharp has an explicit pixel cap.
+- Canonical title uses the shared 20-character builder constant; content and leading-hash tag normalization also match effective package inputs.
+- Existing owner attempt reuse/conflict is resolved before redapp auth, QR candidate paths are deduplicated, and `/videos/` maps to the videos directory.
+- Restart loss now gives explicit outcome-unknown guidance and requires an in-memory acknowledgement before a fresh attempt. This process-local limitation remains documented and intentionally uses no localStorage.
+
+### TDD evidence
+
+RED was observed for title suffix equivalence, alias recovery, physical slot retention, disposal completion, QR deduplication, process-close supervision, SSRF ranges/redirects, remote Content-Length/chunk overflow/abort, local oversize, aggregate source budget, authoritative pre-creation responses, canonical attempt adoption, all post-dispatch cancel outcomes, and restart acknowledgement. Each focused suite was then made GREEN.
+
+### Final verification
+
+- Server auth suite: 80/80 pass.
+- Server reference + publish/security suites: 51/51 pass.
+- Full web suite: 89/89 pass.
+- Web lint exits 0 with the same 15 pre-existing warnings and no errors.
+- Vite production build succeeds; 49 modules transformed.
+- Changed server files pass `node --check`; `git diff --check` passes.
+
+### Concerns
+
+- The registry remains process-local by design. Restart loss is now explicit and requires acknowledgement before a fresh publish.
+- DNS is validated before each fetch/redirect hop, as required by the review; Node fetch may resolve the hostname again because no pinned-address dispatcher dependency is present.
+- No real network, CLI, login, upload, or phone-preview operation was performed. Online mini-tool documentation was not fetched; the bundled baseline was used conservatively.
+- Server dependency installation reports the existing 4 moderate and 1 high advisories; this task did not introduce or remediate them.

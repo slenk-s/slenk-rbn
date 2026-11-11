@@ -262,7 +262,7 @@ test('async process runner finalizes error without close and removes listeners',
   assert.equal(child.stderr.listenerCount('data'), 0);
 });
 
-test('async process runner timeout kills and settles without close', async () => {
+test('async process runner timeout kills and settles after close', async () => {
   const child = createFakeChild();
   let timeoutCallback;
   const cleared = [];
@@ -272,10 +272,13 @@ test('async process runner timeout kills and settles without close', async () =>
     setTimer(callback) { timeoutCallback = callback; return timer; },
     clearTimer(value) { cleared.push(value); }
   });
-  const resultPromise = run(['fake'], 10);
-  timeoutCallback();
-  const result = await resultPromise;
+  let settled = false;
+  const resultPromise = run(['fake'], 10).then(result => { settled = true; return result; });
+  timeoutCallback(); await tick();
   assert.equal(child.killCount, 1);
+  assert.equal(settled, false);
+  child.emit('close', null);
+  const result = await resultPromise;
   assert.equal(result.error?.message, 'timeout');
   assert.deepEqual(cleared, [timer]);
   assert.equal(child.listenerCount('close'), 0);

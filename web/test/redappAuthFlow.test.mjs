@@ -8,6 +8,9 @@ import {
   createPublishRequestSnapshot,
   createPublishAttemptId,
   interpretMiniToolPublishResponse,
+  isAuthoritativePrecreationError,
+  shouldRecoverAttemptAfterCancel,
+  RESTART_UNKNOWN_GUIDANCE,
   recoverInitialPublish,
   createRedappAuthClient,
   createRedappFetchAdapter,
@@ -39,18 +42,73 @@ test('initial POST uncertainty immediately polls the same attempt id', async () 
   assert.deepEqual(calls, ['post', 'attempt-fixed']);
 });
 
-test('initial POST authoritative client errors do not poll', async () => {
+test('structured pre-creation errors are authoritative regardless of HTTP class', async () => {
+  for (const [code, status] of [
+    ['PUBLISH_JOB_CAPACITY', 503],
+    ['REDAPP_UNAVAILABLE', 503],
+    ['PUBLISH_ATTEMPT_CONFLICT', 409],
+    ['PUBLISH_VALIDATION', 400],
+    ['PUBLISH_USER_LIMIT', 429]
+  ]) {
+    let polls = 0;
+    const error = Object.assign(new Error(code), { status, code });
+    assert.equal(isAuthoritativePrecreationError(error), true);
+    await assert.rejects(() => recoverInitialPublish({
+      attemptId: 'attempt-fixed', post: async () => { throw error; }, poll: async () => { polls++; }
+    }), value => value === error);
+    assert.equal(polls, 0, code);
+  }
+});
+
+test('unknown server errors remain recoverable through the same attempt', async () => {
+  const error = Object.assign(new Error('gateway'), { status: 503, code: 'API_ERROR' });
+  let polled = '';
+  const result = await recoverInitialPublish({
+    attemptId: 'attempt-fixed', post: async () => { throw error; },
+    poll: async id => { polled = id; return { attemptId: id, status: 'done' }; }
+  });
+  assert.equal(polled, 'attempt-fixed');
+  assert.equal(result.status, 'done');
+});
+
+test('post response can redirect polling to the server canonical attempt id', async () => {
+  const calls = [];
+  const result = await recoverInitialPublish({
+    attemptId: 'ninth-alias',
+    post: async () => ({ attemptId: 'canonical-first', requestedAttemptId: 'ninth-alias', status: 'running' }),
+    poll: async id => { calls.push(id); return { attemptId: id, status: 'done' }; }
+  });
+  assert.deepEqual(calls, ['canonical-first']);
+  assert.equal(result.attemptId, 'canonical-first');
+});
+
+test('failed canonical reuse is terminal and never polled', async () => {
   let polls = 0;
-  const error = Object.assign(new Error('conflict'), { status: 409, code: 'PUBLISH_ATTEMPT_CONFLICT' });
   await assert.rejects(() => recoverInitialPublish({
-    attemptId: 'attempt-fixed', post: async () => { throw error; }, poll: async () => { polls++; }
-  }), value => value === error);
+    attemptId: 'requested',
+    post: async () => ({ attemptId: 'canonical', requestedAttemptId: 'requested', status: 'failed', error: 'failed' }),
+    poll: async () => { polls++; }
+  }), error => error.code === 'PUBLISH_JOB_FAILED' && error.attemptId === 'canonical');
   assert.equal(polls, 0);
 });
 
+test('every cancellation after POST dispatch retains the exact attempt for recovery', () => {
+  for (const phase of ['replaying', 'job-created', 'job-polling', 'uncertain', 'cancel-failed']) {
+    for (const outcome of ['cancelled', 'failed', 'done', 'not-found', 'mismatch', 'server-failure']) {
+      assert.equal(shouldRecoverAttemptAfterCancel(phase, outcome), true, `${phase}/${outcome}`);
+    }
+  }
+  assert.equal(shouldRecoverAttemptAfterCancel('auth-required', 'cancelled'), false);
+  assert.equal(shouldRecoverAttemptAfterCancel('publishing', 'cancelled'), false);
+});
+
+test('restart loss uses explicit outcome-unknown guidance before a fresh attempt', () => {
+  assert.equal(RESTART_UNKNOWN_GUIDANCE, '服务已重启，无法确认原任务结果；请先到小红书小工具预览记录核对，再决定是否重新发布。');
+});
+
 test('POST parser handles queued running done and failed explicitly', async () => {
-  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'queued' }, 'a'), { action: 'poll' });
-  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'running' }, 'a'), { action: 'poll' });
+  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'queued' }, 'a'), { action: 'poll', attemptId: 'a' });
+  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'running' }, 'a'), { action: 'poll', attemptId: 'a' });
   assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'done', previewUrl: 'x' }, 'a'), { action: 'done', job: { attemptId: 'a', status: 'done', previewUrl: 'x' } });
   assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'failed', error: 'failed' }, 'a'), e => e.code === 'PUBLISH_JOB_FAILED');
   assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'unknown' }, 'a'), e => e.code === 'PUBLISH_JOB_UNCERTAIN');
@@ -82,6 +140,15 @@ test('polls one minitool job through running to done without resubmitting', asyn
     '/api/publish/minitool/jobs/attempt-fixed',
     '/api/publish/minitool/jobs/attempt-fixed'
   ]);
+});
+
+test('missing same-attempt job after uncertainty reports restart outcome unknown', async () => {
+  await assert.rejects(() => pollMiniToolPublishJob({
+    attemptId: 'attempt-fixed', pollMs: 0,
+    request: async () => { throw Object.assign(new Error('missing'), { status: 404 }); }
+  }), error => error.code === 'PUBLISH_JOB_RESTART_UNKNOWN'
+    && error.attemptId === 'attempt-fixed'
+    && error.message === RESTART_UNKNOWN_GUIDANCE);
 });
 
 test('poll failure is uncertain and retains the attempt id', async () => {

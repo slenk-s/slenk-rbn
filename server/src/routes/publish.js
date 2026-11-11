@@ -9,7 +9,7 @@ import { nanoid } from 'nanoid';
 import { addTask, updateTask, listTasks } from '../store.js';
 import { verify } from '../auth.js';
 import { paths } from '../paths.js';
-import { buildMiniToolZip } from '../lib/minitoolBuild.js';
+import { buildMiniToolZip, MINITOOL_CONTENT_MAX, MINITOOL_TITLE_MAX } from '../lib/minitoolBuild.js';
 import { createAsyncProcessRunner, createPreviewAsync, readRedappQrFile, uploadPackageAsync } from '../lib/redappCli.js';
 import { authManager } from './redappAuth.js';
 
@@ -48,18 +48,18 @@ const AUDIT_SCRIPT = path.join(paths.root, '.skills', 'minitool-zip-builder', 's
 const runNodeAsync = createAsyncProcessRunner();
 
 function invalid(message = '发布参数无效') { throw Object.assign(new Error(message), { code: 'PUBLISH_VALIDATION' }); }
-function canonicalTag(value) { return value.trim().replace(/^#/, '').trim(); }
+function canonicalTag(value) { return value.trim().replace(/^#+/, '').trim(); }
 function allowedImage(value) { return /^https?:\/\//i.test(value) || /^\/(uploads|notes-images|videos)\/[A-Za-z0-9._~!$&'()+,;=@%-]+$/.test(value); }
 
 export function canonicalizeMiniToolPublishRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid();
   if (typeof body.attemptId !== 'string' || !ATTEMPT_ID_PATTERN.test(body.attemptId)) invalid('无效的发布尝试标识');
   if (typeof body.title !== 'string' || body.title.length > 100) invalid();
-  if (typeof body.content !== 'string' || body.content.length > 1000) invalid();
+  if (typeof body.content !== 'string' || body.content.length > MINITOOL_CONTENT_MAX) invalid();
   if (!Array.isArray(body.tags) || body.tags.length > 20 || body.tags.some(t => typeof t !== 'string' || t.length > 40)) invalid();
   if (!Array.isArray(body.images) || body.images.length < 1 || body.images.length > 9 || body.images.some(i => typeof i !== 'string' || i.length > 8192 || !allowedImage(i))) invalid();
   const request = {
-    title: body.title.trim(),
+    title: body.title.trim().slice(0, MINITOOL_TITLE_MAX),
     content: body.content.trim(),
     tags: body.tags.map(canonicalTag).filter(Boolean),
     images: [...body.images]
@@ -107,6 +107,17 @@ export function createMiniToolPublishJobRegistry({
       while (jobs.size > maxEntries && terminal.length) remove(terminal.shift());
     }
   }
+  function resolveCompletion(job) {
+    if (job.completionResolved) return;
+    job.completionResolved = true;
+    job.resolveCompletion?.(job);
+  }
+  function releaseSlot(job) {
+    if (job.slotReleased) return;
+    job.slotReleased = true;
+    active--;
+    startNext(); cleanup();
+  }
   function finish(job, status, result = null) {
     if (job.status !== 'running') return;
     clearTimer(job.deadlineTimer);
@@ -114,10 +125,7 @@ export function createMiniToolPublishJobRegistry({
     job.status = status;
     job.result = status === 'done' ? result : null;
     job.finishedAt = now();
-    job.resolveCompletion?.(job);
-    active--;
-    if (status === 'failed' && fingerprints.get(keyFor(job.userId, job.fingerprint)) === job) fingerprints.delete(keyFor(job.userId, job.fingerprint));
-    startNext(); cleanup();
+    resolveCompletion(job);
   }
   function start(job) {
     if (disposed || job.status !== 'queued') return;
@@ -135,7 +143,10 @@ export function createMiniToolPublishJobRegistry({
     job.executionPromise = Promise.resolve().then(() => job.operation({ signal: job.controller.signal })).then(
       result => finish(job, 'done', result),
       () => finish(job, 'failed')
-    );
+    ).finally(() => {
+      if (job.status === 'failed' && fingerprints.get(keyFor(job.userId, job.fingerprint)) === job) fingerprints.delete(keyFor(job.userId, job.fingerprint));
+      releaseSlot(job);
+    });
   }
   function startNext() { while (!disposed && active < maxConcurrent && queue.length) start(queue.shift()); }
   function createOrReuse(userId, attemptId, fingerprint, operation) {
@@ -154,8 +165,17 @@ export function createMiniToolPublishJobRegistry({
     const fingerprintKey = keyFor(userId, fingerprint);
     const byFingerprint = fingerprints.get(fingerprintKey);
     if (byFingerprint && byFingerprint.status !== 'failed') {
-      if (byFingerprint.aliases.size >= maxAliasesPerJob) throw Object.assign(new Error('publish_job_capacity'), { code: 'PUBLISH_JOB_CAPACITY' });
-      byFingerprint.aliases.add(attemptId); aliases.set(aliasKey, byFingerprint); return byFingerprint;
+      if (byFingerprint.aliases.size >= maxAliasesPerJob) {
+        const staleAlias = [...byFingerprint.aliases].find(alias => alias !== byFingerprint.canonicalAttemptId);
+        if (staleAlias) {
+          byFingerprint.aliases.delete(staleAlias);
+          aliases.delete(keyFor(userId, staleAlias));
+        }
+      }
+      if (byFingerprint.aliases.size < maxAliasesPerJob) {
+        byFingerprint.aliases.add(attemptId); aliases.set(aliasKey, byFingerprint);
+      }
+      return byFingerprint;
     }
     if (jobs.size >= maxEntries) {
       const terminal = [...jobs].filter(j => j.status === 'done' || j.status === 'failed').sort((a, b) => a.finishedAt - b.finishedAt);
@@ -165,11 +185,11 @@ export function createMiniToolPublishJobRegistry({
     if (countUser(userId) >= perUserLimit) throw Object.assign(new Error('publish_user_limit'), { code: 'PUBLISH_USER_LIMIT' });
     const completion = {};
     completion.promise = new Promise(resolve => { completion.resolve = resolve; });
-    const job = { userId, canonicalAttemptId: attemptId, fingerprint, aliases: new Set([attemptId]), status: 'queued', result: null, finishedAt: null, operation, controller: null, queueTimer: null, deadlineTimer: null, executionPromise: null, promise: completion.promise, resolveCompletion: completion.resolve };
+    const job = { userId, canonicalAttemptId: attemptId, fingerprint, aliases: new Set([attemptId]), status: 'queued', result: null, finishedAt: null, operation, controller: null, queueTimer: null, deadlineTimer: null, executionPromise: null, promise: completion.promise, resolveCompletion: completion.resolve, completionResolved: false, slotReleased: false };
     job.queueTimer = setTimer(() => {
       if (job.status !== 'queued') return;
       const index = queue.indexOf(job); if (index >= 0) queue.splice(index, 1);
-      job.status = 'failed'; job.finishedAt = now(); job.resolveCompletion(job);
+      job.status = 'failed'; job.finishedAt = now(); resolveCompletion(job);
       if (fingerprints.get(fingerprintKey) === job) fingerprints.delete(fingerprintKey);
     }, jobDeadlineMs);
     job.queueTimer?.unref?.();
@@ -179,25 +199,28 @@ export function createMiniToolPublishJobRegistry({
   function get(userId, attemptId) { cleanup(); return aliases.get(keyFor(userId, attemptId)) || null; }
   function toDto(job, requestedAttemptId = job?.canonicalAttemptId) {
     if (!job) return null;
-    if (job.status === 'done') return { attemptId: requestedAttemptId, status: 'done', ...job.result };
-    if (job.status === 'failed') return { attemptId: requestedAttemptId, status: 'failed', error: FAILED_JOB_ERROR };
-    return { attemptId: requestedAttemptId, status: job.status };
+    const identity = requestedAttemptId === job.canonicalAttemptId
+      ? { attemptId: job.canonicalAttemptId }
+      : { attemptId: job.canonicalAttemptId, requestedAttemptId };
+    if (job.status === 'done') return { ...identity, status: 'done', ...job.result };
+    if (job.status === 'failed') return { ...identity, status: 'failed', error: FAILED_JOB_ERROR };
+    return { ...identity, status: job.status };
   }
   const timer = setIntervalFn(cleanup, cleanupIntervalMs); timer?.unref?.();
   function dispose() {
     if (disposed) return; disposed = true; clearIntervalFn(timer); queue.length = 0;
     for (const job of jobs) {
-      if (job.status === 'running') { job.controller?.abort(new Error('publish_job_disposed')); clearTimer(job.deadlineTimer); job.deadlineTimer = null; job.status = 'failed'; job.result = null; job.finishedAt = now(); }
-      else if (job.status === 'queued') { clearTimer(job.queueTimer); job.queueTimer = null; job.status = 'failed'; job.finishedAt = now(); job.resolveCompletion(job); }
+      if (job.status === 'running') { job.controller?.abort(new Error('publish_job_disposed')); clearTimer(job.deadlineTimer); job.deadlineTimer = null; job.status = 'failed'; job.result = null; job.finishedAt = now(); resolveCompletion(job); }
+      else if (job.status === 'queued') { clearTimer(job.queueTimer); job.queueTimer = null; job.status = 'failed'; job.finishedAt = now(); resolveCompletion(job); }
     }
-    active = 0;
   }
   return { createOrReuse, get, toDto, cleanup, dispose, get size() { return jobs.size; } };
 }
 
 export const miniToolPublishJobs = createMiniToolPublishJobRegistry();
 function qrData(readQrImage, candidates) {
-  for (const candidate of candidates.filter(Boolean)) {
+  const unique = [...new Set(candidates.filter(Boolean).map(candidate => path.resolve(candidate)))];
+  for (const candidate of unique) {
     try {
       const value = readQrImage(candidate);
       if (typeof value === 'string') return value;
@@ -216,10 +239,16 @@ export function createMiniToolPublishHandler({
     try { validated = canonicalizeMiniToolPublishRequest(req.body); }
     catch { return res.status(400).json({ error: '发布参数无效', code: 'PUBLISH_VALIDATION' }); }
     try {
+      const { attemptId, request, fingerprint } = validated;
+      const existing = registry.get(req.user?.userId, attemptId);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw Object.assign(new Error('publish_attempt_conflict'), { code: 'PUBLISH_ATTEMPT_CONFLICT' });
+        const dto = registry.toDto(existing, attemptId);
+        return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);
+      }
       const auth = await authManager.getStatus();
       if (!auth.available) return res.status(503).json({ error: auth.error || 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
       if (!auth.loggedIn || auth.needsReauth) return res.status(401).json({ error: '需要连接小红书后继续', code: 'AUTH_REQUIRED', auth: await authManager.startLogin() });
-      const { attemptId, request, fingerprint } = validated;
       const job = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async ({ signal }) => {
         const buildId = nanoid(12);
         const built = await buildMiniToolZip({ buildId, title: request.title, content: request.content, tags: request.tags, imageUrls: request.images, signal });

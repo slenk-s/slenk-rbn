@@ -23,6 +23,12 @@ const RETAINED_TERMINAL_CODES = new Set([
 ]);
 export const GENERIC_AUTH_DEADLINE_MS = 20_000;
 export const MINITOOL_PUBLISH_DEADLINE_MS = 30 * 60 * 1000;
+export const RESTART_UNKNOWN_GUIDANCE = '服务已重启，无法确认原任务结果；请先到小红书小工具预览记录核对，再决定是否重新发布。';
+const AUTHORITATIVE_PRECREATION_CODES = new Set([
+  'AUTH_REQUIRED', 'PUBLISH_JOB_CAPACITY', 'REDAPP_UNAVAILABLE',
+  'PUBLISH_ATTEMPT_CONFLICT', 'PUBLISH_VALIDATION', 'PUBLISH_USER_LIMIT'
+]);
+const POST_DISPATCHED_PHASES = new Set(['replaying', 'job-created', 'job-polling', 'uncertain', 'cancel-failed']);
 const SENSITIVE_MESSAGE_MARKERS = new Set([
   'token',
   'accesstoken',
@@ -109,6 +115,7 @@ export function createPublishFlow({ request, generation }) {
   return {
     controller: new AbortController(),
     request,
+    attemptId: request?.attemptId,
     generation,
     sessionId: null,
     cancelled: false,
@@ -162,20 +169,31 @@ export function interpretCancelResponse(sessionId, response) {
   };
 }
 
+export function shouldRecoverAttemptAfterCancel(phase) {
+  return POST_DISPATCHED_PHASES.has(phase);
+}
+
+export function isAuthoritativePrecreationError(error) {
+  return AUTHORITATIVE_PRECREATION_CODES.has(error?.code)
+    || (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500);
+}
+
 export function interpretMiniToolPublishResponse(job, attemptId) {
-  const uncertain = () => Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId });
-  if (!job || job.attemptId !== attemptId) throw uncertain();
-  if (job.status === 'queued' || job.status === 'running') return { action: 'poll' };
+  const effectiveAttemptId = typeof job?.attemptId === 'string' && job.attemptId ? job.attemptId : attemptId;
+  const requestedMatches = job?.requestedAttemptId == null || job.requestedAttemptId === attemptId;
+  const uncertain = () => Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId: effectiveAttemptId });
+  if (!job || !requestedMatches || (job.attemptId !== attemptId && job.requestedAttemptId == null)) throw uncertain();
+  if (job.status === 'queued' || job.status === 'running') return { action: 'poll', attemptId: effectiveAttemptId };
   if (job.status === 'done') return { action: 'done', job };
-  if (job.status === 'failed') throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), { code: 'PUBLISH_JOB_FAILED', attemptId, status: 'failed' });
+  if (job.status === 'failed') throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), { code: 'PUBLISH_JOB_FAILED', attemptId: effectiveAttemptId, status: 'failed' });
   throw uncertain();
 }
 
-export async function recoverInitialPublish({ attemptId, post, poll }) {
+export async function recoverInitialPublish({ attemptId, post, poll, onAttemptId = () => {} }) {
   let job;
   try { job = await post(); }
   catch (cause) {
-    if (cause?.code === 'AUTH_REQUIRED' || (Number.isInteger(cause?.status) && cause.status >= 400 && cause.status < 500)) throw cause;
+    if (isAuthoritativePrecreationError(cause)) throw cause;
     try { return await poll(attemptId); }
     catch (pollError) {
       if (pollError?.code) throw pollError;
@@ -183,7 +201,8 @@ export async function recoverInitialPublish({ attemptId, post, poll }) {
     }
   }
   const decision = interpretMiniToolPublishResponse(job, attemptId);
-  return decision.action === 'done' ? decision.job : poll(attemptId);
+  if (decision.attemptId && decision.attemptId !== attemptId) onAttemptId(decision.attemptId);
+  return decision.action === 'done' ? decision.job : poll(decision.attemptId);
 }
 
 export async function pollMiniToolPublishJob({
@@ -201,6 +220,11 @@ export async function pollMiniToolPublishJob({
     try {
       job = await request(path);
     } catch (cause) {
+      if (cause?.status === 404) {
+        throw Object.assign(new Error(RESTART_UNKNOWN_GUIDANCE), {
+          code: 'PUBLISH_JOB_RESTART_UNKNOWN', attemptId, cause
+        });
+      }
       throw Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), {
         code: 'PUBLISH_JOB_UNCERTAIN', attemptId, cause
       });
