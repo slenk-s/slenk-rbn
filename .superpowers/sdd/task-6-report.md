@@ -92,7 +92,46 @@ GREEN after implementation:
 
 ### Remaining concern
 
-No real network or authorization was used. Live/browser auth interaction remains intentionally unverified; the race, deadline, terminal, retry, and layering contracts are covered by deterministic helper/source tests.
+
+## Comprehensive idempotency hardening — 2026-11-12
+
+All 9 Important and 4 Minor findings from the idempotent architecture review were addressed on top of `8900784`.
+
+### Server architecture
+
+- Strictly validates every mini-tool publish field before auth/login: attempt IDs, scalar types/lengths, tags, image count/length, and project-supported image sources.
+- Canonicalizes operation inputs and binds owner-scoped attempt IDs to SHA-256 fingerprints. Same payload/new ID aliases running or retained done work; same ID/different payload returns safe `409 PUBLISH_ATTEMPT_CONFLICT`; failed work releases its fingerprint for a fresh retry.
+- Replaced the eager promise registry with bounded queued/running execution, global concurrency 2, per-user admission 1, queued/running deadlines, bounded aliases and records, terminal retention, no running eviction, abort-on-dispose, and late-result guards.
+- Replaced route `spawnSync` audits and sync upload/preview with cancellable async runners and async dry-run/confirm operations. The repository audit script is mandatory; both directory and zip require exit 0, no `ERROR`, and `PASS`.
+- Build fetches combine per-image 30-second deadlines with the job signal, check cancellation between image/compression stages, and abort zip streams.
+- QR output uses the existing single-handle 2 MiB PNG reader, accepts only the expected output path, and falls back from stale CLI paths without exposing local paths or raw audit/process output.
+
+### Frontend recovery
+
+- Request ID generation now has a `crypto.getRandomValues` UUID-v4 fallback inside the handled submit flow.
+- Initial POST transport/timeout/JSON uncertainty immediately polls the same attempt; authoritative auth and validation/conflict responses remain authoritative.
+- POST and GET parse queued/running/done/failed explicitly. Failed and done-without-output produce terminal failure UI.
+- Cancel-after-replay retains the same attempt and resumes result recovery. Unknown work keeps “查询发布结果”; fresh IDs are available only after authoritative failure/pre-job auth termination.
+- Refresh duplication is prevented without localStorage by the server owner+fingerprint alias index: resubmitting an unchanged note with a new UUID reuses running/done work during retention.
+
+### TDD evidence
+
+RED was observed for strict canonical validation/fingerprints, alias conflict and reuse, queue/deadline/disposal, fail-closed audits, async runner cancellation, QR fallback/path safety, initial-POST recovery, explicit queued/failed parsing, and UUID fallback. Focused implementations then made those tests GREEN.
+
+### Final verification
+
+- Server auth + reference + publish suites: 96 tests, 96 pass.
+- Full web suite: 83 tests, 83 pass.
+- Web lint: exits 0 with 15 pre-existing warnings and no errors.
+- Web production build: succeeds, 49 modules transformed.
+- Server syntax checks and `git diff --check`: pass.
+
+### Concerns
+
+- The registry remains intentionally process-local for the documented local single-process deployment; server restart loses retained job status.
+- No real CLI, network, login, upload, or phone preview was used. Online mini-tool documentation could not be fetched in this environment, so the bundled references were used conservatively.
+- `npm install --ignore-scripts` reports existing dependency advisories (4 moderate, 1 high); they were not introduced or remediated by this task.
+
 
 ## Architectural repair — idempotent publish jobs
 

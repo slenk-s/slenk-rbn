@@ -13,6 +13,7 @@ import {
   interpretCancelResponse,
   mergeDisplayedAuth,
   pollMiniToolPublishJob,
+  recoverInitialPublish,
   publishAuthTerminal,
   publishWithAuth,
   readApiError
@@ -971,14 +972,23 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   // 小工具渠道：笔记打包成离线小工具上传，返回预览二维码；小红书 App 扫码后直达预填好的发布页。
   async function submitMinitoolPublish() {
     const previousFlow = publishFlowRef.current;
-    if (previousFlow && ['publishing', 'auth-required', 'replaying', 'cancelling'].includes(previousFlow.phase)) return;
+    if (previousFlow && !['terminal', 'failed'].includes(previousFlow.phase)) {
+      if (previousFlow.phase === 'uncertain') void retryMinitoolPublish();
+      return;
+    }
     previousFlow?.controller.abort();
-    const request = createPublishRequestSnapshot({
-      title,
-      content,
-      tags,
-      images: images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9)
-    });
+    let request;
+    try {
+      request = createPublishRequestSnapshot({
+        title,
+        content,
+        tags,
+        images: images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9)
+      });
+    } catch (error) {
+      setStatus(error.message || '无法生成安全的发布标识。');
+      return;
+    }
     const flow = createPublishFlow({ request, generation: ++publishGenerationRef.current });
     publishFlowRef.current = flow;
     setPublishAuth(null);
@@ -993,24 +1003,28 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       if (!response.ok) throw await readApiError(response);
       return response.json();
     };
-    const publish = async () => {
-      const response = await publishApi('/api/publish/minitool', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request)
-      });
-      if (!response.ok) throw await readApiError(response);
-      const job = await response.json();
-      if (job.status !== 'running') return job;
-      flow.phase = 'publishing';
-      return pollMiniToolPublishJob({
-        attemptId: request.attemptId,
-        request: requestJob,
-        signal: flow.controller.signal,
-        pollMs: 1500,
-        timeoutMs: MINITOOL_PUBLISH_DEADLINE_MS
-      });
-    };
+    const publish = async () => recoverInitialPublish({
+      attemptId: request.attemptId,
+      post: async () => {
+        const response = await publishApi('/api/publish/minitool', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request)
+        });
+        if (!response.ok) throw await readApiError(response);
+        return response.json();
+      },
+      poll: () => {
+        flow.phase = 'publishing';
+        return pollMiniToolPublishJob({
+          attemptId: request.attemptId,
+          request: requestJob,
+          signal: flow.controller.signal,
+          pollMs: 1500,
+          timeoutMs: MINITOOL_PUBLISH_DEADLINE_MS
+        });
+      }
+    });
 
     setPublishBusy(true);
     setStatus('正在打包小工具并上传，约需 30~60 秒…');
@@ -1041,6 +1055,13 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         }
       });
       if (!isCurrent()) return;
+      if (!data.qrImage && !data.previewUrl) {
+        flow.phase = 'failed';
+        setPublishAuth({ sessionId: request.attemptId, status: 'publish-failed', error: '发布已完成，但服务端没有返回二维码或预览链接。请重新提交。', mode: 'resume-publish' });
+        setPublishAuthOpen(true);
+        setStatus('发布结果缺少二维码和预览链接，本次发布按失败处理。');
+        return;
+      }
       flow.phase = 'terminal';
       publishFlowRef.current = null;
       setPublishAuth(null);
@@ -1068,11 +1089,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         setStatus(err.code === 'AUTH_NOT_COMPLETED'
           ? '已取消本次授权，笔记内容和发布渠道已保留，可重新提交。'
           : `${err.message}，笔记内容已保留，可重新提交。`);
+      } else if (err?.code === 'PUBLISH_JOB_FAILED') {
+        flow.phase = 'failed';
+        setPublishAuth({ sessionId: request.attemptId, status: 'publish-failed', error: err.message, mode: 'resume-publish' });
+        setPublishAuthOpen(true);
+        setStatus('扫码直达发布失败，笔记内容已保留，可重新提交。');
       } else if (err?.code === 'PUBLISH_JOB_UNCERTAIN') {
         flow.phase = 'uncertain';
         setPublishAuth({
           sessionId: flow.sessionId || request.attemptId,
-          status: 'timeout',
+          status: 'publish-uncertain',
           error: `发布结果暂时无法确认（任务 ${request.attemptId}），请查询发布结果`,
           mode: 'resume-publish'
         });
@@ -1108,17 +1134,26 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           timeoutMs: MINITOOL_PUBLISH_DEADLINE_MS
         });
         if (!canCommitPublishFlow(publishFlowRef.current, flow)) return;
-        publishFlowRef.current = null;
-        setPublishAuth(null);
-        setPublishAuthOpen(false);
-        setPublishConfirm(false);
         if (data.qrImage || data.previewUrl) {
+          publishFlowRef.current = null;
+          setPublishAuth(null);
+          setPublishAuthOpen(false);
+          setPublishConfirm(false);
           setQr({ url: data.previewUrl || '', image: data.qrImage || null, tip: '用小红书 App 扫码，打开后点「发布到小红书」即可直达预填好的发布页' });
           setStatus('已查询到发布结果。');
+        } else {
+          flow.phase = 'failed';
+          setPublishAuth({ sessionId: flow.request.attemptId, status: 'publish-failed', error: '发布结果缺少二维码和预览链接。', mode: 'resume-publish' });
+          setPublishAuthOpen(true);
+          setStatus('发布结果缺少二维码和预览链接，本次发布按失败处理。');
         }
       } catch (error) {
         if (publishFlowRef.current === flow) {
-          flow.phase = error?.code === 'PUBLISH_JOB_FAILED' ? 'terminal' : 'uncertain';
+          flow.phase = error?.code === 'PUBLISH_JOB_FAILED' ? 'failed' : 'uncertain';
+          if (error?.code === 'PUBLISH_JOB_FAILED') {
+            setPublishAuth({ sessionId: flow.request.attemptId, status: 'publish-failed', error: error.message, mode: 'resume-publish' });
+            setPublishAuthOpen(true);
+          }
           setStatus(error.message || '查询发布结果失败');
         }
       } finally {
@@ -1126,7 +1161,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       }
       return;
     }
-    if (publishAuthCancelling || (flow && flow.phase !== 'terminal' && flow.phase !== 'cancel-failed')) return;
+    if (publishAuthCancelling || (flow && !['terminal', 'failed'].includes(flow.phase))) return;
     if (flow) {
       flow.phase = 'terminal';
       flow.controller.abort();
@@ -1148,6 +1183,17 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       const response = await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId);
       if (publishFlowRef.current !== flow) return;
       const result = interpretCancelResponse(flow.sessionId, response);
+      if (!result.cancelled && result.status === 'cancel-not-applied') {
+        flow.cancelled = false;
+        flow.controller = new AbortController();
+        flow.phase = 'uncertain';
+        setPublishAuth({ sessionId: flow.request.attemptId, status: 'publish-uncertain', error: result.error, mode: 'resume-publish' });
+        setPublishAuthOpen(true);
+        setStatus('授权取消未生效，正在恢复同一次发布结果查询。');
+        setPublishAuthCancelling(false);
+        void retryMinitoolPublish();
+        return;
+      }
       flow.phase = 'terminal';
       publishFlowRef.current = null;
       setPublishAuth(previous => previous?.sessionId === flow.sessionId ? {

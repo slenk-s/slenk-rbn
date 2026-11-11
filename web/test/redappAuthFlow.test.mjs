@@ -6,6 +6,9 @@ import {
   canCommitPublishFlow,
   createPublishFlow,
   createPublishRequestSnapshot,
+  createPublishAttemptId,
+  interpretMiniToolPublishResponse,
+  recoverInitialPublish,
   createRedappAuthClient,
   createRedappFetchAdapter,
   interpretCancelResponse,
@@ -15,6 +18,43 @@ import {
   publishWithAuth,
   readApiError
 } from '../src/redappAuthFlow.js';
+
+test('UUID fallback uses getRandomValues and produces a safe attempt id', () => {
+  const id = createPublishAttemptId({
+    randomUUID: undefined,
+    getRandomValues(bytes) { for (let i = 0; i < bytes.length; i++) bytes[i] = i; return bytes; }
+  });
+  assert.match(id, /^[A-Za-z0-9_-]{8,80}$/);
+  assert.equal(id, '00010203-0405-4607-8809-0a0b0c0d0e0f');
+});
+
+test('initial POST uncertainty immediately polls the same attempt id', async () => {
+  const calls = [];
+  const result = await recoverInitialPublish({
+    attemptId: 'attempt-fixed',
+    post: async () => { calls.push('post'); throw new TypeError('lost response'); },
+    poll: async id => { calls.push(id); return { attemptId: id, status: 'done', previewUrl: 'https://safe.test' }; }
+  });
+  assert.equal(result.status, 'done');
+  assert.deepEqual(calls, ['post', 'attempt-fixed']);
+});
+
+test('initial POST authoritative client errors do not poll', async () => {
+  let polls = 0;
+  const error = Object.assign(new Error('conflict'), { status: 409, code: 'PUBLISH_ATTEMPT_CONFLICT' });
+  await assert.rejects(() => recoverInitialPublish({
+    attemptId: 'attempt-fixed', post: async () => { throw error; }, poll: async () => { polls++; }
+  }), value => value === error);
+  assert.equal(polls, 0);
+});
+
+test('POST parser handles queued running done and failed explicitly', async () => {
+  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'queued' }, 'a'), { action: 'poll' });
+  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'running' }, 'a'), { action: 'poll' });
+  assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'done', previewUrl: 'x' }, 'a'), { action: 'done', job: { attemptId: 'a', status: 'done', previewUrl: 'x' } });
+  assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'failed', error: 'failed' }, 'a'), e => e.code === 'PUBLISH_JOB_FAILED');
+  assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'unknown' }, 'a'), e => e.code === 'PUBLISH_JOB_UNCERTAIN');
+});
 
 test('publish snapshot includes one immutable attempt id', () => {
   const snapshot = createPublishRequestSnapshot({
@@ -58,7 +98,7 @@ test('cancel done maps to cancel-not-applied terminal guidance', () => {
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'done' }), {
     cancelled: false,
     status: 'cancel-not-applied',
-    error: '授权已完成，但发布未继续，请重新提交'
+    error: '授权已完成，正在查询同一次发布结果'
   });
 });
 
@@ -157,7 +197,7 @@ test('publish timeout is retained as a retryable terminal state', () => {
 test('cancel response only claims cancellation for exact cancelled session', () => {
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'cancelled' }), { cancelled: true });
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'done' }), {
-    cancelled: false, status: 'cancel-not-applied', error: '授权已完成，但发布未继续，请重新提交'
+    cancelled: false, status: 'cancel-not-applied', error: '授权已完成，正在查询同一次发布结果'
   });
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 'other', status: 'cancelled' }), {
     cancelled: false, status: 'not-found', error: '取消结果与当前授权会话不一致，请重新提交。'

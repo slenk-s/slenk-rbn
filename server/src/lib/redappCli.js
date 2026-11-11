@@ -44,7 +44,7 @@ export function createAsyncProcessRunner({
   clearTimer = clearTimeout,
   maxOutputBytes = MAX_PROCESS_OUTPUT_BYTES
 } = {}) {
-  return function runNodeAsync(args, timeoutMs) {
+  return function runNodeAsync(args, timeoutMs, { signal } = {}) {
     return new Promise(resolve => {
       let child;
       const stdoutChunks = [];
@@ -64,11 +64,13 @@ export function createAsyncProcessRunner({
       };
       const onStdout = chunk => { stdoutBytes = append(stdoutChunks, stdoutBytes, chunk); };
       const onStderr = chunk => { stderrBytes = append(stderrChunks, stderrBytes, chunk); };
+      const onAbort = () => finalize(null, 'aborted', true);
       const cleanup = () => {
         if (timer !== null) {
           clearTimer(timer);
           timer = null;
         }
+        signal?.removeEventListener?.('abort', onAbort);
         child?.stdout?.off?.('data', onStdout);
         child?.stderr?.off?.('data', onStderr);
         child?.off?.('error', onError);
@@ -106,6 +108,11 @@ export function createAsyncProcessRunner({
       child.stderr?.on?.('data', onStderr);
       child.on('error', onError);
       child.on('close', onClose);
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener?.('abort', onAbort, { once: true });
       timer = setTimer(() => finalize(null, 'timeout', true), timeoutMs);
       timer?.unref?.();
     });
@@ -265,10 +272,10 @@ export const ensureRedappCli = createRedappCliEnsurer({
 });
 
 export function createRedappCliEnsurerAsync({ gateExists, cliExists, prepareCache, executeGate }) {
-  return async function ensureCliAsync() {
+  return async function ensureCliAsync(options) {
     if (!gateExists()) throw new Error('redapp-cli Skill 未安装');
     prepareCache();
-    const r = await executeGate();
+    const r = await executeGate(options);
     if (r.error || r.status !== 0) throw new Error('CLI 版本门禁执行失败');
     const verdict = extractTaggedLine(String(r.stdout || '') + '\n' + String(r.stderr || ''), 'CLI_VERSION_JSON');
     if (!verdict) throw new Error('CLI 版本门禁输出无法解析');
@@ -282,7 +289,7 @@ export const ensureRedappCliAsync = createRedappCliEnsurerAsync({
   gateExists: () => fs.existsSync(redappSkillGatePath),
   cliExists: () => fs.existsSync(CLI_ENTRY),
   prepareCache: () => fs.mkdirSync(NPM_CACHE, { recursive: true }),
-  executeGate: () => spawnNodeAsync([redappSkillGatePath], 180 * 1000)
+  executeGate: options => spawnNodeAsync([redappSkillGatePath], 180 * 1000, options)
 });
 
 export async function spawnRedappLogin() {
@@ -364,13 +371,13 @@ export function createRedappCommandRunner({ ensureCli, execute }) {
 
 export function createRedappCommandRunnerAsync({ ensureCli, execute }) {
   return async function run(args, options) {
-    await ensureCli();
+    await ensureCli(options);
     return parseCommandExecution(await execute(args, options));
   };
 }
 
-function runRedappCommandUngatedAsync(args, { timeoutMs = 120 * 1000 } = {}) {
-  return spawnNodeAsync([CLI_ENTRY, ...args, '--agent'], timeoutMs);
+function runRedappCommandUngatedAsync(args, { timeoutMs = 120 * 1000, signal } = {}) {
+  return spawnNodeAsync([CLI_ENTRY, ...args, '--agent'], timeoutMs, { signal });
 }
 
 export const runRedappCommandAsync = createRedappCommandRunnerAsync({
@@ -424,6 +431,45 @@ const operations = createRedappOperations({
   writeFile: fs.writeFileSync,
   fileExists: fs.existsSync
 });
+
+export function createRedappOperationsAsync({ runCommand, writeFile, fileExists }) {
+  async function dryRunThenConfirm(args, { timeoutMs = 120 * 1000, confirmOnlyArgs = [], signal } = {}) {
+    const plan = await runCommand([...args, '--dry-run'], { timeoutMs, signal });
+    const planHash = plan?.plan?.planHash;
+    if (!planHash) throw new Error('dry-run 未返回 planHash');
+    return runCommand([...args, ...confirmOnlyArgs, '--confirm', planHash], { timeoutMs, signal });
+  }
+
+  async function uploadPackageAsync(zipPath, { signal } = {}) {
+    const result = await dryRunThenConfirm(['upload', '--file', zipPath, '--type', 'pkg'], { timeoutMs: 180 * 1000, signal });
+    const fileId = result?.data?.fileId;
+    const md5 = result?.data?.md5;
+    if (!fileId || !md5) throw new Error('上传回执缺少 fileId/md5');
+    return { fileId, md5 };
+  }
+
+  async function createPreviewAsync({ fileId, md5, appName, qrOut, signal }) {
+    const previewJson = qrOut.replace(/\.png$/i, '') + '.json';
+    writeFile(previewJson, JSON.stringify({ pkgFileId: fileId, md5, appName: appName || '笔记发布助手', version: '1.0.0' }, null, 2));
+    const result = await dryRunThenConfirm(
+      ['preview', '--source', 'thirdAgent', '--file', previewJson],
+      { timeoutMs: 120 * 1000, confirmOnlyArgs: ['--qr-out', qrOut], signal }
+    );
+    const data = sanitizeData(result?.data);
+    return { qrCodePath: data.qrCodePath || (fileExists(qrOut) ? qrOut : null), previewUrl: data.previewUrl || '', raw: data };
+  }
+
+  return { uploadPackageAsync, createPreviewAsync };
+}
+
+const asyncOperations = createRedappOperationsAsync({
+  runCommand: runRedappCommandAsync,
+  writeFile: fs.writeFileSync,
+  fileExists: fs.existsSync
+});
+
+export const uploadPackageAsync = asyncOperations.uploadPackageAsync;
+export const createPreviewAsync = asyncOperations.createPreviewAsync;
 
 // 上传 zip 代码包，返回 { fileId, md5 }。
 export const uploadPackage = operations.uploadPackage;

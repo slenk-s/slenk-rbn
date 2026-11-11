@@ -16,10 +16,27 @@ const ZIP_HARD_LIMIT = 9.5 * 1024 * 1024; // 上传硬上限 10MiB，留 0.5MiB 
 const TITLE_MAX = 20;
 const CONTENT_MAX = 1000;
 
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason || new Error('publish_job_aborted');
+}
+
+function combinedFetchSignal(signal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeout;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, timeout]);
+  const controller = new AbortController();
+  const forward = source => () => controller.abort(source.reason);
+  signal.addEventListener('abort', forward(signal), { once: true });
+  timeout.addEventListener('abort', forward(timeout), { once: true });
+  if (signal.aborted) controller.abort(signal.reason);
+  return controller.signal;
+}
+
 // 与 worker 的图片解析一致：云端 URL 下载，站内相对路径读本地。
-async function readImageBuffer(value, index) {
+async function readImageBuffer(value, index, signal) {
+  throwIfAborted(signal);
   if (/^https?:\/\//i.test(value)) {
-    const res = await fetch(value, { signal: AbortSignal.timeout(30000) });
+    const res = await fetch(value, { signal: combinedFetchSignal(signal, 30000) });
     if (!res.ok) throw new Error(`第 ${index + 1} 张图片下载失败（HTTP ${res.status}）`);
     return Buffer.from(await res.arrayBuffer());
   }
@@ -62,7 +79,8 @@ function bakeNoteJs({ title, content, tags, imageCount }) {
   return `// 由 Slenk Notes 打包时生成，请勿手改。\nwindow.NOTE_DATA = ${json};\n`;
 }
 
-export async function buildMiniToolZip({ buildId, title, content, tags, imageUrls }) {
+export async function buildMiniToolZip({ buildId, title, content, tags, imageUrls, signal }) {
+  throwIfAborted(signal);
   const images = (imageUrls || []).filter(Boolean).slice(0, 9);
   if (!images.length) throw new Error('至少需要 1 张图片');
 
@@ -82,12 +100,19 @@ export async function buildMiniToolZip({ buildId, title, content, tags, imageUrl
     { maxEdge: 960, quality: 50 }
   ];
   const raws = [];
-  for (let i = 0; i < images.length; i++) raws.push(await readImageBuffer(images[i], i));
+  for (let i = 0; i < images.length; i++) {
+    throwIfAborted(signal);
+    raws.push(await readImageBuffer(images[i], i, signal));
+  }
 
   let packed = null;
   for (const level of levels) {
+    throwIfAborted(signal);
     packed = [];
-    for (const raw of raws) packed.push(await compressForBundle(raw, level.maxEdge, level.quality));
+    for (const raw of raws) {
+      throwIfAborted(signal);
+      packed.push(await compressForBundle(raw, level.maxEdge, level.quality));
+    }
     const total = packed.reduce((sum, b) => sum + b.length, 0);
     if (total <= ZIP_HARD_LIMIT - 100 * 1024) break; // 模板与清单约占 100KB
   }
@@ -100,12 +125,20 @@ export async function buildMiniToolZip({ buildId, title, content, tags, imageUrl
   fs.writeFileSync(path.join(dir, 'mini_tool.json'), JSON.stringify({ is_high_consumption_scene: false }));
 
   // 打包：压缩目录内容，index.html 必须在 zip 根。
+  throwIfAborted(signal);
   const zipPath = path.join(buildsDir, `${buildId}.zip`);
   await new Promise((resolve, reject) => {
     const out = fs.createWriteStream(zipPath);
     const zip = new ZipArchive({ zlib: { level: 9 } });
-    out.on('close', resolve);
-    zip.on('error', reject);
+    const onAbort = () => {
+      zip.abort();
+      out.destroy(signal.reason || new Error('publish_job_aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    out.on('close', () => { cleanup(); resolve(); });
+    out.on('error', error => { cleanup(); reject(error); });
+    zip.on('error', error => { cleanup(); reject(error); });
     zip.pipe(out);
     zip.directory(dir, false);
     zip.finalize();

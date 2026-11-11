@@ -1,0 +1,178 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+
+process.env.TEST_DATABASE_URL ||= 'postgres://test:test@127.0.0.1:1/test?sslmode=disable';
+const publish = await import('../src/routes/publish.js');
+const cli = await import('../src/lib/redappCli.js');
+const { createMiniToolPublishJobRegistry, createMiniToolPublishHandler, createArtifactAuditor, canonicalizeMiniToolPublishRequest } = publish;
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+function response() { return { statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } }; }
+async function invoke(handler, body, userId = 'u1') { const res = response(); await handler({ body, user: { userId }, params: { attemptId: body.attemptId } }, res, error => { throw error; }); return res; }
+const auth = { getStatus: async () => ({ available: true, loggedIn: true, needsReauth: false }) };
+
+function operationDeps(overrides = {}) {
+  return {
+    authManager: auth,
+    buildMiniToolZip: async () => ({ dir: '/safe/dir', zipPath: '/safe/a.zip', size: 1, imageCount: 1 }),
+    runAudit: async () => ({ status: 'passed' }),
+    uploadPackage: async () => ({ fileId: 'f', md5: 'm' }),
+    createPreview: async () => ({ previewUrl: 'https://safe.test/p', qrCodePath: null }),
+    readQrImage: () => null,
+    ...overrides
+  };
+}
+
+const valid = { attemptId: 'attempt-1234', title: ' title ', content: ' body ', tags: [' #tag '], images: ['/uploads/a.png'] };
+
+test('canonical validation rejects wrong types and bounds before auth', async () => {
+  let authCalls = 0;
+  const handler = createMiniToolPublishHandler(operationDeps({ authManager: { getStatus: async () => { authCalls++; return { available: true, loggedIn: true }; } } }));
+  const bad = [
+    { ...valid, attemptId: '../bad' }, { ...valid, title: {} }, { ...valid, title: 'x'.repeat(101) },
+    { ...valid, content: 'x'.repeat(1001) }, { ...valid, tags: 'tag' }, { ...valid, tags: Array(21).fill('x') },
+    { ...valid, tags: [{}] }, { ...valid, images: 'x' }, { ...valid, images: [] },
+    { ...valid, images: ['file:///secret'] }, { ...valid, images: ['x'.repeat(8193)] }
+  ];
+  for (const body of bad) assert.equal((await invoke(handler, body)).statusCode, 400);
+  assert.equal(authCalls, 0);
+});
+
+test('canonical request matches operation values and has stable SHA-256 fingerprint', () => {
+  const one = canonicalizeMiniToolPublishRequest(valid);
+  const two = canonicalizeMiniToolPublishRequest({ ...valid, tags: [' #tag '] });
+  assert.deepEqual(one.request, { title: 'title', content: 'body', tags: ['tag'], images: ['/uploads/a.png'] });
+  assert.match(one.fingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(one.fingerprint, two.fingerprint);
+});
+
+test('same attempt conflicts on another fingerprint and same fingerprint aliases one job', async () => {
+  let calls = 0;
+  let finish;
+  const registry = createMiniToolPublishJobRegistry({ maxConcurrent: 2, perUserLimit: 3 });
+  const first = registry.createOrReuse('u', 'attempt-one', 'fp1', async () => { calls++; return new Promise(resolve => { finish = resolve; }); });
+  assert.throws(() => registry.createOrReuse('u', 'attempt-one', 'fp2', async () => ({})), e => e.code === 'PUBLISH_ATTEMPT_CONFLICT');
+  const alias = registry.createOrReuse('u', 'attempt-two', 'fp1', async () => { calls++; });
+  await tick();
+  assert.equal(first, alias);
+  assert.equal(calls, 1);
+  assert.equal(registry.toDto(alias, 'attempt-two').attemptId, 'attempt-two');
+  finish({ ok: true }); await first.promise;
+  registry.dispose();
+});
+
+test('failed fingerprints are removed so a new attempt can retry', async () => {
+  const registry = createMiniToolPublishJobRegistry({ perUserLimit: 1 });
+  const failed = registry.createOrReuse('u', 'attempt-one', 'fp', async () => { throw new Error('no'); });
+  await failed.promise;
+  const fresh = registry.createOrReuse('u', 'attempt-two', 'fp', async () => ({ ok: true }));
+  assert.notEqual(fresh, failed);
+  await fresh.promise;
+  registry.dispose();
+});
+
+test('registry queues globally, enforces per-user admission, and starts next after deadline', async () => {
+  let timeout;
+  const timers = [];
+  const starts = [];
+  const registry = createMiniToolPublishJobRegistry({
+    maxConcurrent: 1, perUserLimit: 1, jobDeadlineMs: 10,
+    setTimer(fn) { const timer = { fn, unref() {} }; timers.push(timer); if (!timeout) timeout = timer; return timer; },
+    clearTimer() {}
+  });
+  const late = registry.createOrReuse('u1', 'attempt-one', 'fp1', ({ signal }) => { starts.push('one'); return new Promise(resolve => signal.addEventListener('abort', () => resolve({ late: true }))); });
+  const queued = registry.createOrReuse('u2', 'attempt-two', 'fp2', async () => { starts.push('two'); return { ok: true }; });
+  assert.equal(queued.status, 'queued');
+  assert.throws(() => registry.createOrReuse('u2', 'attempt-three', 'fp3', async () => ({})), e => e.code === 'PUBLISH_USER_LIMIT');
+  await tick(); timers.findLast(timer => timer !== queued.queueTimer).fn(); await tick(); await queued.promise;
+  assert.equal(late.status, 'failed');
+  assert.equal(queued.status, 'done');
+  assert.deepEqual(starts, ['one', 'two']);
+  registry.dispose();
+});
+
+test('dispose aborts running work, clears queue, and ignores late results', async () => {
+  let release;
+  let aborted = false;
+  const registry = createMiniToolPublishJobRegistry({ maxConcurrent: 1, perUserLimit: 2 });
+  const running = registry.createOrReuse('u', 'attempt-one', 'fp1', ({ signal }) => new Promise(resolve => { release = resolve; signal.addEventListener('abort', () => { aborted = true; }); }));
+  const queued = registry.createOrReuse('u', 'attempt-two', 'fp2', async () => ({ ok: true }));
+  await tick(); registry.dispose();
+  assert.equal(aborted, true);
+  assert.equal(running.status, 'failed');
+  assert.equal(queued.status, 'failed');
+  release({ leaked: '/private/path' }); await tick();
+  assert.deepEqual(registry.toDto(running, 'attempt-one'), { attemptId: 'attempt-one', status: 'failed', error: '扫码直达发布失败，请重新提交' });
+});
+
+test('audit fails closed for missing nonzero timeout ERROR and no PASS', async () => {
+  for (const execution of [
+    null,
+    { status: 1, stdout: 'PASS', stderr: '', error: null },
+    { status: null, stdout: '', stderr: '', error: new Error('timeout') },
+    { status: 0, stdout: 'ERROR /private/path', stderr: '', error: null },
+    { status: 0, stdout: 'all fine', stderr: '', error: null }
+  ]) {
+    const audit = createArtifactAuditor({ scriptExists: () => execution !== null, runProcess: async () => execution });
+    await assert.rejects(() => audit('/private/target'), { message: 'artifact_audit_failed' });
+  }
+  const audit = createArtifactAuditor({ scriptExists: () => true, runProcess: async () => ({ status: 0, stdout: 'PASS', stderr: '', error: null }) });
+  assert.deepEqual(await audit('/safe'), { status: 'passed' });
+});
+
+test('publish audits both targets asynchronously and returns only safe summary', async () => {
+  const targets = [];
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({ registry, runAudit: async target => { targets.push(target); return { status: 'passed', raw: '/private/path' }; } }));
+  const res = await invoke(handler, valid);
+  assert.equal(res.statusCode, 202);
+  await registry.get('u1', valid.attemptId).promise;
+  const dto = registry.toDto(registry.get('u1', valid.attemptId), valid.attemptId);
+  assert.deepEqual(targets, ['/safe/dir', '/safe/a.zip']);
+  assert.deepEqual(dto.audit, { directory: 'passed', zip: 'passed' });
+  assert.equal(JSON.stringify(dto).includes('/private'), false);
+  registry.dispose();
+});
+
+test('failed terminal POST is authoritative and fingerprint conflict is safe 409', async () => {
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({ registry, buildMiniToolZip: async () => { throw new Error('/private/raw'); } }));
+  await invoke(handler, valid); await registry.get('u1', valid.attemptId).promise;
+  const failed = await invoke(handler, valid);
+  assert.equal(failed.statusCode, 200); assert.equal(failed.body.status, 'failed');
+  const conflict = await invoke(handler, { ...valid, title: 'different' });
+  assert.equal(conflict.statusCode, 409); assert.equal(conflict.body.code, 'PUBLISH_ATTEMPT_CONFLICT');
+  assert.equal(JSON.stringify(conflict.body).includes('/private'), false);
+  registry.dispose();
+});
+
+test('QR stale path falls back to bounded valid PNG output', async () => {
+  const png = Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]), Buffer.from('x')]);
+  const reads = [];
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({
+    registry,
+    createPreview: async () => ({ qrCodePath: '/stale.png', previewUrl: '' }),
+    readQrImage: path => { reads.push(path); if (path.endsWith('-qr.png')) return 'data:image/png;base64,' + png.toString('base64'); throw new Error('二维码文件无效'); }
+  }));
+  await invoke(handler, valid); const job = registry.get('u1', valid.attemptId); await job.promise;
+  assert.equal(registry.toDto(job, valid.attemptId).qrImage.startsWith('data:image/png;base64,'), true);
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].endsWith('-qr.png'), true);
+  registry.dispose();
+});
+
+test('async process runner abort signal kills and cleans up child', async () => {
+  const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.killCount = 0; child.kill = () => { child.killCount++; };
+  const controller = new AbortController();
+  const run = cli.createAsyncProcessRunner({ spawnProcess: () => child });
+  const pending = run(['fake'], 1000, { signal: controller.signal });
+  controller.abort();
+  const result = await pending;
+  assert.equal(result.error.message, 'aborted'); assert.equal(child.killCount, 1);
+  assert.equal(child.listenerCount('close'), 0); assert.equal(controller.signal.onabort, null);
+});
+
+await publish.publishQueue.disconnect();

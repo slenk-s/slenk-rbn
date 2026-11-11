@@ -84,9 +84,20 @@ function timeoutError() {
   });
 }
 
-export function createPublishRequestSnapshot({ attemptId = crypto.randomUUID(), title, content, tags, images }) {
+export function createPublishAttemptId(cryptoImpl = globalThis.crypto) {
+  if (typeof cryptoImpl?.randomUUID === 'function') return cryptoImpl.randomUUID();
+  if (typeof cryptoImpl?.getRandomValues !== 'function') throw new Error('浏览器不支持安全的发布标识生成');
+  const bytes = cryptoImpl.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map(value => value.toString(16).padStart(2, '0'));
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
+}
+
+export function createPublishRequestSnapshot({ attemptId, title, content, tags, images }) {
+  const resolvedAttemptId = attemptId || createPublishAttemptId();
   return Object.freeze({
-    attemptId: String(attemptId),
+    attemptId: String(resolvedAttemptId),
     title: String(title),
     content: String(content),
     tags: Object.freeze([...tags]),
@@ -146,9 +157,33 @@ export function interpretCancelResponse(sessionId, response) {
     cancelled: false,
     status: response.status === 'done' ? 'cancel-not-applied' : (response.status || 'failed'),
     error: response.status === 'done'
-      ? '授权已完成，但发布未继续，请重新提交'
-      : '取消未生效，授权会话状态已变化，请重新提交。'
+      ? '授权已完成，正在查询同一次发布结果'
+      : '取消未生效，正在查询同一次发布结果。'
   };
+}
+
+export function interpretMiniToolPublishResponse(job, attemptId) {
+  const uncertain = () => Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId });
+  if (!job || job.attemptId !== attemptId) throw uncertain();
+  if (job.status === 'queued' || job.status === 'running') return { action: 'poll' };
+  if (job.status === 'done') return { action: 'done', job };
+  if (job.status === 'failed') throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), { code: 'PUBLISH_JOB_FAILED', attemptId, status: 'failed' });
+  throw uncertain();
+}
+
+export async function recoverInitialPublish({ attemptId, post, poll }) {
+  let job;
+  try { job = await post(); }
+  catch (cause) {
+    if (cause?.code === 'AUTH_REQUIRED' || (Number.isInteger(cause?.status) && cause.status >= 400 && cause.status < 500)) throw cause;
+    try { return await poll(attemptId); }
+    catch (pollError) {
+      if (pollError?.code) throw pollError;
+      throw Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId, cause });
+    }
+  }
+  const decision = interpretMiniToolPublishResponse(job, attemptId);
+  return decision.action === 'done' ? decision.job : poll(attemptId);
 }
 
 export async function pollMiniToolPublishJob({
@@ -170,18 +205,8 @@ export async function pollMiniToolPublishJob({
         code: 'PUBLISH_JOB_UNCERTAIN', attemptId, cause
       });
     }
-    if (job?.attemptId !== attemptId) {
-      throw Object.assign(new Error('发布任务标识不一致'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId });
-    }
-    if (job.status === 'done') return job;
-    if (job.status === 'failed') {
-      throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), {
-        code: 'PUBLISH_JOB_FAILED', attemptId, status: 'failed'
-      });
-    }
-    if (job.status !== 'running') {
-      throw Object.assign(new Error('发布任务状态未知'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId });
-    }
+    const decision = interpretMiniToolPublishResponse(job, attemptId);
+    if (decision.action === 'done') return decision.job;
     await delay(pollMs, signal);
   }
   throw Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), {

@@ -19,18 +19,21 @@ import {
   sessionStatusPresentation
 } from './redappAuthUi.js';
 
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'expired', 'cancelled', 'not-found', 'timeout', 'cancel-not-applied']);
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'expired', 'cancelled', 'not-found', 'timeout', 'cancel-not-applied', 'publish-uncertain', 'publish-failed']);
 const SESSION_LABELS = {
   waiting_prompt: '正在准备授权信息', waiting_scan: '等待手机确认', done: '授权成功',
   failed: '授权失败', expired: '授权已过期', cancelled: '授权已取消', 'not-found': '授权会话已失效',
-  timeout: '授权等待已超时', 'cancel-not-applied': '发布未继续'
+  timeout: '授权等待已超时', 'cancel-not-applied': '正在查询发布结果',
+  'publish-uncertain': '发布结果待确认', 'publish-failed': '发布失败'
 };
 const SESSION_GUIDANCE = {
   done: '授权已完成。正在确认本机共享账号状态。', failed: '本次授权未完成，请查看原因后重试。',
   expired: '授权信息已过期，请重新发起授权。', cancelled: '本次授权已取消，可在需要时重新发起。',
   'not-found': '服务器已找不到本次授权会话，请重新发起授权。',
   timeout: '授权等待已超时，请重新发起授权。',
-  'cancel-not-applied': '授权已完成，但发布未继续，请重新提交'
+  'cancel-not-applied': '授权已完成，正在查询同一次发布结果。',
+  'publish-uncertain': '服务端可能仍在发布，请查询同一次发布结果。',
+  'publish-failed': '本次发布已失败，笔记内容仍保留，可重新提交。'
 };
 const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -125,7 +128,7 @@ export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, o
         )}
         <div className="prompt-config-actions auth-modal-actions">
           {mode !== 'resume-publish' && session.status === 'done' && session.refreshError ? <button type="button" className="btn-primary" disabled={refreshing} onClick={onRefreshStatus}>{refreshing ? '刷新中…' : '刷新授权状态'}</button> : null}
-          {terminal && session.status !== 'done' && onRetry ? <button type="button" className="btn-primary" onClick={onRetry}>{mode === 'resume-publish' && session.status === 'timeout' ? '查询发布结果' : '重新授权'}</button> : null}
+          {terminal && session.status !== 'done' && onRetry ? <button type="button" className="btn-primary" onClick={onRetry}>{mode === 'resume-publish' && session.status === 'publish-uncertain' ? '查询发布结果' : '重新授权'}</button> : null}
           {active ? <button type="button" className="btn-danger" disabled={cancelling} onClick={onCancel}>{cancelling ? '取消中…' : '取消本次授权'}</button> : null}
           <button type="button" className="btn-secondary" onClick={onClose}>关闭窗口</button>
         </div>
