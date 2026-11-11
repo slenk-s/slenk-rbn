@@ -12,6 +12,8 @@ import {
   createRedappCommandRunner,
   createRedappCommandRunnerAsync,
   createRedappOperations,
+  createRedappOperationsAsync,
+  createRedappNpmEnv,
   createRedappQrReader,
   parseTaggedOutput,
   redappSkillGatePath,
@@ -269,18 +271,20 @@ test('async process runner timeout kills and settles after close', async () => {
   const timer = { unref() {} };
   const run = createAsyncProcessRunner({
     spawnProcess: () => child,
+    platform: 'linux',
+    terminateTree: async () => true,
     setTimer(callback) { timeoutCallback = callback; return timer; },
     clearTimer(value) { cleared.push(value); }
   });
   let settled = false;
   const resultPromise = run(['fake'], 10).then(result => { settled = true; return result; });
   timeoutCallback(); await tick();
-  assert.equal(child.killCount, 1);
-  assert.equal(settled, false);
-  child.emit('close', null);
+  assert.equal(child.killCount, 0);
+  assert.equal(settled, true);
   const result = await resultPromise;
   assert.equal(result.error?.message, 'timeout');
-  assert.deepEqual(cleared, [timer, timer]);
+  assert.equal(cleared.length, 3);
+  assert.equal(cleared.every(value => value === timer), true);
   assert.equal(child.listenerCount('close'), 0);
 });
 
@@ -1732,6 +1736,32 @@ test('business runner rejects successful result after execution error', () => {
     })
   });
   assert.throws(() => run(['upload']), { message: 'redapp 命令执行失败' });
+});
+
+test('process-scoped npm PATH uses the platform executable directory', () => {
+  assert.equal(createRedappNpmEnv('win32').PATH.split(path.delimiter)[0].endsWith(path.join('redapp-npm', 'prefix')), true);
+  assert.equal(createRedappNpmEnv('linux').PATH.split(path.delimiter)[0].endsWith(path.join('redapp-npm', 'prefix', 'bin')), true);
+});
+
+test('async upload invokes side-effect callback only after a valid dry-run plan', async () => {
+  const events = [];
+  const operations = createRedappOperationsAsync({
+    runCommand: async (args, options) => {
+      if (!args.includes('--dry-run')) options.onBeforeDispatch?.();
+      events.push(args.includes('--dry-run') ? 'dry-run' : 'confirm');
+      return args.includes('--dry-run') ? { plan: { planHash: 'plan-1' } } : { data: { fileId: 'file', md5: 'md5' } };
+    },
+    writeFile() {}, fileExists: () => false
+  });
+  await operations.uploadPackageAsync('package.zip', { onBeforeConfirm: () => events.push('marker') });
+  assert.deepEqual(events, ['dry-run', 'marker', 'confirm']);
+
+  let marked = false;
+  const failing = createRedappOperationsAsync({
+    runCommand: async () => ({ plan: {} }), writeFile() {}, fileExists: () => false
+  });
+  await assert.rejects(() => failing.uploadPackageAsync('package.zip', { onBeforeConfirm: () => { marked = true; } }), /planHash/u);
+  assert.equal(marked, false);
 });
 
 test('upload and preview preserve existing command flow and return shapes', () => {

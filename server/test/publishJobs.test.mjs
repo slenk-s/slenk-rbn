@@ -66,19 +66,34 @@ test('canonical title truncates Unicode code points without splitting emoji', ()
   assert.equal(canonical.request.title.includes('\ud83d') && !canonical.request.title.includes('😀'), false);
 });
 
-test('alias saturation preserves every issued alias and returns canonical identity for the unregistered request', async () => {
+test('alias saturation rejects the unregistered identity while existing aliases remain recoverable', async () => {
   let release;
   const registry = createMiniToolPublishJobRegistry({ maxAliasesPerJob: 2 });
   const canonical = registry.createOrReuse('u', 'attempt-one', 'fp', () => new Promise(resolve => { release = resolve; }));
   registry.createOrReuse('u', 'attempt-two', 'fp', async () => ({ duplicate: true }));
-  const saturated = registry.createOrReuse('u', 'attempt-three', 'fp', async () => ({ duplicate: true }));
-  assert.equal(saturated, canonical);
+  assert.throws(
+    () => registry.createOrReuse('u', 'attempt-three', 'fp', async () => ({ duplicate: true })),
+    error => error.code === 'PUBLISH_ALIAS_CAPACITY'
+  );
   assert.equal(registry.get('u', 'attempt-one'), canonical);
   assert.equal(registry.get('u', 'attempt-two'), canonical);
   assert.equal(registry.get('u', 'attempt-three'), null);
-  assert.equal(registry.toDto(saturated, 'attempt-three').attemptId, 'attempt-one');
-  assert.equal(registry.toDto(saturated, 'attempt-three').requestedAttemptId, 'attempt-three');
   await tick(); release({ ok: true }); await canonical.promise; registry.dispose();
+});
+
+test('ninth saturated alias is authoritatively rejected and existing aliases still poll', async () => {
+  let release;
+  const registry = createMiniToolPublishJobRegistry({ maxAliasesPerJob: 2 });
+  const fingerprint = canonicalizeMiniToolPublishRequest(valid).fingerprint;
+  const canonical = registry.createOrReuse('u1', valid.attemptId, fingerprint, () => new Promise(resolve => { release = resolve; }));
+  registry.createOrReuse('u1', 'attempt-alias2', fingerprint, async () => ({}));
+  const handler = createMiniToolPublishHandler(operationDeps({ registry }));
+  const rejected = await invoke(handler, { ...valid, attemptId: 'attempt-alias9' });
+  assert.equal(rejected.statusCode, 409);
+  assert.equal(rejected.body.code, 'PUBLISH_ALIAS_CAPACITY');
+  assert.equal(registry.get('u1', 'attempt-alias9'), null);
+  assert.equal(registry.get('u1', 'attempt-alias2'), canonical);
+  release({ ok: true }); await canonical.promise; registry.dispose();
 });
 
 test('same owner fingerprint retained work is reused before auth under a new attempt id', async () => {
@@ -92,6 +107,42 @@ test('same owner fingerprint retained work is reused before auth under a new att
   assert.equal(reused.statusCode, 200);
   assert.equal(reused.body.attemptId, 'attempt-first');
   assert.equal(authCalls, 0);
+  registry.dispose();
+});
+
+test('dry-run failure stays retryable and confirm timeout becomes outcome unknown', async () => {
+  for (const [uploadPackage, expected] of [
+    [async () => { throw new Error('dry-run'); }, 'failed'],
+    [async (_path, { onBeforeConfirm }) => { onBeforeConfirm(); throw new Error('confirm timeout'); }, 'failed_after_side_effect']
+  ]) {
+    const registry = createMiniToolPublishJobRegistry();
+    const handler = createMiniToolPublishHandler(operationDeps({ registry, uploadPackage }));
+    const body = { ...valid, attemptId: `attempt-boundary-${expected}` };
+    await invoke(handler, body);
+    const job = registry.get('u1', body.attemptId);
+    await job.promise;
+    assert.equal(job.status, expected);
+    registry.dispose();
+  }
+});
+
+test('protected unknown jobs survive capacity pressure and reject admission', async () => {
+  const registry = createMiniToolPublishJobRegistry({ maxEntries: 1 });
+  const unknown = registry.createOrReuse('u1', 'attempt-one', 'fp1', async ({ markSideEffectStarted }) => {
+    markSideEffectStarted();
+    throw new Error('unknown');
+  });
+  await unknown.promise;
+  assert.equal(unknown.status, 'failed_after_side_effect');
+  assert.throws(() => registry.createOrReuse('u2', 'attempt-two', 'fp2', async () => ({})), error => error.code === 'PUBLISH_JOB_CAPACITY');
+  assert.equal(registry.get('u1', 'attempt-one'), unknown);
+  assert.equal(registry.getByFingerprint('u1', 'fp1'), unknown);
+  assert.equal(registry.acknowledgeUnknown('u2', 'attempt-one'), false);
+  assert.equal(registry.acknowledgeUnknown('u1', 'attempt-one'), true);
+  assert.equal(registry.get('u1', 'attempt-one'), null);
+  const replacement = registry.createOrReuse('u1', 'attempt-two', 'fp1', async () => ({ ok: true }));
+  await replacement.promise;
+  assert.equal(replacement.status, 'done');
   registry.dispose();
 });
 
@@ -114,7 +165,7 @@ test('post-upload failure retains fingerprint and prevents automatic re-upload',
 test('upload dispatch failure is retained as unknown because side effects may have begun', async () => {
   let uploads = 0;
   const registry = createMiniToolPublishJobRegistry();
-  const handler = createMiniToolPublishHandler(operationDeps({ registry, uploadPackage: async () => { uploads++; throw new Error('transport lost'); } }));
+  const handler = createMiniToolPublishHandler(operationDeps({ registry, uploadPackage: async (_path, { onBeforeConfirm }) => { uploads++; onBeforeConfirm(); throw new Error('transport lost'); } }));
   await invoke(handler, valid); const failed = registry.get('u1', valid.attemptId); await failed.promise;
   assert.equal(registry.toDto(failed).status, 'failed_after_side_effect');
   await invoke(handler, { ...valid, attemptId: 'attempt-second' });
@@ -276,6 +327,21 @@ test('failed terminal POST is authoritative and fingerprint conflict is safe 409
   registry.dispose();
 });
 
+test('cleanup failures never overwrite a successful publish result', async () => {
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({
+    registry,
+    cleanupArtifacts: () => { throw new Error('C:/private/locked.zip'); }
+  }));
+  await invoke(handler, valid);
+  const job = registry.get('u1', valid.attemptId);
+  await job.promise;
+  const dto = registry.toDto(job, valid.attemptId);
+  assert.equal(dto.status, 'done');
+  assert.equal(JSON.stringify(dto).includes('private'), false);
+  registry.dispose();
+});
+
 test('attempt artifacts are cleaned after success and preview failure', async () => {
   const cleaned = [];
   for (const createPreview of [async () => ({ previewUrl: 'https://safe.test', qrCodePath: null }), async () => { throw new Error('preview'); }]) {
@@ -317,15 +383,35 @@ test('QR stale path falls back to bounded valid PNG output', async () => {
   registry.dispose();
 });
 
+test('async process runner keeps supervising Windows descendants after leader close', async () => {
+  const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.pid = 4242; child.kill = () => true;
+  const treeKills = [];
+  const timers = [];
+  const run = cli.createAsyncProcessRunner({
+    platform: 'win32', spawnProcess: () => child,
+    terminateTree: async (pid, force) => { treeKills.push([pid, force]); return force; },
+    setTimer(fn) { const timer = { fn, unref() {} }; timers.push(timer); return timer; }, clearTimer() {}
+  });
+  const controller = new AbortController();
+  const pending = run(['fake'], 1000, { signal: controller.signal });
+  controller.abort(); await tick();
+  assert.deepEqual(treeKills, [[4242, false]]);
+  child.emit('close', null); await tick();
+  assert.equal(await Promise.race([pending.then(() => 'settled'), tick().then(() => 'pending')]), 'pending');
+  timers[1].fn(); await tick();
+  assert.deepEqual(treeKills, [[4242, false], [4242, true]]);
+  assert.equal((await pending).error.message, 'aborted');
+});
+
 test('async process runner abort signal kills then resolves only after child close', async () => {
   const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.killCount = 0; child.kill = () => { child.killCount++; };
   const controller = new AbortController();
-  const run = cli.createAsyncProcessRunner({ spawnProcess: () => child });
+  const run = cli.createAsyncProcessRunner({ spawnProcess: () => child, platform: 'linux', terminateTree: async () => true });
   let settled = false;
   const pending = run(['fake'], 1000, { signal: controller.signal }).then(result => { settled = true; return result; });
   controller.abort(); await tick();
-  assert.equal(child.killCount, 1); assert.equal(settled, false);
-  child.emit('close', null); const result = await pending;
+  assert.equal(child.killCount, 0); assert.equal(settled, true);
+  const result = await pending;
   assert.equal(result.error.message, 'aborted');
   assert.equal(child.listenerCount('close'), 0); assert.equal(controller.signal.onabort, null);
 });
@@ -336,6 +422,7 @@ test('async process runner escalates an abort-ignoring child and settles at supe
   const timers = [];
   const run = cli.createAsyncProcessRunner({
     spawnProcess: () => child,
+    platform: 'linux',
     terminateTree: () => new Promise(() => {}),
     setTimer(fn) { const timer = { fn, unref() {} }; timers.push(timer); return timer; },
     clearTimer() {}
@@ -343,11 +430,10 @@ test('async process runner escalates an abort-ignoring child and settles at supe
   const controller = new AbortController();
   const pending = run(['fake'], 1000, { signal: controller.signal });
   controller.abort(); await tick();
-  timers[1].fn(); await tick();
   timers[2].fn();
   const result = await pending;
   assert.equal(result.error.message, 'process_termination_unconfirmed');
-  assert.deepEqual(kills, ['SIGTERM']);
+  assert.deepEqual(kills, []);
 });
 
 await publish.publishQueue.disconnect();

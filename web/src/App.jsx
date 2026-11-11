@@ -974,7 +974,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   // 小工具渠道：笔记打包成离线小工具上传，返回预览二维码；小红书 App 扫码后直达预填好的发布页。
   async function submitMinitoolPublish() {
     const previousFlow = publishFlowRef.current;
-    if (previousFlow && !['terminal', 'failed', 'restart-acknowledged'].includes(previousFlow.phase)) {
+    if (previousFlow && !['terminal', 'failed', 'restart-acknowledged', 'outcome-acknowledged'].includes(previousFlow.phase)) {
       if (previousFlow.phase === 'uncertain') void retryMinitoolPublish();
       return;
     }
@@ -1105,19 +1105,21 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         setPublishAuthOpen(true);
         setStatus('扫码直达发布失败，笔记内容已保留，可重新提交。');
       } else if (err?.code === 'PUBLISH_JOB_UNCERTAIN' || err?.code === 'PUBLISH_JOB_RESTART_UNKNOWN' || err?.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN') {
-        flow.phase = err.code === 'PUBLISH_JOB_RESTART_UNKNOWN' ? 'restart-unknown' : 'uncertain';
+        flow.phase = err.code === 'PUBLISH_JOB_RESTART_UNKNOWN'
+          ? 'restart-unknown'
+          : err.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN' ? 'outcome-unknown' : 'uncertain';
         setPublishAuth({
           sessionId: flow.attemptId,
-          status: flow.phase === 'restart-unknown' ? 'publish-restart-unknown' : 'publish-uncertain',
-          error: err.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN'
-            ? err.message
-            : flow.phase === 'restart-unknown'
-              ? err.message
-              : `发布结果暂时无法确认（任务 ${flow.attemptId}），请查询发布结果`,
+          status: flow.phase === 'restart-unknown'
+            ? 'publish-restart-unknown'
+            : flow.phase === 'outcome-unknown' ? 'publish-outcome-unknown' : 'publish-uncertain',
+          error: flow.phase === 'uncertain'
+            ? `发布结果暂时无法确认（任务 ${flow.attemptId}），请查询发布结果`
+            : err.message,
           mode: 'resume-publish'
         });
         setPublishAuthOpen(true);
-        setStatus(flow.phase === 'restart-unknown' ? err.message : '发布任务仍可能在服务端运行，请使用“查询发布结果”。');
+        setStatus(flow.phase === 'uncertain' ? '发布任务仍可能在服务端运行，请使用“查询发布结果”。' : err.message);
       } else {
         clearPublishFlow(flow);
         if (err?.code === 'AUTH_POLL_CANCELLED') setStatus('本次发布已被新的发布请求替代。');
@@ -1130,13 +1132,26 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
 
   async function retryMinitoolPublish() {
     const flow = publishFlowRef.current;
-    if (flow?.phase === 'restart-unknown') {
-      flow.phase = 'restart-acknowledged';
+    if (flow?.phase === 'restart-unknown' || flow?.phase === 'outcome-unknown') {
+      const outcomeUnknown = flow.phase === 'outcome-unknown';
+      if (outcomeUnknown) {
+        try {
+          const acknowledgeApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
+          const response = await acknowledgeApi(`/api/publish/minitool/jobs/${encodeURIComponent(flow.attemptId)}/acknowledge-unknown`, { method: 'POST' });
+          if (!response.ok) throw await readApiError(response);
+        } catch (error) {
+          setStatus(error.message || '无法确认未知结果，请稍后重试。');
+          return;
+        }
+      }
+      flow.phase = outcomeUnknown ? 'outcome-acknowledged' : 'restart-acknowledged';
       flow.controller.abort();
       publishFlowRef.current = null;
       setPublishAuth(null);
       setPublishAuthOpen(false);
-      setStatus('已确认原任务结果未知；现在可以重新提交并生成新的发布标识。');
+      setStatus(outcomeUnknown
+        ? '已确认上传结果未知；请在核对小红书上传和预览记录后再重新提交。'
+        : '已确认原任务结果未知；现在可以重新提交并生成新的发布标识。');
       return;
     }
     if (flow?.phase === 'uncertain') {
@@ -1176,9 +1191,14 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         }
       } catch (error) {
         if (publishFlowRef.current === flow) {
-          if (error?.code === 'PUBLISH_JOB_RESTART_UNKNOWN') {
-            flow.phase = 'restart-unknown';
-            setPublishAuth({ sessionId: flow.attemptId, status: 'publish-restart-unknown', error: error.message, mode: 'resume-publish' });
+          if (error?.code === 'PUBLISH_JOB_RESTART_UNKNOWN' || error?.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN') {
+            flow.phase = error.code === 'PUBLISH_JOB_RESTART_UNKNOWN' ? 'restart-unknown' : 'outcome-unknown';
+            setPublishAuth({
+              sessionId: flow.attemptId,
+              status: flow.phase === 'restart-unknown' ? 'publish-restart-unknown' : 'publish-outcome-unknown',
+              error: error.message,
+              mode: 'resume-publish'
+            });
             setPublishAuthOpen(true);
           } else {
             flow.phase = error?.code === 'PUBLISH_JOB_FAILED' ? 'failed' : 'uncertain';

@@ -225,3 +225,35 @@ Final verification:
 - `git diff --check`: passes (Git reports only existing LF-to-CRLF checkout notices).
 
 No real redapp CLI, login, upload, preview, or remote image request was executed. The initial broad `npm --prefix server test -- --test-name-pattern=...` command also discovered scripts outside the requested suites and failed because `DATABASE_URL` was absent; the explicit five-suite command above is the authoritative server verification and passed completely.
+
+## Second final review repair — 2026-11-12
+
+Closed I1–I8 and M1–M2 from `task-6-second-rereview.md`.
+
+### Per-finding disposition
+
+- **I1:** Pinned lookup now implements scalar and `{ all: true }` callback contracts. A real local Node HTTP transport test proves one resolver call, pinned socket address, preserved Host, and abort cleanup without external network.
+- **I2:** Cancellation immediately targets the whole Windows tree or POSIX process group, escalates to force after grace, and ignores leader close until tree supervision confirms termination or reaches the bounded supervisor result. Commands remain array-based, async, and output-bounded.
+- **I3:** Address classification rejects site-local, translated, NAT64, 6to4, Teredo, mapped, and ordinary non-global IPv4/IPv6 destinations while retaining public IPv4/IPv6.
+- **I4:** Upload gate, CLI entry verification, dry run, and plan parsing remain pre-side-effect. The marker is called by the gated command runner immediately before confirm process dispatch.
+- **I5:** `failed_after_side_effect` records are not capacity-evicted during retention; saturated admission fails while exact ID and owner+fingerprint recovery stay authoritative. Explicit owner-scoped acknowledgement retires the protected tombstone.
+- **I6:** The browser has a distinct terminal `outcome-unknown` phase, upload/preview-record guidance, no terminal polling claim or automatic resubmit, and an authenticated acknowledgement before a fresh in-memory attempt.
+- **I7:** Artifact cleanup exceptions cannot replace successful DTOs; locked leftovers remain for bounded startup cleanup.
+- **I8:** Alias saturation rejects the unregistered identity with authoritative `PUBLISH_ALIAS_CAPACITY`; the browser does not poll it, and existing aliases remain recoverable. The ninth-alias test covers lost-response safety by proving no acceptance/registration occurs.
+- **M1:** POSIX PATH prepends `<prefix>/bin`; Windows retains `<prefix>`.
+- **M2:** Startup janitor inspects owned-root metadata and chooses the bounded oldest candidates, skipping symlinks so stale tails cannot starve.
+
+### RED/GREEN evidence
+
+RED was observed for the real Node lookup contract, Windows leader-close supervision, special IPv6 forms, upload boundary placement, protected-record capacity, terminal unknown UX, cleanup exception isolation, saturated ninth alias, POSIX PATH, and fair janitor selection. The focused repaired server and web suites subsequently passed.
+
+### Final verification
+
+- `TEST_DATABASE_URL=... DATABASE_URL=... node --test server/test/redappAuth.test.mjs server/test/referenceImages.test.mjs server/test/publishJobs.test.mjs server/test/safeRemoteImage.test.mjs server/test/minitoolBuild.test.mjs`: **159/159 pass**.
+- `npm --prefix web test`: **91/91 pass**.
+- `npm --prefix web run lint`: exits 0 with the existing **15 App.jsx warnings**, no errors.
+- `npm --prefix web run build`: succeeds; **49 modules transformed**.
+- `node --check` for all changed server production files: passes.
+- `git diff --check`: passes; Git reports only LF-to-CRLF checkout notices.
+
+No real redapp login/upload/preview or external network operation was performed. Local controlled HTTP sockets and injected process/CLI fakes provided deterministic transport and cancellation coverage.

@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { createSafeRemoteImageFetcher, isPublicAddress } from '../src/lib/safeRemoteImage.js';
 
 const blocked = [
   '0.0.0.0', '127.0.0.1', '10.0.0.1', '172.16.0.1', '192.168.1.1', '169.254.169.254',
   '100.64.0.1', '224.0.0.1', '255.255.255.255', '::', '::1', 'fc00::1', 'fd12::1', 'fe80::1',
-  'ff02::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:169.254.169.254',
-  '::ffff:7f00:1', '::ffff:a00:1', '::ffff:a9fe:a9fe'
+  'ff02::1', 'fec0::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:169.254.169.254',
+  '::ffff:7f00:1', '::ffff:a00:1', '::ffff:a9fe:a9fe',
+  '64:ff9b::a00:1', '64:ff9b::a9fe:a9fe', '64:ff9b:1::c0a8:101', '64:ff9b:1::7f00:1',
+  '::ffff:0:7f00:1', '2002:0a00:0001::1', '2001:0000:4136:e378:8000:63bf:f5ff:fffe'
 ];
 for (const address of blocked) test(`SSRF policy rejects ${address}`, () => assert.equal(isPublicAddress(address), false));
 for (const address of ['1.1.1.1', '8.8.8.8', '2001:4860:4860::8888']) test(`SSRF policy permits public ${address}`, () => assert.equal(isPublicAddress(address), true));
@@ -52,6 +55,31 @@ test('safe fetch pins each validated DNS answer into transport without a second 
     { host: 'one.test', address: '8.8.8.8', family: 4 },
     { host: 'two.test', address: '1.1.1.1', family: 4 }
   ]);
+});
+
+test('real Node HTTP transport honors all-address pinned lookup without private re-resolution', async () => {
+  const server = http.createServer((req, res) => {
+    assert.equal(req.headers.host, `public.test:${server.address().port}`);
+    res.end('ok');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  let resolverCalls = 0;
+  try {
+    const safeFetch = createSafeRemoteImageFetcher({
+      lookup: async hostname => {
+        resolverCalls++;
+        assert.equal(hostname, 'public.test');
+        return [{ address: '127.0.0.1', family: 4 }];
+      },
+      isAddressAllowed: () => true
+    });
+    const response = await safeFetch(`http://public.test:${server.address().port}/image`);
+    assert.equal(response.status, 200);
+    assert.equal(resolverCalls, 1);
+    await response.body.cancel();
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('safe fetch aborts a stalled DNS lookup and never starts transport from a late answer', async () => {

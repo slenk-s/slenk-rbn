@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ReadableStream } from 'node:stream/web';
-import { createSourceImageBudget, readImageBuffer } from '../src/lib/minitoolBuild.js';
+import { createSourceImageBudget, janitorMiniToolArtifacts, readImageBuffer } from '../src/lib/minitoolBuild.js';
 import { paths } from '../src/paths.js';
 
 function response(chunks, headers = {}) {
@@ -18,6 +18,25 @@ function response(chunks, headers = {}) {
     get cancelled() { return cancelled; }
   };
 }
+
+test('startup janitor selects the bounded oldest candidates fairly', () => {
+  const root = path.join(paths.dataDir, 'minitool-builds');
+  fs.mkdirSync(root, { recursive: true });
+  const names = Array.from({ length: 105 }, (_, index) => `janitor-${Date.now()}-${index}`);
+  const now = Date.now();
+  try {
+    for (let index = 0; index < names.length; index++) {
+      const target = path.join(root, names[index]);
+      fs.writeFileSync(target, 'x');
+      const age = index >= 100 ? now - 48 * 60 * 60 * 1000 : now;
+      fs.utimesSync(target, age / 1000, age / 1000);
+    }
+    janitorMiniToolArtifacts({ maxEntries: 100, maxAgeMs: 24 * 60 * 60 * 1000, now: () => now });
+    assert.equal(names.slice(100).every(name => !fs.existsSync(path.join(root, name))), true);
+  } finally {
+    for (const name of names) fs.rmSync(path.join(root, name), { force: true });
+  }
+});
 
 test('remote image rejects oversized Content-Length before reading', async () => {
   const res = response([new Uint8Array([1])], { 'content-length': '11' });

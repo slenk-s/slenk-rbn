@@ -30,13 +30,17 @@ async function terminateProcessTree(pid, force) {
   }
 }
 
-function npmEnv() {
+export function createRedappNpmEnv(platform = process.platform) {
   return {
     ...process.env,
     NPM_CONFIG_PREFIX: NPM_PREFIX,
     NPM_CONFIG_CACHE: NPM_CACHE,
-    PATH: NPM_PREFIX + path.delimiter + process.env.PATH
+    PATH: (platform === 'win32' ? NPM_PREFIX : path.join(NPM_PREFIX, 'bin')) + path.delimiter + process.env.PATH
   };
+}
+
+function npmEnv() {
+  return createRedappNpmEnv();
 }
 
 function spawnNode(args, timeoutMs) {
@@ -61,7 +65,8 @@ export function createAsyncProcessRunner({
   clearTimer = clearTimeout,
   terminationGraceMs = PROCESS_TERMINATION_GRACE_MS,
   forceConfirmMs = PROCESS_FORCE_CONFIRM_MS,
-  maxOutputBytes = MAX_PROCESS_OUTPUT_BYTES
+  maxOutputBytes = MAX_PROCESS_OUTPUT_BYTES,
+  platform = process.platform
 } = {}) {
   return function runNodeAsync(args, timeoutMs, { signal } = {}) {
     return new Promise(resolve => {
@@ -91,15 +96,20 @@ export function createAsyncProcessRunner({
         terminatingError = errorMarker;
         if (timer !== null) { clearTimer(timer); timer = null; }
         signal?.removeEventListener?.('abort', onAbort);
-        try { child?.kill?.('SIGTERM'); } catch {}
+        Promise.resolve(terminateTree(child?.pid, false)).then(
+          confirmed => { if (confirmed) finalize(null, terminatingError); },
+          () => {}
+        );
         escalationTimer = setTimer(() => {
           escalationTimer = null;
-          void terminateTree(child?.pid, true).catch(() => false);
-          if (settled) return;
-          supervisorTimer = setTimer(() => finalize(null, 'process_termination_unconfirmed'), forceConfirmMs);
-          supervisorTimer?.unref?.();
+          Promise.resolve(terminateTree(child?.pid, true)).then(
+            confirmed => { if (confirmed) finalize(null, terminatingError); },
+            () => {}
+          );
         }, terminationGraceMs);
         escalationTimer?.unref?.();
+        supervisorTimer = setTimer(() => finalize(null, 'process_termination_unconfirmed'), terminationGraceMs + forceConfirmMs);
+        supervisorTimer?.unref?.();
       };
       const onAbort = () => requestTermination('aborted');
       const cleanup = () => {
@@ -127,13 +137,15 @@ export function createAsyncProcessRunner({
         });
       };
       const onError = () => finalize(null, terminatingError || 'process_error');
-      const onClose = status => finalize(status, terminatingError);
+      const onClose = status => {
+        if (!terminatingError) finalize(status, null);
+      };
 
       try {
         child = spawnProcess(process.execPath, args, {
           env: npmEnv(),
           windowsHide: true,
-          detached: process.platform !== 'win32',
+          detached: platform !== 'win32',
           stdio: ['ignore', 'pipe', 'pipe']
         });
       } catch {
@@ -407,8 +419,9 @@ export function createRedappCommandRunner({ ensureCli, execute }) {
 }
 
 export function createRedappCommandRunnerAsync({ ensureCli, execute }) {
-  return async function run(args, options) {
+  return async function run(args, options = {}) {
     await ensureCli(options);
+    options.onBeforeDispatch?.();
     return parseCommandExecution(await execute(args, options));
   };
 }
@@ -470,15 +483,15 @@ const operations = createRedappOperations({
 });
 
 export function createRedappOperationsAsync({ runCommand, writeFile, fileExists }) {
-  async function dryRunThenConfirm(args, { timeoutMs = 120 * 1000, confirmOnlyArgs = [], signal } = {}) {
+  async function dryRunThenConfirm(args, { timeoutMs = 120 * 1000, confirmOnlyArgs = [], signal, onBeforeConfirm = () => {} } = {}) {
     const plan = await runCommand([...args, '--dry-run'], { timeoutMs, signal });
     const planHash = plan?.plan?.planHash;
     if (!planHash) throw new Error('dry-run 未返回 planHash');
-    return runCommand([...args, ...confirmOnlyArgs, '--confirm', planHash], { timeoutMs, signal });
+    return runCommand([...args, ...confirmOnlyArgs, '--confirm', planHash], { timeoutMs, signal, onBeforeDispatch: onBeforeConfirm });
   }
 
-  async function uploadPackageAsync(zipPath, { signal } = {}) {
-    const result = await dryRunThenConfirm(['upload', '--file', zipPath, '--type', 'pkg'], { timeoutMs: 180 * 1000, signal });
+  async function uploadPackageAsync(zipPath, { signal, onBeforeConfirm } = {}) {
+    const result = await dryRunThenConfirm(['upload', '--file', zipPath, '--type', 'pkg'], { timeoutMs: 180 * 1000, signal, onBeforeConfirm });
     const fileId = result?.data?.fileId;
     const md5 = result?.data?.md5;
     if (!fileId || !md5) throw new Error('上传回执缺少 fileId/md5');

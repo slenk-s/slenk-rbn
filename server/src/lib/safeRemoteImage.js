@@ -53,9 +53,24 @@ export function isPublicAddress(address) {
     const loopback = groups.slice(0, 7).every(value => value === 0) && groups[7] === 1;
     const uniqueLocal = (groups[0] & 0xfe00) === 0xfc00;
     const linkLocal = (groups[0] & 0xffc0) === 0xfe80;
+    const siteLocal = (groups[0] & 0xffc0) === 0xfec0;
     const multicast = (groups[0] & 0xff00) === 0xff00;
     const documentation = groups[0] === 0x2001 && groups[1] === 0x0db8;
-    return !allZero && !loopback && !uniqueLocal && !linkLocal && !multicast && !documentation;
+    const translated = groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0xffff && groups[5] === 0;
+    const nat64WellKnown = groups[0] === 0x0064 && groups[1] === 0xff9b && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0;
+    const nat64Local = groups[0] === 0x0064 && groups[1] === 0xff9b && groups[2] === 1 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0;
+    if (translated || nat64WellKnown || nat64Local) {
+      return isPublicAddress(`${groups[6] >>> 8}.${groups[6] & 0xff}.${groups[7] >>> 8}.${groups[7] & 0xff}`);
+    }
+    const sixToFour = groups[0] === 0x2002;
+    if (sixToFour) {
+      return isPublicAddress(`${groups[1] >>> 8}.${groups[1] & 0xff}.${groups[2] >>> 8}.${groups[2] & 0xff}`);
+    }
+    const teredo = groups[0] === 0x2001 && groups[1] === 0;
+    if (teredo) {
+      return isPublicAddress(`${(~groups[6] >>> 8) & 0xff}.${~groups[6] & 0xff}.${(~groups[7] >>> 8) & 0xff}.${~groups[7] & 0xff}`);
+    }
+    return !allZero && !loopback && !uniqueLocal && !linkLocal && !siteLocal && !multicast && !documentation;
   }
   return false;
 }
@@ -110,6 +125,7 @@ function defaultPinnedFetch(url, { signal, lookup }) {
 export function createSafeRemoteImageFetcher({
   lookup = dns.promises.lookup,
   fetchImpl = defaultPinnedFetch,
+  isAddressAllowed = isPublicAddress,
   maxRedirects = 3
 } = {}) {
   return async function safeRemoteImageFetch(value, { signal } = {}) {
@@ -121,11 +137,16 @@ export function createSafeRemoteImageFetcher({
       const addresses = literal
         ? [{ address: hostname, family: literal }]
         : await abortableLookup(lookup, hostname, signal).catch(() => fail());
-      if (signal?.aborted || !Array.isArray(addresses) || !addresses.length || addresses.some(entry => !isPublicAddress(entry.address))) fail();
+      if (signal?.aborted || !Array.isArray(addresses) || !addresses.length || addresses.some(entry => !isAddressAllowed(entry.address))) fail();
+      const pinnedAddresses = addresses.map(entry => ({ address: entry.address, family: entry.family || net.isIP(entry.address) }));
       let addressIndex = 0;
-      const pinnedLookup = (_host, _options, callback) => {
-        const entry = addresses[addressIndex++ % addresses.length];
-        callback(null, entry.address, entry.family || net.isIP(entry.address));
+      const pinnedLookup = (_host, options, callback) => {
+        if (options?.all === true) {
+          callback(null, pinnedAddresses.map(entry => ({ ...entry })));
+          return;
+        }
+        const entry = pinnedAddresses[addressIndex++ % pinnedAddresses.length];
+        callback(null, entry.address, entry.family);
       };
       const response = await fetchImpl(current, { signal, redirect: 'manual', lookup: pinnedLookup });
       if (![301, 302, 303, 307, 308].includes(response.status)) return response;

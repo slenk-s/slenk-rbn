@@ -168,14 +168,15 @@ export function createMiniToolPublishJobRegistry({
     const fingerprintKey = keyFor(userId, fingerprint);
     const byFingerprint = fingerprints.get(fingerprintKey);
     if (byFingerprint && byFingerprint.status !== 'failed') {
-      if (byFingerprint.aliases.size < maxAliasesPerJob) {
-        byFingerprint.aliases.add(attemptId); aliases.set(aliasKey, byFingerprint);
+      if (byFingerprint.aliases.size >= maxAliasesPerJob) {
+        throw Object.assign(new Error('publish_alias_capacity'), { code: 'PUBLISH_ALIAS_CAPACITY' });
       }
+      byFingerprint.aliases.add(attemptId); aliases.set(aliasKey, byFingerprint);
       return byFingerprint;
     }
     if (jobs.size >= maxEntries) {
-      const terminal = [...jobs].filter(j => ['done', 'failed', 'failed_after_side_effect'].includes(j.status)).sort((a, b) => a.finishedAt - b.finishedAt);
-      if (terminal.length) remove(terminal[0]);
+      const evictable = [...jobs].filter(j => ['done', 'failed'].includes(j.status)).sort((a, b) => a.finishedAt - b.finishedAt);
+      if (evictable.length) remove(evictable[0]);
     }
     if (jobs.size >= maxEntries) throw Object.assign(new Error('publish_job_capacity'), { code: 'PUBLISH_JOB_CAPACITY' });
     if (countUser(userId) >= perUserLimit) throw Object.assign(new Error('publish_user_limit'), { code: 'PUBLISH_USER_LIMIT' });
@@ -194,6 +195,12 @@ export function createMiniToolPublishJobRegistry({
   }
   function get(userId, attemptId) { cleanup(); return aliases.get(keyFor(userId, attemptId)) || null; }
   function getByFingerprint(userId, fingerprint) { cleanup(); return fingerprints.get(keyFor(userId, fingerprint)) || null; }
+  function acknowledgeUnknown(userId, attemptId) {
+    const job = aliases.get(keyFor(userId, attemptId));
+    if (!job || job.status !== 'failed_after_side_effect') return false;
+    remove(job);
+    return true;
+  }
   function toDto(job, requestedAttemptId = job?.canonicalAttemptId) {
     if (!job) return null;
     const identity = requestedAttemptId === job.canonicalAttemptId
@@ -212,7 +219,7 @@ export function createMiniToolPublishJobRegistry({
       else if (job.status === 'queued') { clearTimer(job.queueTimer); job.queueTimer = null; job.status = 'failed'; job.finishedAt = now(); resolveCompletion(job); }
     }
   }
-  return { createOrReuse, get, getByFingerprint, toDto, cleanup, dispose, get size() { return jobs.size; } };
+  return { createOrReuse, get, getByFingerprint, acknowledgeUnknown, toDto, cleanup, dispose, get size() { return jobs.size; } };
 }
 
 export const miniToolPublishJobs = createMiniToolPublishJobRegistry();
@@ -259,8 +266,7 @@ export function createMiniToolPublishHandler({
           const built = await buildMiniToolZip({ buildId, title: request.title, content: request.content, tags: request.tags, imageUrls: request.images, signal });
           await runAudit(built.dir, { signal });
           await runAudit(built.zipPath, { signal });
-          markSideEffectStarted();
-          const uploaded = await uploadPackage(built.zipPath, { signal });
+          const uploaded = await uploadPackage(built.zipPath, { signal, onBeforeConfirm: markSideEffectStarted });
           markSideEffectStarted(uploaded);
           const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
           const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut, signal });
@@ -273,13 +279,17 @@ export function createMiniToolPublishHandler({
             package: { size: built.size, imageCount: built.imageCount },
             audit: { directory: 'passed', zip: 'passed' }
           };
-        } finally { cleanupArtifacts(buildId); }
+        } finally {
+          try { cleanupArtifacts(buildId); }
+          catch { /* deferred startup janitor owns locked leftovers; never alter the publish DTO */ }
+        }
       });
       const dto = registry.toDto(job, attemptId);
       return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);
     } catch (err) {
       if (err?.code === 'PUBLISH_ATTEMPT_CONFLICT') return res.status(409).json({ error: '发布尝试标识已用于其他内容', code: err.code });
       if (err?.code === 'PUBLISH_USER_LIMIT') return res.status(429).json({ error: '你已有发布任务正在处理', code: err.code });
+      if (err?.code === 'PUBLISH_ALIAS_CAPACITY') return res.status(409).json({ error: '相同内容的恢复标识已达上限，请使用已存在的发布任务查询结果', code: err.code });
       if (err?.code === 'PUBLISH_JOB_CAPACITY') return res.status(503).json({ error: '发布任务繁忙，请稍后重试', code: err.code });
       next(err);
     }
@@ -295,12 +305,22 @@ export function createMiniToolJobHandler({ registry = miniToolPublishJobs } = {}
     return res.json(registry.toDto(job, attemptId));
   };
 }
+export function createMiniToolUnknownAcknowledgeHandler({ registry = miniToolPublishJobs } = {}) {
+  return (req, res) => {
+    const attemptId = req.params?.attemptId;
+    if (typeof attemptId !== 'string' || !ATTEMPT_ID_PATTERN.test(attemptId)) return res.status(400).json({ error: '无效的发布尝试标识' });
+    if (!registry.acknowledgeUnknown?.(req.user?.userId, attemptId)) return res.status(404).json({ error: '待确认的发布任务不存在' });
+    return res.json({ acknowledged: true });
+  };
+}
 export function createMiniToolPublishRouter({ verify: verifyMiddleware, registry = miniToolPublishJobs, ...dependencies }) {
   const miniRouter = Router(); miniRouter.use(verifyMiddleware);
   miniRouter.post('/', createMiniToolPublishHandler({ registry, ...dependencies }));
   miniRouter.get('/jobs/:attemptId', createMiniToolJobHandler({ registry }));
+  miniRouter.post('/jobs/:attemptId/acknowledge-unknown', createMiniToolUnknownAcknowledgeHandler({ registry }));
   return miniRouter;
 }
 export const miniToolPublishHandler = createMiniToolPublishHandler({ authManager, registry: miniToolPublishJobs, buildMiniToolZip, runAudit, uploadPackage: uploadPackageAsync, createPreview: createPreviewAsync });
 router.post('/minitool', miniToolPublishHandler);
 router.get('/minitool/jobs/:attemptId', createMiniToolJobHandler({ registry: miniToolPublishJobs }));
+router.post('/minitool/jobs/:attemptId/acknowledge-unknown', createMiniToolUnknownAcknowledgeHandler({ registry: miniToolPublishJobs }));

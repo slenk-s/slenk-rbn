@@ -25,11 +25,18 @@ export function cleanupMiniToolArtifacts(buildId) {
 
 export function janitorMiniToolArtifacts({ maxEntries = 100, maxAgeMs = 24 * 60 * 60 * 1000, now = Date.now } = {}) {
   fs.mkdirSync(BUILD_ROOT, { recursive: true });
-  const entries = fs.readdirSync(BUILD_ROOT, { withFileTypes: true }).slice(0, maxEntries);
-  for (const entry of entries) {
+  const candidates = [];
+  for (const entry of fs.readdirSync(BUILD_ROOT, { withFileTypes: true })) {
     const target = path.resolve(BUILD_ROOT, entry.name);
     if (path.dirname(target) !== BUILD_ROOT) continue;
-    try { if (now() - fs.statSync(target).mtimeMs >= maxAgeMs) fs.rmSync(target, { recursive: true, force: true }); } catch {}
+    try {
+      const stat = fs.lstatSync(target);
+      if (stat.isSymbolicLink()) continue;
+      candidates.push({ target, mtimeMs: stat.mtimeMs });
+    } catch {}
+  }
+  for (const { target, mtimeMs } of candidates.sort((a, b) => a.mtimeMs - b.mtimeMs).slice(0, maxEntries)) {
+    try { if (now() - mtimeMs >= maxAgeMs) fs.rmSync(target, { recursive: true, force: true }); } catch {}
   }
 }
 

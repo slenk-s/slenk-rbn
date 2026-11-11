@@ -12,6 +12,7 @@ import {
   isAuthoritativePrecreationError,
   shouldRecoverAttemptAfterCancel,
   RESTART_UNKNOWN_GUIDANCE,
+  OUTCOME_UNKNOWN_GUIDANCE,
   recoverInitialPublish,
   createRedappAuthClient,
   createRedappFetchAdapter,
@@ -46,6 +47,7 @@ test('initial POST uncertainty immediately polls the same attempt id', async () 
 test('structured pre-creation errors are authoritative regardless of HTTP class', async () => {
   for (const [code, status] of [
     ['PUBLISH_JOB_CAPACITY', 503],
+    ['PUBLISH_ALIAS_CAPACITY', 409],
     ['REDAPP_UNAVAILABLE', 503],
     ['PUBLISH_ATTEMPT_CONFLICT', 409],
     ['PUBLISH_VALIDATION', 400],
@@ -101,6 +103,15 @@ test('every cancellation after POST dispatch retains the exact attempt for recov
   }
   assert.equal(shouldRecoverAttemptAfterCancel('auth-required', 'cancelled'), false);
   assert.equal(shouldRecoverAttemptAfterCancel('publishing', 'cancelled'), false);
+});
+
+test('post-side-effect unknown has terminal inspection guidance and explicit acknowledgement', () => {
+  assert.match(OUTCOME_UNKNOWN_GUIDANCE, /上传.*预览记录/u);
+  let error;
+  try { interpretMiniToolPublishResponse({ attemptId: 'a', status: 'failed_after_side_effect' }, 'a'); }
+  catch (caught) { error = caught; }
+  assert.equal(error.code, 'PUBLISH_JOB_OUTCOME_UNKNOWN');
+  assert.equal(error.message, OUTCOME_UNKNOWN_GUIDANCE);
 });
 
 test('restart loss uses explicit outcome-unknown guidance before a fresh attempt', () => {

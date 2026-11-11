@@ -24,8 +24,9 @@ const RETAINED_TERMINAL_CODES = new Set([
 export const GENERIC_AUTH_DEADLINE_MS = 20_000;
 export const MINITOOL_PUBLISH_DEADLINE_MS = 30 * 60 * 1000;
 export const RESTART_UNKNOWN_GUIDANCE = '服务已重启，无法确认原任务结果；请先到小红书小工具预览记录核对，再决定是否重新发布。';
+export const OUTCOME_UNKNOWN_GUIDANCE = '上传可能已经生效，但本机无法确认最终结果；请先检查小红书小工具的上传记录和预览记录，再决定是否重新发布。';
 const AUTHORITATIVE_PRECREATION_CODES = new Set([
-  'AUTH_REQUIRED', 'PUBLISH_JOB_CAPACITY', 'REDAPP_UNAVAILABLE',
+  'AUTH_REQUIRED', 'PUBLISH_JOB_CAPACITY', 'PUBLISH_ALIAS_CAPACITY', 'REDAPP_UNAVAILABLE',
   'PUBLISH_ATTEMPT_CONFLICT', 'PUBLISH_VALIDATION', 'PUBLISH_USER_LIMIT'
 ]);
 const POST_DISPATCHED_PHASES = new Set(['replaying', 'job-created', 'job-polling', 'uncertain', 'cancel-failed']);
@@ -199,7 +200,7 @@ export function interpretMiniToolPublishResponse(job, attemptId) {
   if (job.status === 'queued' || job.status === 'running') return { action: 'poll', attemptId: effectiveAttemptId };
   if (job.status === 'done') return { action: 'done', job };
   if (job.status === 'failed') throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), { code: 'PUBLISH_JOB_FAILED', attemptId: effectiveAttemptId, status: 'failed' });
-  if (job.status === 'failed_after_side_effect') throw Object.assign(new Error(job.error || '上传结果无法安全重试，请先核对小红书预览记录'), { code: 'PUBLISH_JOB_OUTCOME_UNKNOWN', attemptId: effectiveAttemptId, status: job.status });
+  if (job.status === 'failed_after_side_effect') throw Object.assign(new Error(OUTCOME_UNKNOWN_GUIDANCE), { code: 'PUBLISH_JOB_OUTCOME_UNKNOWN', attemptId: effectiveAttemptId, status: job.status });
   throw uncertain();
 }
 

@@ -364,6 +364,10 @@ test('resume publish UI exposes timeout guidance, retry wiring, and usable reope
   const cssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8');
   assert.match(modalSource, /timeout:\s*'授权等待已超时'/u);
   assert.match(modalSource, /timeout:\s*'授权等待已超时，请重新发起授权。'/u);
+  assert.match(appSource, /flow\.phase === 'outcome-unknown'/u);
+  assert.match(appSource, /publish-outcome-unknown/u);
+  assert.match(appSource, /已确认上传结果未知/u);
+  assert.doesNotMatch(appSource, /PUBLISH_JOB_OUTCOME_UNKNOWN'[\s\S]{0,300}phase = 'uncertain'/u);
   assert.match(appSource, /onRetry=\{retryMinitoolPublish\}/u);
   const zIndex = Number(cssSource.match(/\.auth-progress-reopen\s*\{[\s\S]*?z-index:\s*(\d+)/u)?.[1]);
   assert.ok(zIndex > 1200, 'reopen control must sit above publish confirmation backdrop');
