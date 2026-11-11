@@ -12,10 +12,35 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const templateDir = path.resolve(__dirname, '../../minitool-template');
 const buildsDir = path.join(paths.dataDir, 'minitool-builds');
 const notesImagesDir = path.join(paths.dataDir, 'notes-images');
+const BUILD_ROOT = path.resolve(buildsDir);
+
+export function cleanupMiniToolArtifacts(buildId) {
+  if (typeof buildId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(buildId)) return;
+  const dir = path.resolve(BUILD_ROOT, buildId);
+  const prefix = path.resolve(BUILD_ROOT, buildId);
+  if (path.dirname(dir) !== BUILD_ROOT) return;
+  fs.rmSync(dir, { recursive: true, force: true });
+  for (const suffix of ['.zip', '-qr.png', '-qr.json']) fs.rmSync(prefix + suffix, { force: true });
+}
+
+export function janitorMiniToolArtifacts({ maxEntries = 100, maxAgeMs = 24 * 60 * 60 * 1000, now = Date.now } = {}) {
+  fs.mkdirSync(BUILD_ROOT, { recursive: true });
+  const entries = fs.readdirSync(BUILD_ROOT, { withFileTypes: true }).slice(0, maxEntries);
+  for (const entry of entries) {
+    const target = path.resolve(BUILD_ROOT, entry.name);
+    if (path.dirname(target) !== BUILD_ROOT) continue;
+    try { if (now() - fs.statSync(target).mtimeMs >= maxAgeMs) fs.rmSync(target, { recursive: true, force: true }); } catch {}
+  }
+}
+
+janitorMiniToolArtifacts();
 
 const ZIP_HARD_LIMIT = 9.5 * 1024 * 1024; // 上传硬上限 10MiB，留 0.5MiB 余量
 export const MINITOOL_TITLE_MAX = 20;
 export const MINITOOL_CONTENT_MAX = 1000;
+export function effectiveMiniToolTitle(value) {
+  return [...String(value || '').trim()].slice(0, MINITOOL_TITLE_MAX).join('');
+}
 export const SOURCE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 export const SOURCE_IMAGES_TOTAL_MAX_BYTES = 100 * 1024 * 1024;
 export function createSourceImageBudget(limit = SOURCE_IMAGES_TOTAL_MAX_BYTES) {
@@ -131,7 +156,7 @@ function bakeNoteJs({ title, content, tags, imageCount }) {
     publishContent += piece;
   }
   const data = {
-    title: String(title || '').slice(0, MINITOOL_TITLE_MAX),
+    title: effectiveMiniToolTitle(title),
     content: cleanContent,
     publishContent,
     tags: cleanTags,

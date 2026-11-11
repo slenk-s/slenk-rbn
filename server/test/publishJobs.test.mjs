@@ -58,17 +58,68 @@ test('canonical title exactly matches the builder 20-character operation value',
   assert.equal(one.fingerprint, two.fingerprint);
 });
 
-test('ninth fingerprint alias recovers stable canonical attempt without registration', async () => {
+test('canonical title truncates Unicode code points without splitting emoji', () => {
+  const title = `${'a'.repeat(19)}😀tail`;
+  const canonical = canonicalizeMiniToolPublishRequest({ ...valid, title });
+  assert.equal(canonical.request.title, `${'a'.repeat(19)}😀`);
+  assert.equal([...canonical.request.title].length, 20);
+  assert.equal(canonical.request.title.includes('\ud83d') && !canonical.request.title.includes('😀'), false);
+});
+
+test('alias saturation preserves every issued alias and returns canonical identity for the unregistered request', async () => {
   let release;
   const registry = createMiniToolPublishJobRegistry({ maxAliasesPerJob: 2 });
   const canonical = registry.createOrReuse('u', 'attempt-one', 'fp', () => new Promise(resolve => { release = resolve; }));
   registry.createOrReuse('u', 'attempt-two', 'fp', async () => ({ duplicate: true }));
   const saturated = registry.createOrReuse('u', 'attempt-three', 'fp', async () => ({ duplicate: true }));
   assert.equal(saturated, canonical);
-  assert.equal(registry.get('u', 'attempt-three'), canonical);
+  assert.equal(registry.get('u', 'attempt-one'), canonical);
+  assert.equal(registry.get('u', 'attempt-two'), canonical);
+  assert.equal(registry.get('u', 'attempt-three'), null);
   assert.equal(registry.toDto(saturated, 'attempt-three').attemptId, 'attempt-one');
   assert.equal(registry.toDto(saturated, 'attempt-three').requestedAttemptId, 'attempt-three');
   await tick(); release({ ok: true }); await canonical.promise; registry.dispose();
+});
+
+test('same owner fingerprint retained work is reused before auth under a new attempt id', async () => {
+  let authCalls = 0;
+  const registry = createMiniToolPublishJobRegistry();
+  const fingerprint = canonicalizeMiniToolPublishRequest(valid).fingerprint;
+  const first = registry.createOrReuse('u1', 'attempt-first', fingerprint, async () => ({ ok: true, previewUrl: 'https://safe.test' }));
+  await first.promise;
+  const handler = createMiniToolPublishHandler(operationDeps({ registry, authManager: { getStatus: async () => { authCalls++; return { available: true, loggedIn: false }; } } }));
+  const reused = await invoke(handler, { ...valid, attemptId: 'attempt-second' });
+  assert.equal(reused.statusCode, 200);
+  assert.equal(reused.body.attemptId, 'attempt-first');
+  assert.equal(authCalls, 0);
+  registry.dispose();
+});
+
+test('post-upload failure retains fingerprint and prevents automatic re-upload', async () => {
+  let uploads = 0;
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({
+    registry,
+    uploadPackage: async () => { uploads++; return { fileId: 'receipt', md5: 'md5' }; },
+    createPreview: async () => { throw new Error('preview failed'); }
+  }));
+  await invoke(handler, valid); const failed = registry.get('u1', valid.attemptId); await failed.promise;
+  assert.equal(registry.toDto(failed).status, 'failed_after_side_effect');
+  const retry = await invoke(handler, { ...valid, attemptId: 'attempt-second' });
+  assert.equal(retry.body.status, 'failed_after_side_effect');
+  assert.equal(uploads, 1);
+  registry.dispose();
+});
+
+test('upload dispatch failure is retained as unknown because side effects may have begun', async () => {
+  let uploads = 0;
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({ registry, uploadPackage: async () => { uploads++; throw new Error('transport lost'); } }));
+  await invoke(handler, valid); const failed = registry.get('u1', valid.attemptId); await failed.promise;
+  assert.equal(registry.toDto(failed).status, 'failed_after_side_effect');
+  await invoke(handler, { ...valid, attemptId: 'attempt-second' });
+  assert.equal(uploads, 1);
+  registry.dispose();
 });
 
 test('existing owner reuse and conflict are resolved before redapp auth', async () => {
@@ -225,6 +276,18 @@ test('failed terminal POST is authoritative and fingerprint conflict is safe 409
   registry.dispose();
 });
 
+test('attempt artifacts are cleaned after success and preview failure', async () => {
+  const cleaned = [];
+  for (const createPreview of [async () => ({ previewUrl: 'https://safe.test', qrCodePath: null }), async () => { throw new Error('preview'); }]) {
+    const registry = createMiniToolPublishJobRegistry();
+    const handler = createMiniToolPublishHandler(operationDeps({ registry, createPreview, cleanupArtifacts: id => cleaned.push(id) }));
+    const body = { ...valid, attemptId: `attempt-clean-${cleaned.length}` };
+    await invoke(handler, body); await registry.get('u1', body.attemptId).promise; registry.dispose();
+  }
+  assert.equal(cleaned.length, 2);
+  assert.equal(cleaned.every(id => /^[A-Za-z0-9_-]+$/.test(id)), true);
+});
+
 test('QR candidate paths are deduplicated before bounded read', async () => {
   const reads = [];
   const registry = createMiniToolPublishJobRegistry();
@@ -265,6 +328,26 @@ test('async process runner abort signal kills then resolves only after child clo
   child.emit('close', null); const result = await pending;
   assert.equal(result.error.message, 'aborted');
   assert.equal(child.listenerCount('close'), 0); assert.equal(controller.signal.onabort, null);
+});
+
+test('async process runner escalates an abort-ignoring child and settles at supervisor bound', async () => {
+  const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  const kills = []; child.kill = signal => { kills.push(signal); return true; }; child.pid = 4242;
+  const timers = [];
+  const run = cli.createAsyncProcessRunner({
+    spawnProcess: () => child,
+    terminateTree: () => new Promise(() => {}),
+    setTimer(fn) { const timer = { fn, unref() {} }; timers.push(timer); return timer; },
+    clearTimer() {}
+  });
+  const controller = new AbortController();
+  const pending = run(['fake'], 1000, { signal: controller.signal });
+  controller.abort(); await tick();
+  timers[1].fn(); await tick();
+  timers[2].fn();
+  const result = await pending;
+  assert.equal(result.error.message, 'process_termination_unconfirmed');
+  assert.deepEqual(kills, ['SIGTERM']);
 });
 
 await publish.publishQueue.disconnect();

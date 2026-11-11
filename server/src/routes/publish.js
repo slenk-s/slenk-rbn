@@ -9,7 +9,7 @@ import { nanoid } from 'nanoid';
 import { addTask, updateTask, listTasks } from '../store.js';
 import { verify } from '../auth.js';
 import { paths } from '../paths.js';
-import { buildMiniToolZip, MINITOOL_CONTENT_MAX, MINITOOL_TITLE_MAX } from '../lib/minitoolBuild.js';
+import { buildMiniToolZip, cleanupMiniToolArtifacts, effectiveMiniToolTitle, MINITOOL_CONTENT_MAX } from '../lib/minitoolBuild.js';
 import { createAsyncProcessRunner, createPreviewAsync, readRedappQrFile, uploadPackageAsync } from '../lib/redappCli.js';
 import { authManager } from './redappAuth.js';
 
@@ -59,7 +59,7 @@ export function canonicalizeMiniToolPublishRequest(body) {
   if (!Array.isArray(body.tags) || body.tags.length > 20 || body.tags.some(t => typeof t !== 'string' || t.length > 40)) invalid();
   if (!Array.isArray(body.images) || body.images.length < 1 || body.images.length > 9 || body.images.some(i => typeof i !== 'string' || i.length > 8192 || !allowedImage(i))) invalid();
   const request = {
-    title: body.title.trim().slice(0, MINITOOL_TITLE_MAX),
+    title: effectiveMiniToolTitle(body.title),
     content: body.content.trim(),
     tags: body.tags.map(canonicalTag).filter(Boolean),
     images: [...body.images]
@@ -101,9 +101,9 @@ export function createMiniToolPublishJobRegistry({
   }
   function cleanup() {
     const current = now();
-    for (const job of [...jobs]) if ((job.status === 'done' || job.status === 'failed') && current - job.finishedAt >= terminalTtlMs) remove(job);
+    for (const job of [...jobs]) if (['done', 'failed', 'failed_after_side_effect'].includes(job.status) && current - job.finishedAt >= terminalTtlMs) remove(job);
     if (jobs.size > maxEntries) {
-      const terminal = [...jobs].filter(j => j.status === 'done' || j.status === 'failed').sort((a, b) => a.finishedAt - b.finishedAt);
+      const terminal = [...jobs].filter(j => ['done', 'failed', 'failed_after_side_effect'].includes(j.status)).sort((a, b) => a.finishedAt - b.finishedAt);
       while (jobs.size > maxEntries && terminal.length) remove(terminal.shift());
     }
   }
@@ -137,12 +137,15 @@ export function createMiniToolPublishJobRegistry({
     job.deadlineTimer = setTimer(() => {
       if (job.status !== 'running') return;
       job.controller.abort(new Error('publish_job_deadline'));
-      finish(job, 'failed');
+      finish(job, job.sideEffectStarted ? 'failed_after_side_effect' : 'failed');
     }, jobDeadlineMs);
     job.deadlineTimer?.unref?.();
-    job.executionPromise = Promise.resolve().then(() => job.operation({ signal: job.controller.signal })).then(
+    job.executionPromise = Promise.resolve().then(() => job.operation({
+      signal: job.controller.signal,
+      markSideEffectStarted: receipt => { job.sideEffectStarted = true; job.uploadReceipt = receipt || null; }
+    })).then(
       result => finish(job, 'done', result),
-      () => finish(job, 'failed')
+      () => finish(job, job.sideEffectStarted ? 'failed_after_side_effect' : 'failed')
     ).finally(() => {
       if (job.status === 'failed' && fingerprints.get(keyFor(job.userId, job.fingerprint)) === job) fingerprints.delete(keyFor(job.userId, job.fingerprint));
       releaseSlot(job);
@@ -165,27 +168,20 @@ export function createMiniToolPublishJobRegistry({
     const fingerprintKey = keyFor(userId, fingerprint);
     const byFingerprint = fingerprints.get(fingerprintKey);
     if (byFingerprint && byFingerprint.status !== 'failed') {
-      if (byFingerprint.aliases.size >= maxAliasesPerJob) {
-        const staleAlias = [...byFingerprint.aliases].find(alias => alias !== byFingerprint.canonicalAttemptId);
-        if (staleAlias) {
-          byFingerprint.aliases.delete(staleAlias);
-          aliases.delete(keyFor(userId, staleAlias));
-        }
-      }
       if (byFingerprint.aliases.size < maxAliasesPerJob) {
         byFingerprint.aliases.add(attemptId); aliases.set(aliasKey, byFingerprint);
       }
       return byFingerprint;
     }
     if (jobs.size >= maxEntries) {
-      const terminal = [...jobs].filter(j => j.status === 'done' || j.status === 'failed').sort((a, b) => a.finishedAt - b.finishedAt);
+      const terminal = [...jobs].filter(j => ['done', 'failed', 'failed_after_side_effect'].includes(j.status)).sort((a, b) => a.finishedAt - b.finishedAt);
       if (terminal.length) remove(terminal[0]);
     }
     if (jobs.size >= maxEntries) throw Object.assign(new Error('publish_job_capacity'), { code: 'PUBLISH_JOB_CAPACITY' });
     if (countUser(userId) >= perUserLimit) throw Object.assign(new Error('publish_user_limit'), { code: 'PUBLISH_USER_LIMIT' });
     const completion = {};
     completion.promise = new Promise(resolve => { completion.resolve = resolve; });
-    const job = { userId, canonicalAttemptId: attemptId, fingerprint, aliases: new Set([attemptId]), status: 'queued', result: null, finishedAt: null, operation, controller: null, queueTimer: null, deadlineTimer: null, executionPromise: null, promise: completion.promise, resolveCompletion: completion.resolve, completionResolved: false, slotReleased: false };
+    const job = { userId, canonicalAttemptId: attemptId, fingerprint, aliases: new Set([attemptId]), status: 'queued', result: null, finishedAt: null, operation, controller: null, queueTimer: null, deadlineTimer: null, executionPromise: null, promise: completion.promise, resolveCompletion: completion.resolve, completionResolved: false, slotReleased: false, sideEffectStarted: false, uploadReceipt: null };
     job.queueTimer = setTimer(() => {
       if (job.status !== 'queued') return;
       const index = queue.indexOf(job); if (index >= 0) queue.splice(index, 1);
@@ -197,12 +193,14 @@ export function createMiniToolPublishJobRegistry({
     return job;
   }
   function get(userId, attemptId) { cleanup(); return aliases.get(keyFor(userId, attemptId)) || null; }
+  function getByFingerprint(userId, fingerprint) { cleanup(); return fingerprints.get(keyFor(userId, fingerprint)) || null; }
   function toDto(job, requestedAttemptId = job?.canonicalAttemptId) {
     if (!job) return null;
     const identity = requestedAttemptId === job.canonicalAttemptId
       ? { attemptId: job.canonicalAttemptId }
       : { attemptId: job.canonicalAttemptId, requestedAttemptId };
     if (job.status === 'done') return { ...identity, status: 'done', ...job.result };
+    if (job.status === 'failed_after_side_effect') return { ...identity, status: 'failed_after_side_effect', error: '上传结果无法安全重试，请先核对小红书预览记录' };
     if (job.status === 'failed') return { ...identity, status: 'failed', error: FAILED_JOB_ERROR };
     return { ...identity, status: job.status };
   }
@@ -214,7 +212,7 @@ export function createMiniToolPublishJobRegistry({
       else if (job.status === 'queued') { clearTimer(job.queueTimer); job.queueTimer = null; job.status = 'failed'; job.finishedAt = now(); resolveCompletion(job); }
     }
   }
-  return { createOrReuse, get, toDto, cleanup, dispose, get size() { return jobs.size; } };
+  return { createOrReuse, get, getByFingerprint, toDto, cleanup, dispose, get size() { return jobs.size; } };
 }
 
 export const miniToolPublishJobs = createMiniToolPublishJobRegistry();
@@ -232,7 +230,7 @@ function qrData(readQrImage, candidates) {
 
 export function createMiniToolPublishHandler({
   authManager, registry = miniToolPublishJobs, buildMiniToolZip, runAudit, uploadPackage, createPreview,
-  readQrImage = readRedappQrFile
+  readQrImage = readRedappQrFile, cleanupArtifacts = cleanupMiniToolArtifacts
 }) {
   return async (req, res, next) => {
     let validated;
@@ -246,26 +244,36 @@ export function createMiniToolPublishHandler({
         const dto = registry.toDto(existing, attemptId);
         return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);
       }
+      const retained = registry.getByFingerprint?.(req.user?.userId, fingerprint);
+      if (retained && retained.status !== 'failed') {
+        const reused = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async () => null);
+        const dto = registry.toDto(reused, attemptId);
+        return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);
+      }
       const auth = await authManager.getStatus();
       if (!auth.available) return res.status(503).json({ error: auth.error || 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
       if (!auth.loggedIn || auth.needsReauth) return res.status(401).json({ error: '需要连接小红书后继续', code: 'AUTH_REQUIRED', auth: await authManager.startLogin() });
-      const job = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async ({ signal }) => {
+      const job = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async ({ signal, markSideEffectStarted }) => {
         const buildId = nanoid(12);
-        const built = await buildMiniToolZip({ buildId, title: request.title, content: request.content, tags: request.tags, imageUrls: request.images, signal });
-        await runAudit(built.dir, { signal });
-        await runAudit(built.zipPath, { signal });
-        const uploaded = await uploadPackage(built.zipPath, { signal });
-        const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
-        const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut, signal });
-        const expectedQr = path.resolve(qrOut);
-        const reportedQr = typeof preview.qrCodePath === 'string' && path.resolve(preview.qrCodePath) === expectedQr ? preview.qrCodePath : null;
-        return {
-          ok: true,
-          qrImage: qrData(readQrImage, [reportedQr, qrOut]),
-          previewUrl: typeof preview.previewUrl === 'string' ? preview.previewUrl.slice(0, 4096) : '',
-          package: { size: built.size, imageCount: built.imageCount },
-          audit: { directory: 'passed', zip: 'passed' }
-        };
+        try {
+          const built = await buildMiniToolZip({ buildId, title: request.title, content: request.content, tags: request.tags, imageUrls: request.images, signal });
+          await runAudit(built.dir, { signal });
+          await runAudit(built.zipPath, { signal });
+          markSideEffectStarted();
+          const uploaded = await uploadPackage(built.zipPath, { signal });
+          markSideEffectStarted(uploaded);
+          const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
+          const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut, signal });
+          const expectedQr = path.resolve(qrOut);
+          const reportedQr = typeof preview.qrCodePath === 'string' && path.resolve(preview.qrCodePath) === expectedQr ? preview.qrCodePath : null;
+          return {
+            ok: true,
+            qrImage: qrData(readQrImage, [reportedQr, qrOut]),
+            previewUrl: typeof preview.previewUrl === 'string' ? preview.previewUrl.slice(0, 4096) : '',
+            package: { size: built.size, imageCount: built.imageCount },
+            audit: { directory: 'passed', zip: 'passed' }
+          };
+        } finally { cleanupArtifacts(buildId); }
       });
       const dto = registry.toDto(job, attemptId);
       return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);

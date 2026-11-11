@@ -280,7 +280,7 @@ test('async process runner timeout kills and settles after close', async () => {
   child.emit('close', null);
   const result = await resultPromise;
   assert.equal(result.error?.message, 'timeout');
-  assert.deepEqual(cleared, [timer]);
+  assert.deepEqual(cleared, [timer, timer]);
   assert.equal(child.listenerCount('close'), 0);
 });
 

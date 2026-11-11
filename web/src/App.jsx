@@ -6,6 +6,7 @@ import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   MINITOOL_PUBLISH_DEADLINE_MS,
   canCommitPublishFlow,
+  createPublishContinuation,
   createPublishFlow,
   createPublishRequestSnapshot,
   createRedappAuthClient,
@@ -995,7 +996,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     setPublishAuth(null);
     setPublishAuthOpen(false);
     setPublishAuthCancelling(false);
-    const isCurrent = () => canCommitPublishFlow(publishFlowRef.current, flow, flow.generation);
+    const continuation = flow.continuation;
+    const isCurrent = () => canCommitPublishFlow(publishFlowRef.current, flow, flow.generation, continuation);
     const authApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
     const publishApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
     const authClient = createRedappAuthClient({ api: authApi, pollMs: 1500 });
@@ -1085,7 +1087,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         setStatus('上传成功，但未返回二维码和预览链接。');
       }
     } catch (err) {
-      if (publishFlowRef.current !== flow) return;
+      if (!canCommitPublishFlow(publishFlowRef.current, flow, flow.generation, continuation)) return;
       if (flow.phase === 'cancelling' || flow.cancelled) return;
       const terminal = publishAuthTerminal(err, { replay: flow.phase === 'replaying' });
       if (terminal && flow.sessionId) {
@@ -1102,14 +1104,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         setPublishAuth({ sessionId: request.attemptId, status: 'publish-failed', error: err.message, mode: 'resume-publish' });
         setPublishAuthOpen(true);
         setStatus('扫码直达发布失败，笔记内容已保留，可重新提交。');
-      } else if (err?.code === 'PUBLISH_JOB_UNCERTAIN' || err?.code === 'PUBLISH_JOB_RESTART_UNKNOWN') {
+      } else if (err?.code === 'PUBLISH_JOB_UNCERTAIN' || err?.code === 'PUBLISH_JOB_RESTART_UNKNOWN' || err?.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN') {
         flow.phase = err.code === 'PUBLISH_JOB_RESTART_UNKNOWN' ? 'restart-unknown' : 'uncertain';
         setPublishAuth({
           sessionId: flow.attemptId,
           status: flow.phase === 'restart-unknown' ? 'publish-restart-unknown' : 'publish-uncertain',
-          error: flow.phase === 'restart-unknown'
+          error: err.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN'
             ? err.message
-            : `发布结果暂时无法确认（任务 ${flow.attemptId}），请查询发布结果`,
+            : flow.phase === 'restart-unknown'
+              ? err.message
+              : `发布结果暂时无法确认（任务 ${flow.attemptId}），请查询发布结果`,
           mode: 'resume-publish'
         });
         setPublishAuthOpen(true);
@@ -1138,6 +1142,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     if (flow?.phase === 'uncertain') {
       flow.controller.abort();
       flow.controller = new AbortController();
+      const continuation = createPublishContinuation(flow);
       flow.cancelled = false;
       flow.phase = 'job-polling';
       setPublishBusy(true);
@@ -1155,7 +1160,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           pollMs: 1500,
           timeoutMs: MINITOOL_PUBLISH_DEADLINE_MS
         });
-        if (!canCommitPublishFlow(publishFlowRef.current, flow)) return;
+        if (!canCommitPublishFlow(publishFlowRef.current, flow, flow.generation, continuation)) return;
         if (data.qrImage || data.previewUrl) {
           publishFlowRef.current = null;
           setPublishAuth(null);
@@ -1216,6 +1221,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       if (mustRecover) {
         flow.cancelled = false;
         flow.controller = new AbortController();
+        createPublishContinuation(flow);
         flow.phase = 'uncertain';
         setPublishAuth({ sessionId: flow.attemptId, status: 'publish-uncertain', error: result.error || '正在查询同一次发布结果。', mode: 'resume-publish' });
         setPublishAuthOpen(true);
@@ -1241,6 +1247,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       if (mustRecover) {
         flow.cancelled = false;
         flow.controller = new AbortController();
+        createPublishContinuation(flow);
         flow.phase = 'uncertain';
         setPublishAuth({ sessionId: flow.attemptId, status: 'publish-uncertain', error: '取消结果无法确认，正在查询同一次发布结果。', mode: 'resume-publish' });
         setPublishAuthOpen(true);
@@ -1251,6 +1258,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       }
       flow.cancelled = false;
       flow.controller = new AbortController();
+      createPublishContinuation(flow);
       flow.phase = 'cancel-failed';
       setPublishAuth(previous => previous?.sessionId === flow.sessionId ? {
         ...previous,

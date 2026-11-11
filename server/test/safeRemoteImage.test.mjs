@@ -33,6 +33,43 @@ test('safe fetch resolves every redirect hop and blocks redirect to private DNS'
   assert.equal(fetches, 1);
 });
 
+test('safe fetch pins each validated DNS answer into transport without a second lookup', async () => {
+  let resolverCalls = 0;
+  const connected = [];
+  const safeFetch = createSafeRemoteImageFetcher({
+    lookup: async hostname => { resolverCalls++; return [{ address: hostname === 'one.test' ? '8.8.8.8' : '1.1.1.1', family: 4 }]; },
+    fetchImpl: async (url, init) => {
+      const answer = await new Promise((resolve, reject) => init.lookup(url.hostname, {}, (error, address, family) => error ? reject(error) : resolve({ address, family })));
+      connected.push({ host: url.hostname, ...answer });
+      return connected.length === 1
+        ? { status: 302, headers: new Headers({ location: 'https://two.test/image' }), body: { cancel: async () => {} } }
+        : { status: 200, headers: new Headers(), body: null };
+    }
+  });
+  assert.equal((await safeFetch('https://one.test/image')).status, 200);
+  assert.equal(resolverCalls, 2);
+  assert.deepEqual(connected, [
+    { host: 'one.test', address: '8.8.8.8', family: 4 },
+    { host: 'two.test', address: '1.1.1.1', family: 4 }
+  ]);
+});
+
+test('safe fetch aborts a stalled DNS lookup and never starts transport from a late answer', async () => {
+  let resolveLookup;
+  let fetches = 0;
+  const controller = new AbortController();
+  const safeFetch = createSafeRemoteImageFetcher({
+    lookup: () => new Promise(resolve => { resolveLookup = resolve; }),
+    fetchImpl: async () => { fetches++; return { status: 200, headers: new Headers(), body: null }; }
+  });
+  const pending = safeFetch('https://stall.test/image', { signal: controller.signal });
+  controller.abort(new Error('deadline'));
+  await assert.rejects(() => pending, { message: 'remote_image_not_allowed' });
+  resolveLookup([{ address: '8.8.8.8', family: 4 }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fetches, 0);
+});
+
 test('safe fetch bounds redirects and uses manual redirect mode', async () => {
   const options = [];
   const safeFetch = createSafeRemoteImageFetcher({

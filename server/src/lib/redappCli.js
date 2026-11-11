@@ -12,7 +12,23 @@ const NPM_CACHE = path.join(NPM_HOME, 'cache');
 const CLI_ENTRY = path.join(NPM_PREFIX, 'node_modules', 'redskillhub-upload', 'cli', 'redapp', 'index.mjs');
 
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
-const MAX_QR_BYTES = 2 * 1024 * 1024;
+const MAX_QR_BYTES = 512 * 1024;
+const PROCESS_TERMINATION_GRACE_MS = 2_000;
+const PROCESS_FORCE_CONFIRM_MS = 3_000;
+
+async function terminateProcessTree(pid, force) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (process.platform === 'win32') {
+    return new Promise(resolve => {
+      const killer = spawn('taskkill', ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])], { windowsHide: true, stdio: 'ignore' });
+      killer.once('error', () => resolve(false));
+      killer.once('close', status => resolve(status === 0));
+    });
+  }
+  try { process.kill(-pid, force ? 'SIGKILL' : 'SIGTERM'); return true; } catch {
+    try { process.kill(pid, force ? 'SIGKILL' : 'SIGTERM'); return true; } catch { return false; }
+  }
+}
 
 function npmEnv() {
   return {
@@ -40,8 +56,11 @@ function spawnNode(args, timeoutMs) {
 
 export function createAsyncProcessRunner({
   spawnProcess = spawn,
+  terminateTree = terminateProcessTree,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
+  terminationGraceMs = PROCESS_TERMINATION_GRACE_MS,
+  forceConfirmMs = PROCESS_FORCE_CONFIRM_MS,
   maxOutputBytes = MAX_PROCESS_OUTPUT_BYTES
 } = {}) {
   return function runNodeAsync(args, timeoutMs, { signal } = {}) {
@@ -52,6 +71,8 @@ export function createAsyncProcessRunner({
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let timer = null;
+      let escalationTimer = null;
+      let supervisorTimer = null;
       let settled = false;
       let terminatingError = null;
 
@@ -70,7 +91,15 @@ export function createAsyncProcessRunner({
         terminatingError = errorMarker;
         if (timer !== null) { clearTimer(timer); timer = null; }
         signal?.removeEventListener?.('abort', onAbort);
-        try { child?.kill?.(); } catch { finalize(null, errorMarker); }
+        try { child?.kill?.('SIGTERM'); } catch {}
+        escalationTimer = setTimer(() => {
+          escalationTimer = null;
+          void terminateTree(child?.pid, true).catch(() => false);
+          if (settled) return;
+          supervisorTimer = setTimer(() => finalize(null, 'process_termination_unconfirmed'), forceConfirmMs);
+          supervisorTimer?.unref?.();
+        }, terminationGraceMs);
+        escalationTimer?.unref?.();
       };
       const onAbort = () => requestTermination('aborted');
       const cleanup = () => {
@@ -78,6 +107,8 @@ export function createAsyncProcessRunner({
           clearTimer(timer);
           timer = null;
         }
+        if (escalationTimer !== null) { clearTimer(escalationTimer); escalationTimer = null; }
+        if (supervisorTimer !== null) { clearTimer(supervisorTimer); supervisorTimer = null; }
         signal?.removeEventListener?.('abort', onAbort);
         child?.stdout?.off?.('data', onStdout);
         child?.stderr?.off?.('data', onStderr);
@@ -102,6 +133,7 @@ export function createAsyncProcessRunner({
         child = spawnProcess(process.execPath, args, {
           env: npmEnv(),
           windowsHide: true,
+          detached: process.platform !== 'win32',
           stdio: ['ignore', 'pipe', 'pipe']
         });
       } catch {

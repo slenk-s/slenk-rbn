@@ -195,3 +195,33 @@ RED was observed for title suffix equivalence, alias recovery, physical slot ret
 - DNS is validated before each fetch/redirect hop, as required by the review; Node fetch may resolve the hostname again because no pinned-address dispatcher dependency is present.
 - No real network, CLI, login, upload, or phone-preview operation was performed. Online mini-tool documentation was not fetched; the bundled baseline was used conservatively.
 - Server dependency installation reports the existing 4 moderate and 1 high advisories; this task did not introduce or remediate them.
+
+## Final hardening re-review fixes — 2026-11-12
+
+Closed all 7 Important and 3 Minor findings from `task-6-final-rereview.md`.
+
+### Implementation
+
+- I1/I2: remote image transport now uses Node `http`/`https` with an injected lookup callback pinned to each validated address set, preserving URL Host and TLS SNI on every redirect. DNS lookup races the same image/job signal; an aborted lookup cannot start transport when it resolves late.
+- I3: async process execution now starts a Unix process group where supported, requests graceful termination, escalates after 2 seconds to Windows `taskkill /T /F` or POSIX group `SIGKILL`, and reaches a safe supervisor terminal bound after a further 3 seconds without exposing diagnostics.
+- I4: publish continuations carry immutable generation/controller tokens. Every replacement controller installs a new token; delayed catches and commits from an aborted token cannot mutate same-attempt recovery.
+- I5/I6: alias saturation never evicts an issued alias; unregistered saturated requests receive the canonical identity. Owner+fingerprint retained work is resolved before auth for new attempt IDs.
+- I7: jobs record upload side-effect entry and retain `failed_after_side_effect` fingerprints with safe unknown-outcome guidance, preventing automatic re-upload after preview/QR failure. Pre-upload failures still release their fingerprint.
+- M1: per-attempt build directories, ZIPs, preview JSON, and QR files are removed in `finally`; a bounded startup janitor removes owned-root crash leftovers without traversing outside the build root.
+- M2: canonicalization and builder share Unicode-code-point-safe `effectiveMiniToolTitle`; emoji at the 20-character boundary remains intact.
+- M3: server QR reads are capped at 512 KiB instead of 2 MiB, reducing the 100-record worst-case base64 retention while preserving controlled data-URL delivery.
+
+### TDD and verification evidence
+
+RED was observed for DNS transport pinning and stalled lookup abort, process escalation/supervisor bound, stale continuation isolation, live-alias preservation, pre-auth fingerprint reuse, post-upload failure retention, Unicode boundary truncation, and artifact cleanup. Focused suites then passed: server 56/56 and web flow 54/54.
+
+Final verification:
+
+- `TEST_DATABASE_URL=... DATABASE_URL=... node --test server/test/redappAuth.test.mjs server/test/referenceImages.test.mjs server/test/publishJobs.test.mjs server/test/safeRemoteImage.test.mjs server/test/minitoolBuild.test.mjs`: 141/141 pass. The fake unreachable DB URLs prevent any real database/network operation.
+- `npm --prefix web test`: 90/90 pass.
+- `npm --prefix web run lint`: exits 0 with the same 15 pre-existing `App.jsx` warnings and no errors.
+- `npm --prefix web run build`: succeeds; 49 modules transformed.
+- `node --check` on all changed server production files: passes.
+- `git diff --check`: passes (Git reports only existing LF-to-CRLF checkout notices).
+
+No real redapp CLI, login, upload, preview, or remote image request was executed. The initial broad `npm --prefix server test -- --test-name-pattern=...` command also discovered scripts outside the requested suites and failed because `DATABASE_URL` was absent; the explicit five-suite command above is the authoritative server verification and passed completely.

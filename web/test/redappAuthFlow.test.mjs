@@ -4,6 +4,7 @@ import {
   GENERIC_AUTH_DEADLINE_MS,
   MINITOOL_PUBLISH_DEADLINE_MS,
   canCommitPublishFlow,
+  createPublishContinuation,
   createPublishFlow,
   createPublishRequestSnapshot,
   createPublishAttemptId,
@@ -111,6 +112,7 @@ test('POST parser handles queued running done and failed explicitly', async () =
   assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'running' }, 'a'), { action: 'poll', attemptId: 'a' });
   assert.deepEqual(interpretMiniToolPublishResponse({ attemptId: 'a', status: 'done', previewUrl: 'x' }, 'a'), { action: 'done', job: { attemptId: 'a', status: 'done', previewUrl: 'x' } });
   assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'failed', error: 'failed' }, 'a'), e => e.code === 'PUBLISH_JOB_FAILED');
+  assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'failed_after_side_effect', error: 'unknown' }, 'a'), e => e.code === 'PUBLISH_JOB_OUTCOME_UNKNOWN');
   assert.throws(() => interpretMiniToolPublishResponse({ attemptId: 'a', status: 'unknown' }, 'a'), e => e.code === 'PUBLISH_JOB_UNCERTAIN');
 });
 
@@ -235,6 +237,16 @@ test('resolved replay cannot commit preview after cancellation wins the continua
   flow.phase = 'cancelling';
   flow.controller.abort();
   assert.equal(await continuation, null);
+});
+
+test('replacement recovery continuation permanently invalidates delayed old catch', () => {
+  const flow = createPublishFlow({ request: Object.freeze({ attemptId: 'same-attempt' }), generation: 9 });
+  const old = createPublishContinuation(flow);
+  const recovery = createPublishContinuation(flow);
+  flow.phase = 'job-polling';
+  assert.equal(canCommitPublishFlow(flow, flow, flow.generation, old), false);
+  assert.equal(canCommitPublishFlow(flow, flow, flow.generation, recovery), true);
+  assert.equal(flow.attemptId, 'same-attempt');
 });
 
 test('auth presentation merge preserves object identity when displayed fields do not change', () => {

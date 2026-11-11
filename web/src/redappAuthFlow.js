@@ -112,20 +112,33 @@ export function createPublishRequestSnapshot({ attemptId, title, content, tags, 
 }
 
 export function createPublishFlow({ request, generation }) {
-  return {
+  const flow = {
     controller: new AbortController(),
     request,
     attemptId: request?.attemptId,
     generation,
+    continuationGeneration: 0,
+    continuation: null,
     sessionId: null,
     cancelled: false,
     phase: 'publishing'
   };
+  flow.continuation = createPublishContinuation(flow);
+  return flow;
 }
 
-export function canCommitPublishFlow(current, flow, generation = flow?.generation) {
+export function createPublishContinuation(flow) {
+  const token = Object.freeze({ generation: ++flow.continuationGeneration, controller: flow.controller });
+  flow.continuation = token;
+  return token;
+}
+
+export function canCommitPublishFlow(current, flow, generation = flow?.generation, continuation = flow?.continuation) {
   return current === flow
     && flow?.generation === generation
+    && flow?.continuation === continuation
+    && continuation?.controller === flow.controller
+    && !continuation?.controller?.signal.aborted
     && !flow.cancelled
     && flow.phase !== 'cancelling'
     && flow.phase !== 'terminal'
@@ -186,6 +199,7 @@ export function interpretMiniToolPublishResponse(job, attemptId) {
   if (job.status === 'queued' || job.status === 'running') return { action: 'poll', attemptId: effectiveAttemptId };
   if (job.status === 'done') return { action: 'done', job };
   if (job.status === 'failed') throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), { code: 'PUBLISH_JOB_FAILED', attemptId: effectiveAttemptId, status: 'failed' });
+  if (job.status === 'failed_after_side_effect') throw Object.assign(new Error(job.error || '上传结果无法安全重试，请先核对小红书预览记录'), { code: 'PUBLISH_JOB_OUTCOME_UNKNOWN', attemptId: effectiveAttemptId, status: job.status });
   throw uncertain();
 }
 

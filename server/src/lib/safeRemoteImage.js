@@ -1,5 +1,8 @@
 import dns from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
+import { Readable } from 'node:stream';
 
 const SAFE_ERROR = 'remote_image_not_allowed';
 const fail = () => { throw new Error(SAFE_ERROR); };
@@ -65,20 +68,66 @@ function parseRemoteUrl(value) {
   return url;
 }
 
+function abortableLookup(lookup, hostname, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason || new Error(SAFE_ERROR));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; signal?.removeEventListener?.('abort', onAbort); fn(value); };
+    const onAbort = () => finish(reject, signal.reason || new Error(SAFE_ERROR));
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    Promise.resolve().then(() => lookup(hostname, { all: true, verbatim: true, signal })).then(
+      value => finish(resolve, value),
+      error => finish(reject, error)
+    );
+  });
+}
+
+function defaultPinnedFetch(url, { signal, lookup }) {
+  return new Promise((resolve, reject) => {
+    const transport = url.protocol === 'https:' ? https : http;
+    const request = transport.request(url, {
+      method: 'GET', signal, lookup,
+      headers: { Host: url.host },
+      ...(url.protocol === 'https:' ? { servername: url.hostname } : {})
+    }, incoming => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(incoming.headers)) {
+        if (Array.isArray(value)) value.forEach(item => headers.append(name, item));
+        else if (value !== undefined) headers.set(name, value);
+      }
+      resolve({
+        ok: incoming.statusCode >= 200 && incoming.statusCode < 300,
+        status: incoming.statusCode,
+        headers,
+        body: Readable.toWeb(incoming)
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 export function createSafeRemoteImageFetcher({
   lookup = dns.promises.lookup,
-  fetchImpl = fetch,
+  fetchImpl = defaultPinnedFetch,
   maxRedirects = 3
 } = {}) {
   return async function safeRemoteImageFetch(value, { signal } = {}) {
     let current = parseRemoteUrl(value);
     for (let redirects = 0; redirects <= maxRedirects; redirects++) {
-      const literal = net.isIP(current.hostname.replace(/^\[|\]$/g, ''));
+      if (signal?.aborted) fail();
+      const hostname = current.hostname.replace(/^\[|\]$/g, '');
+      const literal = net.isIP(hostname);
       const addresses = literal
-        ? [{ address: current.hostname.replace(/^\[|\]$/g, '') }]
-        : await lookup(current.hostname, { all: true, verbatim: true }).catch(() => fail());
-      if (!Array.isArray(addresses) || !addresses.length || addresses.some(entry => !isPublicAddress(entry.address))) fail();
-      const response = await fetchImpl(current, { signal, redirect: 'manual' });
+        ? [{ address: hostname, family: literal }]
+        : await abortableLookup(lookup, hostname, signal).catch(() => fail());
+      if (signal?.aborted || !Array.isArray(addresses) || !addresses.length || addresses.some(entry => !isPublicAddress(entry.address))) fail();
+      let addressIndex = 0;
+      const pinnedLookup = (_host, _options, callback) => {
+        const entry = addresses[addressIndex++ % addresses.length];
+        callback(null, entry.address, entry.family || net.isIP(entry.address));
+      };
+      const response = await fetchImpl(current, { signal, redirect: 'manual', lookup: pinnedLookup });
       if (![301, 302, 303, 307, 308].includes(response.status)) return response;
       if (redirects === maxRedirects) { await response.body?.cancel?.().catch(() => {}); fail(); }
       const location = response.headers?.get?.('location');
