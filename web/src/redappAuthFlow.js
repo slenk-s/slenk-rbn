@@ -22,8 +22,7 @@ const RETAINED_TERMINAL_CODES = new Set([
   'AUTH_NOT_COMPLETED', 'AUTH_POLL_TIMEOUT'
 ]);
 export const GENERIC_AUTH_DEADLINE_MS = 20_000;
-// Server envelope: audits 120s + upload dry/confirm 360s + preview dry/confirm 240s + 180s margin.
-export const MINITOOL_PUBLISH_DEADLINE_MS = 900_000;
+export const MINITOOL_PUBLISH_DEADLINE_MS = 30 * 60 * 1000;
 const SENSITIVE_MESSAGE_MARKERS = new Set([
   'token',
   'accesstoken',
@@ -85,8 +84,9 @@ function timeoutError() {
   });
 }
 
-export function createPublishRequestSnapshot({ title, content, tags, images }) {
+export function createPublishRequestSnapshot({ attemptId = crypto.randomUUID(), title, content, tags, images }) {
   return Object.freeze({
+    attemptId: String(attemptId),
     title: String(title),
     content: String(content),
     tags: Object.freeze([...tags]),
@@ -144,11 +144,49 @@ export function interpretCancelResponse(sessionId, response) {
   if (response.status === 'cancelled') return { cancelled: true };
   return {
     cancelled: false,
-    status: response.status || 'failed',
+    status: response.status === 'done' ? 'cancel-not-applied' : (response.status || 'failed'),
     error: response.status === 'done'
-      ? '取消未生效，授权已完成，请重新提交。'
+      ? '授权已完成，但发布未继续，请重新提交'
       : '取消未生效，授权会话状态已变化，请重新提交。'
   };
+}
+
+export async function pollMiniToolPublishJob({
+  attemptId,
+  request,
+  signal,
+  pollMs = 1000,
+  timeoutMs = MINITOOL_PUBLISH_DEADLINE_MS
+}) {
+  const startedAt = Date.now();
+  const path = `/api/publish/minitool/jobs/${encodeURIComponent(attemptId)}`;
+  while (Date.now() - startedAt < timeoutMs) {
+    if (signal?.aborted) throw cancellationError();
+    let job;
+    try {
+      job = await request(path);
+    } catch (cause) {
+      throw Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), {
+        code: 'PUBLISH_JOB_UNCERTAIN', attemptId, cause
+      });
+    }
+    if (job?.attemptId !== attemptId) {
+      throw Object.assign(new Error('发布任务标识不一致'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId });
+    }
+    if (job.status === 'done') return job;
+    if (job.status === 'failed') {
+      throw Object.assign(new Error(job.error || '扫码直达发布失败，请重新提交'), {
+        code: 'PUBLISH_JOB_FAILED', attemptId, status: 'failed'
+      });
+    }
+    if (job.status !== 'running') {
+      throw Object.assign(new Error('发布任务状态未知'), { code: 'PUBLISH_JOB_UNCERTAIN', attemptId });
+    }
+    await delay(pollMs, signal);
+  }
+  throw Object.assign(new Error('发布结果暂时无法确认，请查询发布结果'), {
+    code: 'PUBLISH_JOB_UNCERTAIN', attemptId
+  });
 }
 
 export function createRedappFetchAdapter({ apiBase, token, fetchImpl = fetch, getSignal, deadlineMs = GENERIC_AUTH_DEADLINE_MS }) {

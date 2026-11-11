@@ -12,6 +12,7 @@ import {
   createRedappFetchAdapter,
   interpretCancelResponse,
   mergeDisplayedAuth,
+  pollMiniToolPublishJob,
   publishAuthTerminal,
   publishWithAuth,
   readApiError
@@ -985,13 +986,13 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     setPublishAuthCancelling(false);
     const isCurrent = () => canCommitPublishFlow(publishFlowRef.current, flow, flow.generation);
     const authApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
-    const publishApi = createRedappFetchAdapter({
-      apiBase: API,
-      token,
-      getSignal: () => flow.controller.signal,
-      deadlineMs: MINITOOL_PUBLISH_DEADLINE_MS
-    });
+    const publishApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
     const authClient = createRedappAuthClient({ api: authApi, pollMs: 1500 });
+    const requestJob = async path => {
+      const response = await publishApi(path);
+      if (!response.ok) throw await readApiError(response);
+      return response.json();
+    };
     const publish = async () => {
       const response = await publishApi('/api/publish/minitool', {
         method: 'POST',
@@ -999,7 +1000,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         body: JSON.stringify(request)
       });
       if (!response.ok) throw await readApiError(response);
-      return response.json();
+      const job = await response.json();
+      if (job.status !== 'running') return job;
+      flow.phase = 'publishing';
+      return pollMiniToolPublishJob({
+        attemptId: request.attemptId,
+        request: requestJob,
+        signal: flow.controller.signal,
+        pollMs: 1500,
+        timeoutMs: MINITOOL_PUBLISH_DEADLINE_MS
+      });
     };
 
     setPublishBusy(true);
@@ -1058,6 +1068,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         setStatus(err.code === 'AUTH_NOT_COMPLETED'
           ? '已取消本次授权，笔记内容和发布渠道已保留，可重新提交。'
           : `${err.message}，笔记内容已保留，可重新提交。`);
+      } else if (err?.code === 'PUBLISH_JOB_UNCERTAIN') {
+        flow.phase = 'uncertain';
+        setPublishAuth({
+          sessionId: flow.sessionId || request.attemptId,
+          status: 'timeout',
+          error: `发布结果暂时无法确认（任务 ${request.attemptId}），请查询发布结果`,
+          mode: 'resume-publish'
+        });
+        setPublishAuthOpen(true);
+        setStatus('发布任务仍可能在服务端运行，请使用“查询发布结果”。');
       } else {
         clearPublishFlow(flow);
         if (err?.code === 'AUTH_POLL_CANCELLED') setStatus('本次发布已被新的发布请求替代。');
@@ -1068,8 +1088,44 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     }
   }
 
-  function retryMinitoolPublish() {
+  async function retryMinitoolPublish() {
     const flow = publishFlowRef.current;
+    if (flow?.phase === 'uncertain') {
+      flow.phase = 'publishing';
+      setPublishBusy(true);
+      setStatus('正在查询发布结果…');
+      try {
+        const queryApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
+        const data = await pollMiniToolPublishJob({
+          attemptId: flow.request.attemptId,
+          request: async path => {
+            const response = await queryApi(path);
+            if (!response.ok) throw await readApiError(response);
+            return response.json();
+          },
+          signal: flow.controller.signal,
+          pollMs: 1500,
+          timeoutMs: MINITOOL_PUBLISH_DEADLINE_MS
+        });
+        if (!canCommitPublishFlow(publishFlowRef.current, flow)) return;
+        publishFlowRef.current = null;
+        setPublishAuth(null);
+        setPublishAuthOpen(false);
+        setPublishConfirm(false);
+        if (data.qrImage || data.previewUrl) {
+          setQr({ url: data.previewUrl || '', image: data.qrImage || null, tip: '用小红书 App 扫码，打开后点「发布到小红书」即可直达预填好的发布页' });
+          setStatus('已查询到发布结果。');
+        }
+      } catch (error) {
+        if (publishFlowRef.current === flow) {
+          flow.phase = error?.code === 'PUBLISH_JOB_FAILED' ? 'terminal' : 'uncertain';
+          setStatus(error.message || '查询发布结果失败');
+        }
+      } finally {
+        setPublishBusy(false);
+      }
+      return;
+    }
     if (publishAuthCancelling || (flow && flow.phase !== 'terminal' && flow.phase !== 'cancel-failed')) return;
     if (flow) {
       flow.phase = 'terminal';

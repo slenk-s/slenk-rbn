@@ -10,10 +10,57 @@ import {
   createRedappFetchAdapter,
   interpretCancelResponse,
   mergeDisplayedAuth,
+  pollMiniToolPublishJob,
   publishAuthTerminal,
   publishWithAuth,
   readApiError
 } from '../src/redappAuthFlow.js';
+
+test('publish snapshot includes one immutable attempt id', () => {
+  const snapshot = createPublishRequestSnapshot({
+    attemptId: 'attempt-fixed', title: 'title', content: 'body', tags: [], images: ['a']
+  });
+  assert.equal(snapshot.attemptId, 'attempt-fixed');
+  assert.equal(Object.isFrozen(snapshot), true);
+});
+
+test('polls one minitool job through running to done without resubmitting', async () => {
+  const calls = [];
+  const result = await pollMiniToolPublishJob({
+    attemptId: 'attempt-fixed',
+    pollMs: 0,
+    timeoutMs: 30 * 60 * 1000,
+    request: async path => {
+      calls.push(path);
+      return calls.length === 1
+        ? { attemptId: 'attempt-fixed', status: 'running' }
+        : { attemptId: 'attempt-fixed', status: 'done', qrImage: 'data:image/png;base64,cXI=' };
+    }
+  });
+  assert.equal(result.status, 'done');
+  assert.deepEqual(calls, [
+    '/api/publish/minitool/jobs/attempt-fixed',
+    '/api/publish/minitool/jobs/attempt-fixed'
+  ]);
+});
+
+test('poll failure is uncertain and retains the attempt id', async () => {
+  await assert.rejects(
+    pollMiniToolPublishJob({
+      attemptId: 'attempt-fixed', pollMs: 0,
+      request: async () => { throw new TypeError('network down'); }
+    }),
+    error => error.code === 'PUBLISH_JOB_UNCERTAIN' && error.attemptId === 'attempt-fixed'
+  );
+});
+
+test('cancel done maps to cancel-not-applied terminal guidance', () => {
+  assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'done' }), {
+    cancelled: false,
+    status: 'cancel-not-applied',
+    error: '授权已完成，但发布未继续，请重新提交'
+  });
+});
 
 function response(status, body, statusText = '') {
   return {
@@ -45,6 +92,7 @@ test('publish request snapshot copies all mutable input fields', () => {
   images[0] = '/changed.jpg';
 
   assert.deepEqual(request, {
+    attemptId: request.attemptId,
     title: '123',
     content: 'null',
     tags: ['旅行'],
@@ -109,7 +157,7 @@ test('publish timeout is retained as a retryable terminal state', () => {
 test('cancel response only claims cancellation for exact cancelled session', () => {
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'cancelled' }), { cancelled: true });
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'done' }), {
-    cancelled: false, status: 'done', error: '取消未生效，授权已完成，请重新提交。'
+    cancelled: false, status: 'cancel-not-applied', error: '授权已完成，但发布未继续，请重新提交'
   });
   assert.deepEqual(interpretCancelResponse('s1', { sessionId: 'other', status: 'cancelled' }), {
     cancelled: false, status: 'not-found', error: '取消结果与当前授权会话不一致，请重新提交。'

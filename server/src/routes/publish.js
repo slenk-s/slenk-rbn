@@ -79,12 +79,98 @@ function runAudit(target) {
   return { target, output: String(r.stdout || '') + String(r.stderr || '') };
 }
 
+const ATTEMPT_ID_PATTERN = /^[A-Za-z0-9_-]{8,80}$/;
+const FAILED_JOB_ERROR = '扫码直达发布失败，请重新提交';
+
+export function createMiniToolPublishJobRegistry({
+  terminalTtlMs = 30 * 60 * 1000,
+  maxEntries = 100,
+  now = Date.now,
+  cleanupIntervalMs = 60 * 1000
+} = {}) {
+  const jobs = new Map();
+  const keyFor = (userId, attemptId) => `${userId}\u0000${attemptId}`;
+
+  function cleanup() {
+    const current = now();
+    for (const [key, job] of jobs) {
+      if (job.status !== 'running' && current - job.finishedAt >= terminalTtlMs) jobs.delete(key);
+    }
+    if (jobs.size <= maxEntries) return;
+    const terminal = [...jobs.entries()]
+      .filter(([, job]) => job.status !== 'running')
+      .sort((a, b) => a[1].finishedAt - b[1].finishedAt);
+    while (jobs.size > maxEntries && terminal.length) jobs.delete(terminal.shift()[0]);
+  }
+
+  function createOrReuse(userId, attemptId, operation) {
+    cleanup();
+    const key = keyFor(userId, attemptId);
+    const existing = jobs.get(key);
+    if (existing) return existing;
+    if (jobs.size >= maxEntries) {
+      cleanup();
+      if (jobs.size >= maxEntries) {
+        throw Object.assign(new Error('publish_job_capacity'), { code: 'PUBLISH_JOB_CAPACITY' });
+      }
+    }
+    const job = { userId, attemptId, status: 'running', result: null, finishedAt: null, promise: null };
+    jobs.set(key, job);
+    job.promise = Promise.resolve()
+      .then(operation)
+      .then(result => {
+        job.status = 'done';
+        job.result = result;
+        job.finishedAt = now();
+      }, () => {
+        job.status = 'failed';
+        job.result = null;
+        job.finishedAt = now();
+      })
+      .finally(cleanup);
+    return job;
+  }
+
+  function get(userId, attemptId) {
+    cleanup();
+    return jobs.get(keyFor(userId, attemptId)) || null;
+  }
+
+  function toDto(job) {
+    if (!job) return null;
+    if (job.status === 'done') return { attemptId: job.attemptId, status: 'done', ...job.result };
+    if (job.status === 'failed') return { attemptId: job.attemptId, status: 'failed', error: FAILED_JOB_ERROR };
+    return { attemptId: job.attemptId, status: 'running' };
+  }
+
+  const timer = setInterval(cleanup, cleanupIntervalMs);
+  timer.unref?.();
+  return {
+    createOrReuse,
+    get,
+    toDto,
+    cleanup,
+    dispose: () => clearInterval(timer),
+    get size() { return jobs.size; }
+  };
+}
+
+export const miniToolPublishJobs = createMiniToolPublishJobRegistry();
+
+function validAttemptId(value) {
+  return typeof value === 'string' && ATTEMPT_ID_PATTERN.test(value);
+}
+
 export function createMiniToolPublishHandler({
   authManager,
+  registry = miniToolPublishJobs,
   buildMiniToolZip,
   runAudit,
   uploadPackage,
-  createPreview
+  createPreview,
+  readQrImage = qrPath => qrPath && fs.existsSync(qrPath)
+    ? 'data:image/png;base64,' + fs.readFileSync(qrPath).toString('base64')
+    : null
 }) {
   return async (req, res, next) => {
     try {
@@ -107,37 +193,59 @@ export function createMiniToolPublishHandler({
         });
       }
 
-      const buildId = nanoid(12);
-      const built = await buildMiniToolZip({ buildId, title, content, tags, imageUrls: images });
-
-      const audits = [runAudit(built.dir), runAudit(built.zipPath)];
-      const auditLog = audits.map(a => `[${path.basename(a.target)}]\n${a.output.trim()}`).join('\n');
-      if (/^ERROR/m.test(audits[1].output)) {
-        return res.status(422).json({ error: '产物审计未通过：包体超过上传上限', audit: auditLog });
-      }
-
-      const uploaded = await uploadPackage(built.zipPath);
-      const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
-      const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut });
-
-      const qrPath = preview.qrCodePath && fs.existsSync(preview.qrCodePath) ? preview.qrCodePath : (fs.existsSync(qrOut) ? qrOut : null);
-      const qrImage = qrPath ? 'data:image/png;base64,' + fs.readFileSync(qrPath).toString('base64') : null;
-
-      return res.json({
-        ok: true,
-        qrImage,
-        previewUrl: preview.previewUrl || '',
-        package: { size: built.size, imageCount: built.imageCount },
-        audit: auditLog
+      const attemptId = req.body?.attemptId;
+      if (!validAttemptId(attemptId)) return res.status(400).json({ error: '无效的发布尝试标识' });
+      const userId = req.user?.userId;
+      const job = registry.createOrReuse(userId, attemptId, async () => {
+        const buildId = nanoid(12);
+        const built = await buildMiniToolZip({ buildId, title, content, tags, imageUrls: images });
+        const audits = [runAudit(built.dir), runAudit(built.zipPath)];
+        const auditLog = audits.map(a => `[${path.basename(a.target)}]\n${String(a.output || '').trim()}`).join('\n');
+        if (/^ERROR/m.test(audits[1].output)) throw new Error('artifact_audit_failed');
+        const uploaded = await uploadPackage(built.zipPath);
+        const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
+        const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut });
+        const qrPath = preview.qrCodePath || qrOut;
+        return {
+          ok: true,
+          qrImage: readQrImage(qrPath),
+          previewUrl: preview.previewUrl || '',
+          package: { size: built.size, imageCount: built.imageCount },
+          audit: auditLog
+        };
       });
+      const dto = registry.toDto(job);
+      return res.status(dto.status === 'running' ? 202 : 200).json(dto);
     } catch (err) {
+      if (err?.code === 'PUBLISH_JOB_CAPACITY') {
+        return res.status(503).json({ error: '发布任务繁忙，请稍后重试', code: 'PUBLISH_JOB_CAPACITY' });
+      }
       next(err);
     }
   };
 }
 
+export function createMiniToolJobHandler({ registry = miniToolPublishJobs } = {}) {
+  return (req, res) => {
+    const attemptId = req.params?.attemptId;
+    if (!validAttemptId(attemptId)) return res.status(400).json({ error: '无效的发布尝试标识' });
+    const job = registry.get(req.user?.userId, attemptId);
+    if (!job) return res.status(404).json({ error: '发布任务不存在' });
+    return res.json(registry.toDto(job));
+  };
+}
+
+export function createMiniToolPublishRouter({ verify: verifyMiddleware, registry = miniToolPublishJobs, ...dependencies }) {
+  const miniRouter = Router();
+  miniRouter.use(verifyMiddleware);
+  miniRouter.post('/', createMiniToolPublishHandler({ registry, ...dependencies }));
+  miniRouter.get('/jobs/:attemptId', createMiniToolJobHandler({ registry }));
+  return miniRouter;
+}
+
 export const miniToolPublishHandler = createMiniToolPublishHandler({
   authManager,
+  registry: miniToolPublishJobs,
   buildMiniToolZip,
   runAudit,
   uploadPackage,
@@ -145,3 +253,4 @@ export const miniToolPublishHandler = createMiniToolPublishHandler({
 });
 
 router.post('/minitool', miniToolPublishHandler);
+router.get('/minitool/jobs/:attemptId', createMiniToolJobHandler({ registry: miniToolPublishJobs }));

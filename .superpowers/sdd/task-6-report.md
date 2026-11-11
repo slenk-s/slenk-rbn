@@ -93,3 +93,31 @@ GREEN after implementation:
 ### Remaining concern
 
 No real network or authorization was used. Live/browser auth interaction remains intentionally unverified; the race, deadline, terminal, retry, and layering contracts are covered by deterministic helper/source tests.
+
+## Architectural repair — idempotent publish jobs
+
+The synchronous mini-tool endpoint is now an authenticated, owner-bound job API. A validated client `attemptId` creates exactly one in-memory job; duplicate concurrent POSTs reuse it, POST returns `202 running`, and owner-only GET polling returns safe `running`, `done`, or fixed-error `failed` DTOs. Terminal jobs expire after 30 minutes, entries are capped at 100 without evicting running jobs, and cleanup timers are unreferenced/disposable.
+
+The browser freezes a UUID with the note snapshot, submits that ID through the one-replay authorization flow, and polls `/api/publish/minitool/jobs/:attemptId` with normal 20-second request deadlines and a 30-minute result deadline. Uncertain polling retains the flow and ID and exposes “查询发布结果”; it never creates a replacement attempt until a terminal failure/auth result permits a fresh snapshot. Unmount only aborts browser polling.
+
+A cancel response reporting exact-session `done` is now mapped to `cancel-not-applied` with bounded guidance “授权已完成，但发布未继续，请重新提交”; it no longer renders the false “正在继续发布” state.
+
+### TDD evidence
+
+RED observed:
+
+- Server tests failed because the job registry/router factories did not exist.
+- Frontend tests failed because job polling was not exported and snapshots lacked an attempt ID.
+- Existing cancel semantics tests exposed the old raced-`done` contract.
+
+GREEN verification:
+
+- Server auth + reference suite: 84/84 pass.
+- Full web suite: 79/79 pass.
+- Web lint exits 0 with 15 existing warnings and no errors.
+- Vite build succeeds with 49 modules transformed.
+- `git diff --check` and syntax checks pass.
+
+### Remaining concerns
+
+The registry is intentionally process-local: server restart loses status and multi-process deployments do not share jobs. No real CLI/network operation was used; all new coverage uses fakes. Browser interaction was not exercised live.

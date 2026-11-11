@@ -20,12 +20,14 @@ import {
 
 let createRedappAuthRouter;
 let createMiniToolPublishHandler;
+let createMiniToolPublishJobRegistry;
+let createMiniToolPublishRouter;
 let publishQueue;
 
 test.before(async () => {
   process.env.TEST_DATABASE_URL ||= 'postgres://test:test@127.0.0.1:1/test?sslmode=disable';
   ({ createRedappAuthRouter } = await import('../src/routes/redappAuth.js'));
-  ({ createMiniToolPublishHandler, publishQueue } = await import('../src/routes/publish.js'));
+  ({ createMiniToolPublishHandler, createMiniToolPublishJobRegistry, createMiniToolPublishRouter, publishQueue } = await import('../src/routes/publish.js'));
 });
 
 test.after(async () => {
@@ -59,9 +61,9 @@ function createResponse() {
   };
 }
 
-async function invokeHandler(handler, body = {}) {
+async function invokeHandler(handler, body = {}, userId = 'user-1') {
   const response = createResponse();
-  await handler({ body }, response, error => { throw error; });
+  await handler({ body, user: { userId }, params: { attemptId: body.attemptId } }, response, error => { throw error; });
   return response;
 }
 
@@ -412,6 +414,122 @@ test('minitool publish returns safe unavailable response before building files',
   assert.equal(response.statusCode, 503);
   assert.deepEqual(response.body, { error: 'safe unavailable', code: 'REDAPP_UNAVAILABLE' });
   assert.equal(built, false);
+});
+
+test('minitool publish job returns immediately and concurrent duplicates execute once', async () => {
+  let resolveBuild;
+  let builds = 0;
+  let uploads = 0;
+  let previews = 0;
+  const registry = createMiniToolPublishJobRegistry({ terminalTtlMs: 60_000, maxEntries: 100 });
+  const handler = createMiniToolPublishHandler({
+    authManager: { getStatus: () => ({ available: true, loggedIn: true, needsReauth: false }) },
+    registry,
+    buildMiniToolZip: async () => {
+      builds += 1;
+      await new Promise(resolve => { resolveBuild = resolve; });
+      return { dir: '/safe/build', zipPath: '/safe/build/package.zip', size: 12, imageCount: 1 };
+    },
+    runAudit: target => ({ target, output: 'OK' }),
+    uploadPackage: async () => { uploads += 1; return { fileId: 'file', md5: 'md5' }; },
+    createPreview: async () => { previews += 1; return { previewUrl: 'https://safe.test/preview' }; },
+    readQrImage: () => null
+  });
+  const body = { attemptId: 'attempt-1234', title: '标题', images: ['https://example.test/a.jpg'] };
+  const [first, duplicate] = await Promise.all([invokeHandler(handler, body), invokeHandler(handler, body)]);
+  assert.equal(first.statusCode, 202);
+  assert.deepEqual(first.body, { attemptId: body.attemptId, status: 'running' });
+  assert.equal(duplicate.statusCode, 202);
+  assert.equal(builds, 1);
+  resolveBuild();
+  await registry.get('user-1', body.attemptId).promise;
+  assert.equal(uploads, 1);
+  assert.equal(previews, 1);
+  assert.equal(registry.toDto(registry.get('user-1', body.attemptId)).status, 'done');
+  registry.dispose();
+});
+
+test('minitool job lookup is owner-bound and failures are safe', async () => {
+  const registry = createMiniToolPublishJobRegistry({ terminalTtlMs: 60_000, maxEntries: 100 });
+  registry.createOrReuse('owner', 'attempt-safe', async () => { throw new Error('TOKEN=/private/raw'); });
+  await registry.get('owner', 'attempt-safe').promise;
+  const owner = registry.toDto(registry.get('owner', 'attempt-safe'));
+  assert.deepEqual(owner, { attemptId: 'attempt-safe', status: 'failed', error: '扫码直达发布失败，请重新提交' });
+  assert.equal(registry.get('other', 'attempt-safe'), null);
+  assert.equal(JSON.stringify(owner).includes('TOKEN'), false);
+  registry.dispose();
+});
+
+test('minitool registry expires terminal jobs, keeps running jobs, and caps entries', async () => {
+  let now = 0;
+  let finish;
+  const registry = createMiniToolPublishJobRegistry({ terminalTtlMs: 30, maxEntries: 2, now: () => now });
+  registry.createOrReuse('u', 'done-1', async () => ({ ok: true }));
+  await registry.get('u', 'done-1').promise;
+  registry.createOrReuse('u', 'running-1', () => new Promise(resolve => { finish = resolve; }));
+  now = 31;
+  registry.cleanup();
+  assert.equal(registry.get('u', 'done-1'), null);
+  assert.equal(registry.get('u', 'running-1').status, 'running');
+  registry.createOrReuse('u', 'done-2', async () => ({ ok: true }));
+  await registry.get('u', 'done-2').promise;
+  assert.throws(
+    () => registry.createOrReuse('u', 'done-3', async () => ({ ok: true })),
+    error => error.code === 'PUBLISH_JOB_CAPACITY'
+  );
+  now = 62;
+  registry.cleanup();
+  registry.createOrReuse('u', 'done-3', async () => ({ ok: true }));
+  await registry.get('u', 'done-3').promise;
+  assert.equal(registry.size <= 2, true);
+  assert.equal(registry.get('u', 'running-1').status, 'running');
+  finish({ ok: true });
+  registry.dispose();
+});
+
+test('minitool registry rejects new jobs at capacity without evicting running work', async () => {
+  const registry = createMiniToolPublishJobRegistry({ maxEntries: 1, terminalTtlMs: 60_000 });
+  let finish;
+  const running = registry.createOrReuse('u', 'running-1', () => new Promise(resolve => { finish = resolve; }));
+  await tick();
+  assert.throws(
+    () => registry.createOrReuse('u', 'running-2', async () => ({ ok: true })),
+    error => error.code === 'PUBLISH_JOB_CAPACITY'
+  );
+  assert.equal(registry.get('u', 'running-1').status, 'running');
+  finish({ ok: true });
+  await running.promise;
+  registry.dispose();
+});
+
+test('minitool router rejects invalid attempt ids and applies auth before job creation', async () => {
+  let created = 0;
+  const registry = {
+    get() { return null; },
+    createOrReuse() { created += 1; throw new Error('must not run'); },
+    toDto() { return null; }
+  };
+  const router = createMiniToolPublishRouter({
+    verify: (req, res) => res.status(401).json({ error: 'unauthorized' }),
+    registry,
+    authManager: { getStatus: () => ({ available: true, loggedIn: true }) },
+    buildMiniToolZip: async () => ({}), runAudit: () => ({}), uploadPackage: async () => ({}), createPreview: async () => ({})
+  });
+  const unauthorized = createResponse();
+  await new Promise(resolve => {
+    router.handle({ method: 'POST', url: '/', originalUrl: '/', path: '/', body: { attemptId: 'attempt-1234' } }, unauthorized, resolve);
+    setImmediate(resolve);
+  });
+  assert.equal(unauthorized.statusCode, 401);
+  assert.equal(created, 0);
+
+  const handler = createMiniToolPublishHandler({
+    authManager: { getStatus: () => ({ available: true, loggedIn: true }) }, registry,
+    buildMiniToolZip: async () => ({}), runAudit: () => ({}), uploadPackage: async () => ({}), createPreview: async () => ({})
+  });
+  const invalid = await invokeHandler(handler, { attemptId: '../bad', title: 'x', images: ['x'] });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(created, 0);
 });
 
 test('authorization router applies JWT middleware before route handlers', async () => {
