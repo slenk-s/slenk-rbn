@@ -4,9 +4,15 @@ import { diffLines } from './diffText.js';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
+  MINITOOL_PUBLISH_DEADLINE_MS,
+  canCommitPublishFlow,
+  createPublishFlow,
   createPublishRequestSnapshot,
   createRedappAuthClient,
   createRedappFetchAdapter,
+  interpretCancelResponse,
+  mergeDisplayedAuth,
+  publishAuthTerminal,
   publishWithAuth,
   readApiError
 } from './redappAuthFlow.js';
@@ -756,8 +762,11 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   const [publishAuthOpen, setPublishAuthOpen] = useState(false);
   const [publishAuthCancelling, setPublishAuthCancelling] = useState(false);
   const publishFlowRef = useRef(null);
+  const publishGenerationRef = useRef(0);
 
-  const clearPublishFlow = useCallback(() => {
+  const clearPublishFlow = useCallback((flow = publishFlowRef.current) => {
+    if (publishFlowRef.current !== flow) return;
+    flow.phase = 'terminal';
     publishFlowRef.current = null;
     setPublishAuth(null);
     setPublishAuthOpen(false);
@@ -960,20 +969,31 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   }
   // 小工具渠道：笔记打包成离线小工具上传，返回预览二维码；小红书 App 扫码后直达预填好的发布页。
   async function submitMinitoolPublish() {
-    publishFlowRef.current?.controller.abort();
-    const controller = new AbortController();
+    const previousFlow = publishFlowRef.current;
+    if (previousFlow && ['publishing', 'auth-required', 'replaying', 'cancelling'].includes(previousFlow.phase)) return;
+    previousFlow?.controller.abort();
     const request = createPublishRequestSnapshot({
       title,
       content,
       tags,
       images: images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9)
     });
-    const flow = { controller, request, sessionId: null };
+    const flow = createPublishFlow({ request, generation: ++publishGenerationRef.current });
     publishFlowRef.current = flow;
-    const rawApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => controller.signal });
-    const authClient = createRedappAuthClient({ api: rawApi, pollMs: 1500 });
+    setPublishAuth(null);
+    setPublishAuthOpen(false);
+    setPublishAuthCancelling(false);
+    const isCurrent = () => canCommitPublishFlow(publishFlowRef.current, flow, flow.generation);
+    const authApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
+    const publishApi = createRedappFetchAdapter({
+      apiBase: API,
+      token,
+      getSignal: () => flow.controller.signal,
+      deadlineMs: MINITOOL_PUBLISH_DEADLINE_MS
+    });
+    const authClient = createRedappAuthClient({ api: authApi, pollMs: 1500 });
     const publish = async () => {
-      const response = await rawApi('/api/publish/minitool', {
+      const response = await publishApi('/api/publish/minitool', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request)
@@ -983,36 +1003,39 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     };
 
     setPublishBusy(true);
-    setPublishAuthCancelling(false);
     setStatus('正在打包小工具并上传，约需 30~60 秒…');
     try {
       const data = await publishWithAuth({
         publish,
         pollSession: sessionId => authClient.pollSession(sessionId, {
-          signal: controller.signal,
+          signal: flow.controller.signal,
           timeoutMs: 10 * 60 * 1000,
           onUpdate: current => {
-            if (publishFlowRef.current === flow && current.sessionId === flow.sessionId) {
-              setPublishAuth(previous => previous?.sessionId === flow.sessionId ? { ...previous, ...current } : previous);
-            }
+            if (!isCurrent() || current.sessionId !== flow.sessionId) return;
+            setPublishAuth(previous => mergeDisplayedAuth(previous, current));
           }
         }),
         onAuthRequired: auth => {
-          if (publishFlowRef.current !== flow) return;
+          if (!isCurrent()) return;
+          flow.phase = 'auth-required';
           flow.sessionId = auth.sessionId;
           setPublishAuth({ ...auth, mode: 'resume-publish' });
           setPublishAuthOpen(true);
           setStatus('请完成小红书授权；关闭窗口后仍会自动继续发布。');
         },
         onAuthorized: session => {
-          if (publishFlowRef.current !== flow || session.sessionId !== flow.sessionId) return;
-          setPublishAuth(previous => previous?.sessionId === flow.sessionId ? { ...previous, ...session } : previous);
+          if (!isCurrent() || session.sessionId !== flow.sessionId) return;
+          flow.phase = 'replaying';
+          setPublishAuth(previous => mergeDisplayedAuth(previous, session));
           setStatus('授权成功，正在继续发布…');
         }
       });
-      if (publishFlowRef.current !== flow) return;
+      if (!isCurrent()) return;
+      flow.phase = 'terminal';
+      publishFlowRef.current = null;
+      setPublishAuth(null);
+      setPublishAuthOpen(false);
       setPublishConfirm(false);
-      clearPublishFlow();
       if (data.qrImage) {
         setQr({ url: data.previewUrl || '', image: data.qrImage, tip: '用小红书 App 扫码，打开后点「发布到小红书」即可直达预填好的发布页' });
         setStatus('预览二维码已生成，用小红书 App 扫码发布。');
@@ -1024,47 +1047,77 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       }
     } catch (err) {
       if (publishFlowRef.current !== flow) return;
-      const terminalAuthError = ['AUTH_FAILED', 'AUTH_EXPIRED', 'AUTH_CANCELLED', 'AUTH_SESSION_NOT_FOUND', 'AUTH_NOT_COMPLETED'].includes(err?.code);
-      if (terminalAuthError && flow.sessionId) {
-        setPublishAuth(previous => previous?.sessionId === flow.sessionId ? {
-          ...previous,
-          status: err.status === 404 ? 'not-found' : err.status,
-          error: err.message
-        } : previous);
+      if (flow.phase === 'cancelling' || flow.cancelled) return;
+      const terminal = publishAuthTerminal(err, { replay: flow.phase === 'replaying' });
+      if (terminal && flow.sessionId) {
+        flow.phase = 'terminal';
+        setPublishAuth(previous => previous?.sessionId === flow.sessionId
+          ? { ...previous, ...terminal, mode: 'resume-publish' }
+          : previous);
         setPublishAuthOpen(true);
-        publishFlowRef.current = null;
-        setPublishBusy(false);
         setStatus(err.code === 'AUTH_NOT_COMPLETED'
           ? '已取消本次授权，笔记内容和发布渠道已保留，可重新提交。'
           : `${err.message}，笔记内容已保留，可重新提交。`);
       } else {
-        clearPublishFlow();
+        clearPublishFlow(flow);
         if (err?.code === 'AUTH_POLL_CANCELLED') setStatus('本次发布已被新的发布请求替代。');
         else setStatus(err.message || '扫码直达发布失败，请重试。');
       }
     } finally {
-      if (publishFlowRef.current === flow || publishFlowRef.current == null) setPublishBusy(false);
+      if (publishFlowRef.current !== flow || flow.phase !== 'cancelling') setPublishBusy(false);
     }
+  }
+
+  function retryMinitoolPublish() {
+    const flow = publishFlowRef.current;
+    if (publishAuthCancelling || (flow && flow.phase !== 'terminal' && flow.phase !== 'cancel-failed')) return;
+    if (flow) {
+      flow.phase = 'terminal';
+      flow.controller.abort();
+      publishFlowRef.current = null;
+    }
+    setPublishBusy(false);
+    void submitMinitoolPublish();
   }
 
   async function cancelMinitoolAuth() {
     const flow = publishFlowRef.current;
-    if (!flow?.sessionId || publishAuthCancelling) return;
-    setPublishAuthCancelling(true);
+    if (!flow?.sessionId || publishAuthCancelling || !['auth-required', 'replaying', 'cancel-failed'].includes(flow.phase)) return;
     flow.cancelled = true;
+    flow.phase = 'cancelling';
+    setPublishAuthCancelling(true);
     flow.controller.abort();
-    let cancelledOnServer = false;
     try {
       const cancelApi = createRedappFetchAdapter({ apiBase: API, token });
-      await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId);
-      cancelledOnServer = true;
+      const response = await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId);
+      if (publishFlowRef.current !== flow) return;
+      const result = interpretCancelResponse(flow.sessionId, response);
+      flow.phase = 'terminal';
+      publishFlowRef.current = null;
+      setPublishAuth(previous => previous?.sessionId === flow.sessionId ? {
+        ...previous,
+        status: result.cancelled ? 'cancelled' : result.status,
+        error: result.cancelled ? null : result.error,
+        mode: 'resume-publish'
+      } : previous);
+      setPublishAuthOpen(true);
+      setStatus(result.cancelled
+        ? '已取消本次授权，笔记内容和发布渠道已保留，可重新提交。'
+        : result.error);
     } catch {
-      if (publishFlowRef.current === flow) setStatus('取消授权请求失败，已停止本页等待；服务端会话可能仍在进行。');
+      if (publishFlowRef.current !== flow) return;
+      flow.phase = 'cancel-failed';
+      setPublishAuth(previous => previous?.sessionId === flow.sessionId ? {
+        ...previous,
+        error: '取消失败，授权可能仍进行',
+        mode: 'resume-publish'
+      } : previous);
+      setPublishAuthOpen(true);
+      setStatus('取消失败，授权可能仍进行。可重新打开进度、重试发布或再次取消。');
     } finally {
-      if (publishFlowRef.current === flow) {
-        clearPublishFlow();
+      if (publishFlowRef.current === flow || flow.phase === 'terminal') {
+        setPublishAuthCancelling(false);
         setPublishBusy(false);
-        if (cancelledOnServer) setStatus('已取消本次授权，笔记内容和发布渠道已保留，可重新提交。');
       }
     }
   }
@@ -1258,6 +1311,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
             setStatus('授权窗口已隐藏；授权成功后会自动继续发布。');
           }}
           onCancel={cancelMinitoolAuth}
+          onRetry={retryMinitoolPublish}
           cancelling={publishAuthCancelling}
         />
       ) : null}

@@ -358,6 +358,20 @@ test('fetchWithDeadline aborts hung fetches and preserves caller aborts', async 
   await assert.rejects(pending, error => error?.name === 'AbortError');
 });
 
+test('resume publish UI exposes timeout guidance, retry wiring, and usable reopen layering', () => {
+  const modalSource = readFileSync(new URL('../src/RedappAuth.jsx', import.meta.url), 'utf8');
+  const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const cssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8');
+  assert.match(modalSource, /timeout:\s*'授权等待已超时'/u);
+  assert.match(modalSource, /timeout:\s*'授权等待已超时，请重新发起授权。'/u);
+  assert.match(appSource, /onRetry=\{retryMinitoolPublish\}/u);
+  const zIndex = Number(cssSource.match(/\.auth-progress-reopen\s*\{[\s\S]*?z-index:\s*(\d+)/u)?.[1]);
+  assert.ok(zIndex > 1200, 'reopen control must sit above publish confirmation backdrop');
+  assert.match(cssSource, /\.auth-qr-backdrop\s*\{\s*z-index:\s*(\d+)/u);
+  const modalZ = Number(cssSource.match(/\.auth-qr-backdrop\s*\{\s*z-index:\s*(\d+)/u)?.[1]);
+  assert.ok(modalZ > zIndex, 'auth modal must sit above reopen control');
+});
+
 test('countdown supports an immediate deterministic initial time', () => {
   const initialNow = 10_000;
   assert.equal(formatRemainingTime(71_000, initialNow), '01:01');

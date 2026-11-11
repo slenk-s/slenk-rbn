@@ -1,9 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  GENERIC_AUTH_DEADLINE_MS,
+  MINITOOL_PUBLISH_DEADLINE_MS,
+  canCommitPublishFlow,
+  createPublishFlow,
   createPublishRequestSnapshot,
   createRedappAuthClient,
   createRedappFetchAdapter,
+  interpretCancelResponse,
+  mergeDisplayedAuth,
+  publishAuthTerminal,
   publishWithAuth,
   readApiError
 } from '../src/redappAuthFlow.js';
@@ -43,6 +50,111 @@ test('publish request snapshot copies all mutable input fields', () => {
     tags: ['旅行'],
     images: ['/one.jpg']
   });
+});
+
+test('publish flow commits require identity, generation, active phase, and live controller', () => {
+  const flow = createPublishFlow({ request: Object.freeze({}), generation: 7 });
+  assert.equal(canCommitPublishFlow(flow, flow, 7), true);
+  flow.phase = 'replaying';
+  assert.equal(canCommitPublishFlow(flow, flow, 7), true);
+  flow.cancelled = true;
+  assert.equal(canCommitPublishFlow(flow, flow, 7), false);
+  flow.cancelled = false;
+  flow.phase = 'cancelling';
+  assert.equal(canCommitPublishFlow(flow, flow, 7), false);
+  flow.phase = 'publishing';
+  flow.controller.abort();
+  assert.equal(canCommitPublishFlow(flow, flow, 7), false);
+  assert.equal(canCommitPublishFlow(flow, createPublishFlow({ request: {}, generation: 7 }), 7), false);
+  assert.equal(canCommitPublishFlow(flow, flow, 8), false);
+});
+
+test('resolved replay cannot commit preview after cancellation wins the continuation boundary', async () => {
+  const flow = createPublishFlow({ request: Object.freeze({}), generation: 9 });
+  flow.phase = 'replaying';
+  let resolveReplay;
+  const replay = new Promise(resolve => { resolveReplay = resolve; });
+  const continuation = replay.then(result => canCommitPublishFlow(flow, flow, 9) ? result : null);
+  resolveReplay({ qrImage: 'data:image/png;base64,cXI=' });
+  flow.cancelled = true;
+  flow.phase = 'cancelling';
+  flow.controller.abort();
+  assert.equal(await continuation, null);
+});
+
+test('auth presentation merge preserves object identity when displayed fields do not change', () => {
+  const previous = { sessionId: 's1', status: 'waiting_scan', qrImage: 'qr', mode: 'resume-publish', ignored: 'old' };
+  assert.equal(mergeDisplayedAuth(previous, { sessionId: 's1', status: 'waiting_scan', ignored: 'new' }), previous);
+  const changed = mergeDisplayedAuth(previous, { sessionId: 's1', status: 'done' });
+  assert.notEqual(changed, previous);
+  assert.equal(changed.status, 'done');
+});
+
+test('replay AUTH_REQUIRED is retained as terminal instead of starting a second auth loop', () => {
+  assert.deepEqual(publishAuthTerminal({ code: 'AUTH_REQUIRED', message: '仍需授权' }, { replay: true }), {
+    status: 'failed', error: '仍需授权'
+  });
+  assert.equal(publishAuthTerminal({ code: 'AUTH_REQUIRED', message: '首次授权' }), null);
+});
+
+test('publish timeout is retained as a retryable terminal state', () => {
+  assert.deepEqual(publishAuthTerminal({ code: 'AUTH_POLL_TIMEOUT', status: 'timeout', message: '授权轮询超时' }), {
+    status: 'timeout', error: '授权轮询超时'
+  });
+  for (const code of ['AUTH_FAILED', 'AUTH_EXPIRED', 'AUTH_CANCELLED', 'AUTH_SESSION_NOT_FOUND', 'AUTH_NOT_COMPLETED']) {
+    assert.ok(publishAuthTerminal({ code, status: code === 'AUTH_SESSION_NOT_FOUND' ? 404 : 'failed', message: code }));
+  }
+});
+
+test('cancel response only claims cancellation for exact cancelled session', () => {
+  assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'cancelled' }), { cancelled: true });
+  assert.deepEqual(interpretCancelResponse('s1', { sessionId: 's1', status: 'done' }), {
+    cancelled: false, status: 'done', error: '取消未生效，授权已完成，请重新提交。'
+  });
+  assert.deepEqual(interpretCancelResponse('s1', { sessionId: 'other', status: 'cancelled' }), {
+    cancelled: false, status: 'not-found', error: '取消结果与当前授权会话不一致，请重新提交。'
+  });
+});
+
+test('publish adapter deadline covers the server operation envelope', () => {
+  assert.equal(GENERIC_AUTH_DEADLINE_MS, 20_000);
+  assert.ok(MINITOOL_PUBLISH_DEADLINE_MS >= 900_000);
+});
+
+test('adapter fallback composes caller and deadline aborts and cleans listeners', async () => {
+  const originalAny = AbortSignal.any;
+  Object.defineProperty(AbortSignal, 'any', { configurable: true, value: undefined });
+  try {
+    const caller = new AbortController();
+    const callerAdapter = createRedappFetchAdapter({
+      apiBase: '', token: 't', getSignal: caller.signal, deadlineMs: 1000,
+      fetchImpl: (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }))
+    });
+    const callerPending = callerAdapter('/caller');
+    caller.abort(new DOMException('caller cancelled', 'AbortError'));
+    await assert.rejects(callerPending, error => error?.name === 'AbortError');
+
+    const deadlineCaller = new AbortController();
+    const deadlineAdapter = createRedappFetchAdapter({
+      apiBase: '', token: 't', getSignal: deadlineCaller.signal, deadlineMs: 5,
+      fetchImpl: (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }))
+    });
+    await assert.rejects(deadlineAdapter('/deadline'), error => error?.name === 'TimeoutError');
+
+    let added = 0;
+    let removed = 0;
+    const cleanupCaller = new AbortController();
+    const add = cleanupCaller.signal.addEventListener.bind(cleanupCaller.signal);
+    const remove = cleanupCaller.signal.removeEventListener.bind(cleanupCaller.signal);
+    cleanupCaller.signal.addEventListener = (...args) => { added++; return add(...args); };
+    cleanupCaller.signal.removeEventListener = (...args) => { removed++; return remove(...args); };
+    const cleanupAdapter = createRedappFetchAdapter({ apiBase: '', token: 't', getSignal: cleanupCaller.signal, fetchImpl: async () => response(200, {}) });
+    await cleanupAdapter('/cleanup');
+    assert.equal(added, 1);
+    assert.equal(removed, 1);
+  } finally {
+    Object.defineProperty(AbortSignal, 'any', { configurable: true, value: originalAny });
+  }
 });
 
 test('redapp fetch adapter adds bearer token and preserves raw Fetch responses', async () => {

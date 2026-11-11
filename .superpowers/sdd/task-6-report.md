@@ -61,3 +61,35 @@ Independent review findings fixed: cancel/replay race, cancel failure message ov
 
 - Browser Preview is attached to the original checkout rather than this isolated worktree, so this UI was not interactively exercised against live auth. No live redapp authorization was mutated.
 - Lint reports pre-existing warnings in `App.jsx`; it has no errors and exits successfully.
+
+## Review repair — 2026-11-11
+
+All 7 Important and 2 Minor findings were repaired as one explicit publish-flow state machine:
+
+- Flows now carry generation, phase, cancellation identity, and controller state; every async UI/preview commit uses the common current-flow guard.
+- Cancellation enters `cancelling` before abort, retains flow identity through server cancellation, never lets the aborted publish catch own cancellation state, and preserves the exact session with bounded failure guidance when server cancellation fails.
+- Mini-tool publish uses a dedicated 900,000ms deadline (120s audits + 360s upload + 240s preview + 180s margin); ordinary auth calls remain 20,000ms.
+- The fetch adapter has an `AbortSignal.any` compatibility path forwarding both caller/deadline aborts and cleaning listeners/timers.
+- Reopen control is above the publish confirmation backdrop, while the auth modal remains above both.
+- Poll timeout is a retained retryable `timeout` terminal; all resume-publish terminal states receive a fresh-submit retry action.
+- New reservations synchronously clear stale auth presentation, and unchanged poll fields preserve React state object identity.
+
+### Review TDD evidence
+
+RED observed before production changes:
+
+- Focused tests failed on missing state/deadline/helper exports.
+- UI source/style assertion failed because timeout presentation/retry wiring were absent and reopen z-index was below 1200.
+- Adapter fallback coverage required caller abort, deadline abort with a caller signal, and listener cleanup.
+
+GREEN after implementation:
+
+- Focused flow/UI tests: 63/63 pass during the repair cycle.
+- Final full suite: 75/75 pass.
+- `npm --prefix web run lint`: exits 0 with the same 15 pre-existing `App.jsx` warnings and no errors.
+- `npm --prefix web run build`: succeeds; 49 modules transformed.
+- `git diff --check`: clean.
+
+### Remaining concern
+
+No real network or authorization was used. Live/browser auth interaction remains intentionally unverified; the race, deadline, terminal, retry, and layering contracts are covered by deterministic helper/source tests.

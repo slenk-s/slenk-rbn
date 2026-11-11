@@ -2740,7 +2740,7 @@ button:hover { transform: translateY(-1px); }
 .auth-logout-confirm { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 13px 14px; border: 1px solid rgba(239, 68, 68, .22); border-radius: 14px; background: rgba(239, 68, 68, .06); }
 .auth-logout-confirm p { margin: 0; color: #7f1d1d; font-size: 12px; line-height: 1.5; }
 .auth-logout-confirm div { display: flex; flex: 0 0 auto; gap: 8px; }
-.auth-qr-backdrop { z-index: 1260; }
+.auth-qr-backdrop { z-index: 1320; }
 .auth-qr-modal { width: min(660px, 100%); }
 .auth-modal-heading { display: flex; justify-content: space-between; gap: 20px; padding-right: 36px; }
 .auth-modal-heading h3 { margin: 0 0 4px; }
@@ -2764,7 +2764,7 @@ button:hover { transform: translateY(-1px); }
   position: fixed;
   right: 24px;
   bottom: 84px;
-  z-index: 1001;
+  z-index: 1301;
   border: 1px solid var(--accent-border);
   border-radius: 999px;
   padding: 10px 16px;

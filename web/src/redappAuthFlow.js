@@ -14,6 +14,16 @@ const TERMINAL_ERRORS = {
 };
 
 const ACTIVE_STATUSES = new Set(['waiting_prompt', 'waiting_scan']);
+const DISPLAYED_AUTH_FIELDS = [
+  'sessionId', 'status', 'qrImage', 'authorizeUrl', 'userCode', 'expiresAt', 'error', 'mode'
+];
+const RETAINED_TERMINAL_CODES = new Set([
+  'AUTH_FAILED', 'AUTH_EXPIRED', 'AUTH_CANCELLED', 'AUTH_SESSION_NOT_FOUND',
+  'AUTH_NOT_COMPLETED', 'AUTH_POLL_TIMEOUT'
+]);
+export const GENERIC_AUTH_DEADLINE_MS = 20_000;
+// Server envelope: audits 120s + upload dry/confirm 360s + preview dry/confirm 240s + 180s margin.
+export const MINITOOL_PUBLISH_DEADLINE_MS = 900_000;
 const SENSITIVE_MESSAGE_MARKERS = new Set([
   'token',
   'accesstoken',
@@ -84,14 +94,86 @@ export function createPublishRequestSnapshot({ title, content, tags, images }) {
   });
 }
 
-export function createRedappFetchAdapter({ apiBase, token, fetchImpl = fetch, getSignal, deadlineMs = 120_000 }) {
+export function createPublishFlow({ request, generation }) {
+  return {
+    controller: new AbortController(),
+    request,
+    generation,
+    sessionId: null,
+    cancelled: false,
+    phase: 'publishing'
+  };
+}
+
+export function canCommitPublishFlow(current, flow, generation = flow?.generation) {
+  return current === flow
+    && flow?.generation === generation
+    && !flow.cancelled
+    && flow.phase !== 'cancelling'
+    && flow.phase !== 'terminal'
+    && !flow.controller.signal.aborted;
+}
+
+export function mergeDisplayedAuth(previous, current) {
+  if (!previous || !current || previous.sessionId !== current.sessionId) return previous;
+  const next = { ...previous, ...current };
+  return DISPLAYED_AUTH_FIELDS.every(field => Object.is(previous[field], next[field])) ? previous : next;
+}
+
+export function publishAuthTerminal(error, { replay = false } = {}) {
+  if (replay && error?.code === 'AUTH_REQUIRED') {
+    return { status: 'failed', error: safeMessage(error.message, '重新发布仍需授权') };
+  }
+  if (!RETAINED_TERMINAL_CODES.has(error?.code)) return null;
+  return {
+    status: error.code === 'AUTH_SESSION_NOT_FOUND' || error.status === 404 ? 'not-found'
+      : error.code === 'AUTH_POLL_TIMEOUT' ? 'timeout'
+        : error.status,
+    error: safeMessage(error.message, '授权未完成')
+  };
+}
+
+export function interpretCancelResponse(sessionId, response) {
+  if (response?.sessionId !== sessionId) {
+    return {
+      cancelled: false,
+      status: 'not-found',
+      error: '取消结果与当前授权会话不一致，请重新提交。'
+    };
+  }
+  if (response.status === 'cancelled') return { cancelled: true };
+  return {
+    cancelled: false,
+    status: response.status || 'failed',
+    error: response.status === 'done'
+      ? '取消未生效，授权已完成，请重新提交。'
+      : '取消未生效，授权会话状态已变化，请重新提交。'
+  };
+}
+
+export function createRedappFetchAdapter({ apiBase, token, fetchImpl = fetch, getSignal, deadlineMs = GENERIC_AUTH_DEADLINE_MS }) {
   return async (path, options = {}) => {
     const deadline = new AbortController();
     const callerSignal = typeof getSignal === 'function' ? getSignal() : getSignal;
-    const timer = setTimeout(() => deadline.abort(new DOMException('Request timed out', 'TimeoutError')), deadlineMs);
-    const signal = callerSignal && typeof AbortSignal.any === 'function'
-      ? AbortSignal.any([callerSignal, deadline.signal])
-      : callerSignal || deadline.signal;
+    const timeoutReason = new DOMException(`Request exceeded ${deadlineMs}ms`, 'TimeoutError');
+    const timer = setTimeout(() => deadline.abort(timeoutReason), deadlineMs);
+    let signal = deadline.signal;
+    let cleanup = () => {};
+    if (callerSignal && typeof AbortSignal.any === 'function') {
+      signal = AbortSignal.any([callerSignal, deadline.signal]);
+    } else if (callerSignal) {
+      const combined = new AbortController();
+      const forwardCaller = () => combined.abort(callerSignal.reason);
+      const forwardDeadline = () => combined.abort(deadline.signal.reason);
+      callerSignal.addEventListener('abort', forwardCaller, { once: true });
+      deadline.signal.addEventListener('abort', forwardDeadline, { once: true });
+      if (callerSignal.aborted) forwardCaller();
+      cleanup = () => {
+        callerSignal.removeEventListener('abort', forwardCaller);
+        deadline.signal.removeEventListener('abort', forwardDeadline);
+      };
+      signal = combined.signal;
+    }
     try {
       return await fetchImpl(apiBase + path, {
         ...options,
@@ -104,6 +186,7 @@ export function createRedappFetchAdapter({ apiBase, token, fetchImpl = fetch, ge
       });
     } finally {
       clearTimeout(timer);
+      cleanup();
     }
   };
 }

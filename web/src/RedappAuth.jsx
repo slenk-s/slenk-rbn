@@ -19,15 +19,17 @@ import {
   sessionStatusPresentation
 } from './redappAuthUi.js';
 
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'expired', 'cancelled', 'not-found']);
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'expired', 'cancelled', 'not-found', 'timeout']);
 const SESSION_LABELS = {
   waiting_prompt: '正在准备授权信息', waiting_scan: '等待手机确认', done: '授权成功',
-  failed: '授权失败', expired: '授权已过期', cancelled: '授权已取消', 'not-found': '授权会话已失效'
+  failed: '授权失败', expired: '授权已过期', cancelled: '授权已取消', 'not-found': '授权会话已失效',
+  timeout: '授权等待已超时'
 };
 const SESSION_GUIDANCE = {
   done: '授权已完成。正在确认本机共享账号状态。', failed: '本次授权未完成，请查看原因后重试。',
   expired: '授权信息已过期，请重新发起授权。', cancelled: '本次授权已取消，可在需要时重新发起。',
-  'not-found': '服务器已找不到本次授权会话，请重新发起授权。'
+  'not-found': '服务器已找不到本次授权会话，请重新发起授权。',
+  timeout: '授权等待已超时，请重新发起授权。'
 };
 const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
