@@ -2760,6 +2760,21 @@ button:hover { transform: translateY(-1px); }
 .auth-authorize-link:focus-visible { outline: 3px solid var(--accent-border); outline-offset: 2px; }
 .auth-modal-tip { margin: 0; color: var(--text); font-size: 12px; line-height: 1.55; }
 .auth-modal-actions { flex-wrap: wrap; }
+.auth-progress-reopen {
+  position: fixed;
+  right: 24px;
+  bottom: 84px;
+  z-index: 1001;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  padding: 10px 16px;
+  color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  font-weight: 700;
+  cursor: pointer;
+}
+.auth-progress-reopen:hover { background: var(--accent-bg); }
 @media (max-width: 640px) {
   .redapp-auth-card { padding: 16px; }
   .auth-card-head, .auth-modal-heading, .auth-logout-confirm { align-items: stretch; flex-direction: column; }

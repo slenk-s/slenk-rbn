@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createPublishRequestSnapshot,
   createRedappAuthClient,
+  createRedappFetchAdapter,
   publishWithAuth,
   readApiError
 } from '../src/redappAuthFlow.js';
@@ -26,6 +28,44 @@ function authRequired(...args) {
     auth: { sessionId, status: 'waiting_prompt' }
   });
 }
+
+test('publish request snapshot copies all mutable input fields', () => {
+  const tags = ['旅行'];
+  const images = ['/one.jpg'];
+  const request = createPublishRequestSnapshot({ title: 123, content: null, tags, images });
+
+  tags.push('后来新增');
+  images[0] = '/changed.jpg';
+
+  assert.deepEqual(request, {
+    title: '123',
+    content: 'null',
+    tags: ['旅行'],
+    images: ['/one.jpg']
+  });
+});
+
+test('redapp fetch adapter adds bearer token and preserves raw Fetch responses', async () => {
+  const calls = [];
+  const rawResponse = response(401, { code: 'AUTH_REQUIRED', auth: { sessionId: 's1' } });
+  const adapter = createRedappFetchAdapter({
+    apiBase: 'https://local.example',
+    token: 'workspace-token',
+    fetchImpl: async (url, options) => { calls.push([url, options]); return rawResponse; }
+  });
+
+  const result = await adapter('/api/publish/minitool', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
+
+  assert.equal(result, rawResponse);
+  assert.equal(calls[0][0], 'https://local.example/api/publish/minitool');
+  assert.equal(calls[0][1].headers.Authorization, 'Bearer workspace-token');
+  assert.equal(calls[0][1].headers.Accept, 'application/json');
+  assert.equal(calls[0][1].headers['Content-Type'], 'application/json');
+});
 
 test('readApiError preserves safe structured fields without exposing tokens', async () => {
   const error = await readApiError(response(401, {
@@ -161,6 +201,7 @@ test('auth client methods reject failed responses with structured safe errors', 
 
 test('polling returns the exact session only when it reaches done', async () => {
   const seen = [];
+  const updates = [];
   const states = ['waiting_prompt', 'waiting_scan', 'done'];
   const client = createRedappAuthClient({
     api: async path => {
@@ -170,10 +211,14 @@ test('polling returns the exact session only when it reaches done', async () => 
     pollMs: 0
   });
 
-  const session = await client.pollSession('exact', { timeoutMs: 1000 });
+  const session = await client.pollSession('exact', {
+    timeoutMs: 1000,
+    onUpdate: current => updates.push(current.status)
+  });
   assert.deepEqual(session, { sessionId: 'exact', status: 'done' });
   assert.equal(seen.length, 3);
   assert.ok(seen.every(path => path.endsWith('/exact')));
+  assert.deepEqual(updates, ['waiting_prompt', 'waiting_scan', 'done']);
 });
 
 for (const status of ['failed', 'expired', 'cancelled']) {
@@ -326,6 +371,15 @@ test('replays publish exactly once after login succeeds', async () => {
   assert.deepEqual(result, { ok: true });
   assert.equal(calls, 2);
   assert.deepEqual(events, [['required', 's1'], ['authorized', 's1']]);
+});
+
+test('explicit polling cancellation becomes AUTH_NOT_COMPLETED and never replays', async () => {
+  let calls = 0;
+  await assert.rejects(() => publishWithAuth({
+    publish: async () => { calls++; throw authRequired('s1'); },
+    pollSession: async () => { throw Object.assign(new Error('stopped'), { code: 'AUTH_POLL_CANCELLED' }); }
+  }), error => error.code === 'AUTH_NOT_COMPLETED' && error.status === 'cancelled');
+  assert.equal(calls, 1);
 });
 
 test('does not loop when replay also returns AUTH_REQUIRED', async () => {

@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { diffLines } from './diffText.js';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
-import { RedappAuthCard } from './RedappAuth.jsx';
+import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
+import {
+  createPublishRequestSnapshot,
+  createRedappAuthClient,
+  createRedappFetchAdapter,
+  publishWithAuth,
+  readApiError
+} from './redappAuthFlow.js';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL || window.location.origin;
@@ -745,6 +752,22 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   const [publishConfirm, setPublishConfirm] = useState(false);
   const [publishChannel, setPublishChannel] = useState('draft');
   const [publishBusy, setPublishBusy] = useState(false);
+  const [publishAuth, setPublishAuth] = useState(null);
+  const [publishAuthOpen, setPublishAuthOpen] = useState(false);
+  const [publishAuthCancelling, setPublishAuthCancelling] = useState(false);
+  const publishFlowRef = useRef(null);
+
+  const clearPublishFlow = useCallback(() => {
+    publishFlowRef.current = null;
+    setPublishAuth(null);
+    setPublishAuthOpen(false);
+    setPublishAuthCancelling(false);
+  }, []);
+
+  useEffect(() => () => {
+    publishFlowRef.current?.controller.abort();
+    publishFlowRef.current = null;
+  }, []);
   function clearImageSelectionState() {
     // 专属提示词编辑器常驻显示，不再需要选中态；这里只清待确认的替换预览。
     // 进行中的生成任务不清，它们结束后会自行从 regeneratingIds 移除。
@@ -803,7 +826,11 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     setImageReplacePreviews(prev => prev.slice(1));
   }
   async function api(path, options = {}) {
-    return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => { const data = await readJsonResponse(r); if (!r.ok) throw new Error(data.error || r.statusText); return data; });
+    return fetch(API + path, { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) }, ...options }).then(async r => {
+      const data = await readJsonResponse(r);
+      if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), data, { status: r.status });
+      return data;
+    });
   }
   function referenceImageUrls() {
     return images.filter(img => !img.isVideo).map(img => resolveImageSrc(img)).filter(Boolean);
@@ -933,12 +960,59 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   }
   // 小工具渠道：笔记打包成离线小工具上传，返回预览二维码；小红书 App 扫码后直达预填好的发布页。
   async function submitMinitoolPublish() {
-    const publishImages = images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9);
+    publishFlowRef.current?.controller.abort();
+    const controller = new AbortController();
+    const request = createPublishRequestSnapshot({
+      title,
+      content,
+      tags,
+      images: images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9)
+    });
+    const flow = { controller, request, sessionId: null };
+    publishFlowRef.current = flow;
+    const rawApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => controller.signal });
+    const authClient = createRedappAuthClient({ api: rawApi, pollMs: 1500 });
+    const publish = async () => {
+      const response = await rawApi('/api/publish/minitool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request)
+      });
+      if (!response.ok) throw await readApiError(response);
+      return response.json();
+    };
+
     setPublishBusy(true);
+    setPublishAuthCancelling(false);
+    setStatus('正在打包小工具并上传，约需 30~60 秒…');
     try {
-      setStatus('正在打包小工具并上传，约需 30~60 秒…');
-      const data = await api('/api/publish/minitool', { method: 'POST', body: JSON.stringify({ title, content, tags, images: publishImages }) });
+      const data = await publishWithAuth({
+        publish,
+        pollSession: sessionId => authClient.pollSession(sessionId, {
+          signal: controller.signal,
+          timeoutMs: 10 * 60 * 1000,
+          onUpdate: current => {
+            if (publishFlowRef.current === flow && current.sessionId === flow.sessionId) {
+              setPublishAuth(previous => previous?.sessionId === flow.sessionId ? { ...previous, ...current } : previous);
+            }
+          }
+        }),
+        onAuthRequired: auth => {
+          if (publishFlowRef.current !== flow) return;
+          flow.sessionId = auth.sessionId;
+          setPublishAuth({ ...auth, mode: 'resume-publish' });
+          setPublishAuthOpen(true);
+          setStatus('请完成小红书授权；关闭窗口后仍会自动继续发布。');
+        },
+        onAuthorized: session => {
+          if (publishFlowRef.current !== flow || session.sessionId !== flow.sessionId) return;
+          setPublishAuth(previous => previous?.sessionId === flow.sessionId ? { ...previous, ...session } : previous);
+          setStatus('授权成功，正在继续发布…');
+        }
+      });
+      if (publishFlowRef.current !== flow) return;
       setPublishConfirm(false);
+      clearPublishFlow();
       if (data.qrImage) {
         setQr({ url: data.previewUrl || '', image: data.qrImage, tip: '用小红书 App 扫码，打开后点「发布到小红书」即可直达预填好的发布页' });
         setStatus('预览二维码已生成，用小红书 App 扫码发布。');
@@ -948,8 +1022,51 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       } else {
         setStatus('上传成功，但未返回二维码和预览链接。');
       }
-    } catch (err) { setStatus(err.message); }
-    finally { setPublishBusy(false); }
+    } catch (err) {
+      if (publishFlowRef.current !== flow) return;
+      const terminalAuthError = ['AUTH_FAILED', 'AUTH_EXPIRED', 'AUTH_CANCELLED', 'AUTH_SESSION_NOT_FOUND', 'AUTH_NOT_COMPLETED'].includes(err?.code);
+      if (terminalAuthError && flow.sessionId) {
+        setPublishAuth(previous => previous?.sessionId === flow.sessionId ? {
+          ...previous,
+          status: err.status === 404 ? 'not-found' : err.status,
+          error: err.message
+        } : previous);
+        setPublishAuthOpen(true);
+        publishFlowRef.current = null;
+        setPublishBusy(false);
+        setStatus(err.code === 'AUTH_NOT_COMPLETED'
+          ? '已取消本次授权，笔记内容和发布渠道已保留，可重新提交。'
+          : `${err.message}，笔记内容已保留，可重新提交。`);
+      } else {
+        clearPublishFlow();
+        if (err?.code === 'AUTH_POLL_CANCELLED') setStatus('本次发布已被新的发布请求替代。');
+        else setStatus(err.message || '扫码直达发布失败，请重试。');
+      }
+    } finally {
+      if (publishFlowRef.current === flow || publishFlowRef.current == null) setPublishBusy(false);
+    }
+  }
+
+  async function cancelMinitoolAuth() {
+    const flow = publishFlowRef.current;
+    if (!flow?.sessionId || publishAuthCancelling) return;
+    setPublishAuthCancelling(true);
+    flow.cancelled = true;
+    flow.controller.abort();
+    let cancelledOnServer = false;
+    try {
+      const cancelApi = createRedappFetchAdapter({ apiBase: API, token });
+      await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId);
+      cancelledOnServer = true;
+    } catch {
+      if (publishFlowRef.current === flow) setStatus('取消授权请求失败，已停止本页等待；服务端会话可能仍在进行。');
+    } finally {
+      if (publishFlowRef.current === flow) {
+        clearPublishFlow();
+        setPublishBusy(false);
+        if (cancelledOnServer) setStatus('已取消本次授权，笔记内容和发布渠道已保留，可重新提交。');
+      }
+    }
   }
   // 真正落库：与生成二维码共用 POST /api/notes，保存后可通过 /p/:id 预览页访问。
   async function saveNoteDraft() {
@@ -1132,6 +1249,23 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           </div>
         </div>
       )}
+      {publishAuthOpen && publishAuth ? (
+        <RedappAuthModal
+          session={publishAuth}
+          mode="resume-publish"
+          onClose={() => {
+            setPublishAuthOpen(false);
+            setStatus('授权窗口已隐藏；授权成功后会自动继续发布。');
+          }}
+          onCancel={cancelMinitoolAuth}
+          cancelling={publishAuthCancelling}
+        />
+      ) : null}
+      {!publishAuthOpen && publishAuth ? (
+        <button type="button" className="auth-progress-reopen" onClick={() => setPublishAuthOpen(true)}>
+          查看小红书授权进度
+        </button>
+      ) : null}
       {qr && (
         <div className="qr-backdrop" onClick={() => setQr(null)}>
           <div className="qr-modal" onClick={e => e.stopPropagation()}>

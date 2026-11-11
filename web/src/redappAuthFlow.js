@@ -75,6 +75,39 @@ function timeoutError() {
   });
 }
 
+export function createPublishRequestSnapshot({ title, content, tags, images }) {
+  return Object.freeze({
+    title: String(title),
+    content: String(content),
+    tags: Object.freeze([...tags]),
+    images: Object.freeze([...images])
+  });
+}
+
+export function createRedappFetchAdapter({ apiBase, token, fetchImpl = fetch, getSignal, deadlineMs = 120_000 }) {
+  return async (path, options = {}) => {
+    const deadline = new AbortController();
+    const callerSignal = typeof getSignal === 'function' ? getSignal() : getSignal;
+    const timer = setTimeout(() => deadline.abort(new DOMException('Request timed out', 'TimeoutError')), deadlineMs);
+    const signal = callerSignal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([callerSignal, deadline.signal])
+      : callerSignal || deadline.signal;
+    try {
+      return await fetchImpl(apiBase + path, {
+        ...options,
+        signal,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          ...(options.headers || {})
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 export async function readApiError(response) {
   const body = await response.json().catch(() => ({}));
   const error = new Error(safeMessage(
@@ -151,7 +184,7 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
   const cancel = id => request(`/api/redapp/auth/session/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
   const logout = () => request('/api/redapp/auth/logout', { method: 'POST' });
 
-  async function pollSession(id, { signal, timeoutMs = 10 * 60 * 1000 } = {}) {
+  async function pollSession(id, { signal, timeoutMs = 10 * 60 * 1000, onUpdate = () => {} } = {}) {
     if (!isNonemptyString(id)) throw authFlowError('not-found');
     const startedAt = Date.now();
     while (true) {
@@ -173,6 +206,7 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
       if (typeof current?.sessionId !== 'string' || current.sessionId !== id) {
         throw authFlowError('not-found');
       }
+      await onUpdate(current);
       if (current?.status === 'done') return current;
       if (TERMINAL_ERRORS[current?.status]) throw authFlowError(current.status);
       if (!ACTIVE_STATUSES.has(current?.status)) throw authFlowError(current?.status);
@@ -200,7 +234,18 @@ export async function publishWithAuth({
     if (!isNonemptyString(sessionId)) throw authFlowError('not-found');
 
     await onAuthRequired(error.auth);
-    const session = await pollSession(sessionId);
+    let session;
+    try {
+      session = await pollSession(sessionId);
+    } catch (pollError) {
+      if (pollError?.code === 'AUTH_POLL_CANCELLED') {
+        throw Object.assign(new Error('授权未完成'), {
+          code: 'AUTH_NOT_COMPLETED',
+          status: 'cancelled'
+        });
+      }
+      throw pollError;
+    }
     if (typeof session?.sessionId !== 'string' || session.sessionId !== sessionId) {
       throw authFlowError('not-found');
     }

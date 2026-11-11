@@ -58,7 +58,7 @@ function createFetchAdapter(apiBase, token, getSignal) {
   });
 }
 
-export function RedappAuthModal({ session, onClose, onCancel, onRetry, onRefreshStatus, cancelling, refreshing }) {
+export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, onRetry, onRefreshStatus, cancelling, refreshing }) {
   const dialogRef = useRef(null);
   const openerRef = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -103,7 +103,9 @@ export function RedappAuthModal({ session, onClose, onCancel, onRetry, onRefresh
         </div>
         {terminal ? (
           <div className="auth-terminal-panel">
-            <p>{SESSION_GUIDANCE[session.status]}</p>
+            <p>{mode === 'resume-publish' && session.status === 'done'
+              ? '授权成功，正在继续发布…'
+              : SESSION_GUIDANCE[session.status]}</p>
             {session.refreshError ? <p className="auth-card-error" role="alert">{session.refreshError}</p> : null}
             {sessionError ? <p className="auth-card-error" role="alert">{sessionError}</p> : null}
           </div>
@@ -119,8 +121,8 @@ export function RedappAuthModal({ session, onClose, onCancel, onRetry, onRefresh
           </div>
         )}
         <div className="prompt-config-actions auth-modal-actions">
-          {session.status === 'done' && session.refreshError ? <button type="button" className="btn-primary" disabled={refreshing} onClick={onRefreshStatus}>{refreshing ? '刷新中…' : '刷新授权状态'}</button> : null}
-          {terminal && session.status !== 'done' ? <button type="button" className="btn-primary" onClick={onRetry}>重新授权</button> : null}
+          {mode !== 'resume-publish' && session.status === 'done' && session.refreshError ? <button type="button" className="btn-primary" disabled={refreshing} onClick={onRefreshStatus}>{refreshing ? '刷新中…' : '刷新授权状态'}</button> : null}
+          {terminal && session.status !== 'done' && onRetry ? <button type="button" className="btn-primary" onClick={onRetry}>重新授权</button> : null}
           {active ? <button type="button" className="btn-danger" disabled={cancelling} onClick={onCancel}>{cancelling ? '取消中…' : '取消本次授权'}</button> : null}
           <button type="button" className="btn-secondary" onClick={onClose}>关闭窗口</button>
         </div>
