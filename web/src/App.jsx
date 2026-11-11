@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { diffLines } from './diffText.js';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
+import { RedappAuthCard } from './RedappAuth.jsx';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL || window.location.origin;
@@ -565,6 +566,7 @@ function Dashboard({ token, me, activeProviderId, activeTextProviderId, activeIm
         <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，每 4 秒刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={toggleManage}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div>{manageMode && <div className="task-batch-bar"><label className="task-select-all"><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />全选</label><span className="task-batch-count">{selectedCount ? '已选 ' + selectedCount + ' 个' : '勾选后可批量删除'}</span><button type="button" className={confirmingDelete ? 'task-view-btn task-delete-btn confirm-armed' : 'task-view-btn task-delete-btn'} disabled={!selectedCount} onClick={deleteSelectedTasks}>{confirmingDelete ? '确认删除 ' + selectedCount + ' 个？' : '删除所选'}</button></div>}<ul className="task-list">{tasks.map(t => { const canDelete = me?.isAdmin || t.userId === me?.id; return <li key={t.id} data-status={t.status}><div className="task-status-row">{manageMode && canDelete ? <input type="checkbox" className="task-select" checked={selectedIds.has(t.id)} onChange={() => toggleTaskSelect(t.id)} aria-label={'选择 ' + (t.label || t.type)} /> : null}<b>{t.label || t.type}</b>{t.username ? <span className="task-owner">{t.username}</span> : null}<span>{t.status}</span>{!manageMode && <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>; })}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
         <ProviderManager token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
       </div>
+      <RedappAuthCard apiBase={API} token={token} setMessage={setMessage} />
       {me?.isAdmin ? <UserManager token={token} me={me} setMessage={setMessage} /> : null}
     </section>
   );
