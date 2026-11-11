@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { createRedappAuthManager } from '../src/lib/redappAuth.js';
 import {
   createRedappCliEnsurer,
   createRedappCommandRunner,
@@ -7,6 +10,607 @@ import {
   parseTaggedOutput,
   sanitizeCredentials
 } from '../src/lib/redappCli.js';
+
+function createFakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.killed = false;
+  child.killCount = 0;
+  child.kill = () => {
+    child.killed = true;
+    child.killCount += 1;
+    return true;
+  };
+  return child;
+}
+
+function tick() {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+test('reuses one active login session and sanitizes completion', async () => {
+  const fake = createFakeChild();
+  let spawnCount = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => { spawnCount += 1; return fake; },
+    runCli: () => ({ status: 'ok', credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    now: () => 1000,
+    randomId: () => 'session-1'
+  });
+
+  const first = manager.startLogin();
+  const second = manager.startLogin();
+  assert.equal(first.sessionId, second.sessionId);
+  assert.equal(spawnCount, 1);
+
+  fake.stdout.write('PROMPT:{"type":"auth_device_code","qrCodePath":"x.png","authorizeH5Url":"https://auth","userCode":"ABCD","expiresInSeconds":600}\n');
+  await tick();
+  const waiting = manager.getSession('session-1');
+  assert.equal(waiting.status, 'waiting_scan');
+  assert.match(waiting.qrImage, /^data:image\/png;base64,/);
+  assert.equal(waiting.authorizeUrl, 'https://auth');
+  assert.equal(waiting.userCode, 'ABCD');
+  assert.equal(waiting.expiresAt, 601000);
+  assert.equal(JSON.stringify(waiting).includes('x.png'), false);
+
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"ob1234567890","accessToken":"hidden","scope":"base_info,skill_publish"}}\n');
+  fake.emit('close', 0);
+  await tick();
+  const done = manager.getSession('session-1');
+  assert.equal(done.status, 'done');
+  assert.equal(done.auth.loggedIn, true);
+  assert.equal(JSON.stringify(done).includes('hidden'), false);
+  assert.equal(JSON.stringify(done).includes('ob1234567890'), false);
+});
+
+test('cancels locally before invoking the exact remote cancel command', () => {
+  const fake = createFakeChild();
+  const calls = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: args => {
+      calls.push(args);
+      assert.equal(manager.getSession('session-1').status, 'cancelled');
+      assert.equal(fake.killed, true);
+      throw new Error('TEST_CANCEL_SECRET');
+    },
+    readFile: () => Buffer.from('png'),
+    now: () => 1000,
+    randomId: () => 'session-1'
+  });
+
+  manager.startLogin();
+  const cancelled = manager.cancelLogin('session-1');
+  assert.equal(cancelled.status, 'cancelled');
+  assert.deepEqual(calls, [['login', '--cancel']]);
+  assert.equal(fake.killed, true);
+  assert.equal(JSON.stringify(cancelled).includes('TEST_CANCEL_SECRET'), false);
+  assert.equal(manager.getSession('session-1').status, 'cancelled');
+  assert.equal(manager.getSession('missing'), null);
+});
+
+test('keeps the original ten-minute deadline when a prompt arrives after nine minutes', async () => {
+  const fake = createFakeChild();
+  const timers = [];
+  let currentTime = 1000;
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    now: () => currentTime,
+    randomId: () => 'session-1',
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; }
+  });
+
+  manager.startLogin();
+  assert.equal(timers[0].delay, 600000);
+  currentTime += 9 * 60 * 1000;
+  fake.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":600}\n');
+  await tick();
+
+  assert.equal(manager.getSession('session-1').expiresAt, 601000);
+  assert.equal(timers.at(-1).delay, 60000);
+});
+
+test('rejects prompts and results that arrive after the absolute deadline', async () => {
+  for (const lateLine of [
+    'PROMPT:{"qrCodePath":"late.png","expiresInSeconds":600}\n',
+    'RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openIdMasked":"ob12…7890"}}\n'
+  ]) {
+    const fake = createFakeChild();
+    let currentTime = 1000;
+    const manager = createRedappAuthManager({
+      spawnCli: () => fake,
+      runCli: () => ({ credentials: { loggedIn: false } }),
+      readFile: () => Buffer.from('png'),
+      now: () => currentTime,
+      randomId: () => 'session-1',
+      setTimer: (callback, delay) => ({ callback, delay }),
+      clearTimer() {}
+    });
+
+    manager.startLogin();
+    currentTime = 601001;
+    fake.stdout.write(lateLine);
+    await tick();
+
+    const expired = manager.getSession('session-1');
+    assert.equal(expired.status, 'expired');
+    assert.equal(expired.auth, null);
+    assert.equal(expired.qrImage, null);
+    assert.equal(fake.killed, true);
+  }
+});
+
+test('expires a login using injected timers and caps prompt expiry at ten minutes', async () => {
+  const fake = createFakeChild();
+  const timers = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    now: () => 2000,
+    randomId: () => 'session-1',
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; }
+  });
+
+  manager.startLogin();
+  fake.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":9999}\n');
+  await tick();
+  assert.equal(manager.getSession('session-1').expiresAt, 602000);
+  assert.equal(timers[0].delay, 600000);
+
+  const expiryTimer = timers.find(timer => timer.delay === 600000 && !timer.cleared);
+  expiryTimer.callback();
+  assert.equal(fake.killed, true);
+  assert.equal(manager.getSession('session-1').status, 'expired');
+  assert.equal(timers.at(-1).delay, 300000);
+});
+
+test('marks premature process close and spawn errors as failed without leaking output', () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'closed-session'
+  });
+  manager.startLogin();
+  fake.stderr.write('accessToken=TEST_PROCESS_SECRET');
+  fake.emit('close', 1);
+  const failed = manager.getSession('closed-session');
+  assert.equal(failed.status, 'failed');
+  assert.equal(JSON.stringify(failed).includes('TEST_PROCESS_SECRET'), false);
+
+  const throwing = createRedappAuthManager({
+    spawnCli: () => { throw new Error('TEST_SPAWN_SECRET'); },
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'spawn-session'
+  });
+  assert.equal(throwing.startLogin().status, 'failed');
+  assert.equal(JSON.stringify(throwing.getSession('spawn-session')).includes('TEST_SPAWN_SECRET'), false);
+});
+
+test('clears temporary session state when spawn throws or returns an unusable child', () => {
+  for (const [id, spawnCli] of [
+    ['throw-session', () => { throw new Error('TEST_SPAWN_SECRET'); }],
+    ['null-session', () => null],
+    ['malformed-session', () => ({})]
+  ]) {
+    const manager = createRedappAuthManager({
+      spawnCli,
+      runCli: () => ({ credentials: { loggedIn: false } }),
+      readFile: () => Buffer.from('png'),
+      randomId: () => id
+    });
+
+    assert.equal(manager.startLogin().status, 'failed');
+    const retained = manager.getSession(id);
+    assert.equal(retained.status, 'failed');
+    assert.equal(JSON.stringify(retained).includes('TEST_SPAWN_SECRET'), false);
+  }
+});
+
+test('removes terminal sessions after five minutes', () => {
+  const fake = createFakeChild();
+  const timers = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1',
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer() {}
+  });
+
+  manager.startLogin();
+  manager.cancelLogin('session-1');
+  assert.equal(timers.at(-1).delay, 300000);
+  timers.at(-1).callback();
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('dispose kills active children, clears timers, and removes every session', async () => {
+  const activeChild = createFakeChild();
+  const terminalChild = createFakeChild();
+  const timers = [];
+  let nextId = 0;
+  let nextChild = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => [terminalChild, activeChild][nextChild++],
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => `session-${++nextId}`,
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; }
+  });
+
+  manager.startLogin();
+  terminalChild.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":10}\n');
+  await tick();
+  manager.cancelLogin('session-1');
+  manager.startLogin();
+  manager.dispose();
+
+  assert.equal(activeChild.killed, true);
+  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('session-2'), null);
+  assert.equal(timers.every(timer => timer.cleared), true);
+});
+
+test('projects credential status and logout results through safe DTOs', () => {
+  const calls = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: args => {
+      calls.push(args);
+      return {
+        status: 'ok',
+        credentials: {
+          available: true,
+          loggedIn: true,
+          openIdMasked: 'ob12…7890',
+          scope: ['base_info'],
+          expireTimeMs: null,
+          refreshExpireTimeMs: null,
+          needsReauth: false,
+          accessToken: 'TEST_AUTH_SECRET'
+        }
+      };
+    },
+    readFile: () => Buffer.from('png')
+  });
+
+  for (const result of [manager.getStatus(), manager.logout()]) {
+    assert.equal(result.loggedIn, true);
+    assert.equal(result.openIdMasked, 'ob12…7890');
+    assert.equal(JSON.stringify(result).includes('TEST_AUTH_SECRET'), false);
+  }
+  assert.deepEqual(calls, [['whoami'], ['logout']]);
+});
+
+test('preserves already-sanitized auth DTOs and drops raw or unknown fields', async () => {
+  const safeCredentials = {
+    available: true,
+    loggedIn: true,
+    openIdMasked: 'ob12…7890',
+    scope: ['base_info', 42],
+    expireTimeMs: 4102444800000,
+    refreshExpireTimeMs: 4102448400000,
+    needsReauth: false,
+    openId: 'ob1234567890',
+    accessToken: 'TEST_AUTH_SECRET',
+    unknown: 'TEST_UNKNOWN_SECRET'
+  };
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ status: 'ok', credentials: safeCredentials }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  const expected = {
+    available: true,
+    loggedIn: true,
+    openIdMasked: 'ob12…7890',
+    scope: ['base_info'],
+    expireTimeMs: 4102444800000,
+    refreshExpireTimeMs: 4102448400000,
+    needsReauth: false
+  };
+  assert.deepEqual(manager.getStatus(), expected);
+  assert.deepEqual(manager.logout(), expected);
+
+  manager.startLogin();
+  fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: safeCredentials })}\n`);
+  await tick();
+  assert.deepEqual(manager.getSession('session-1').auth, expected);
+  const exposed = JSON.stringify(manager.getSession('session-1'));
+  assert.equal(exposed.includes('ob1234567890'), false);
+  assert.equal(exposed.includes('TEST_AUTH_SECRET'), false);
+  assert.equal(exposed.includes('TEST_UNKNOWN_SECRET'), false);
+});
+
+test('ignores late prompts and replaces prompt expiry timers safely', async () => {
+  const fake = createFakeChild();
+  const timers = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    now: () => 1000,
+    randomId: () => 'session-1',
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; }
+  });
+
+  manager.startLogin();
+  fake.stdout.write('PROMPT:{"qrCodePath":"first.png","expiresInSeconds":10}\n');
+  await tick();
+  fake.stdout.write('PROMPT:{"qrCodePath":"second.png","expiresInSeconds":20}\n');
+  await tick();
+  assert.equal(timers[0].cleared, true);
+  assert.equal(timers[1].cleared, true);
+  assert.equal(timers[2].delay, 20000);
+
+  manager.cancelLogin('session-1');
+  fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":30}\n');
+  await tick();
+  assert.equal(manager.getSession('session-1').status, 'cancelled');
+});
+
+test('expires a session that never emits a prompt', () => {
+  const fake = createFakeChild();
+  const timers = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1',
+    setTimer: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.at(-1);
+    },
+    clearTimer() {}
+  });
+
+  manager.startLogin();
+  assert.equal(timers[0].delay, 600000);
+  timers[0].callback();
+  assert.equal(fake.killed, true);
+  assert.equal(manager.getSession('session-1').status, 'expired');
+});
+
+test('drains stderr and does not schedule cleanup after disposal close', () => {
+  const fake = createFakeChild();
+  const timers = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1',
+    setTimer: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.at(-1);
+    },
+    clearTimer() {}
+  });
+
+  manager.startLogin();
+  assert.ok(fake.stderr.listenerCount('data') > 0);
+  manager.dispose();
+  const timerCount = timers.length;
+  fake.emit('close', 0);
+  assert.equal(timers.length, timerCount);
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('cleans up child streams and listeners on done and process error', async () => {
+  for (const terminalEvent of ['done', 'error']) {
+    const fake = createFakeChild();
+    const manager = createRedappAuthManager({
+      spawnCli: () => fake,
+      runCli: () => ({ credentials: { loggedIn: false } }),
+      readFile: () => Buffer.from('png'),
+      randomId: () => `${terminalEvent}-session`
+    });
+
+    manager.startLogin();
+    if (terminalEvent === 'done') {
+      fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
+      await tick();
+    } else {
+      fake.emit('error', new Error('TEST_CHILD_SECRET'));
+    }
+
+    const terminal = manager.getSession(`${terminalEvent}-session`);
+    assert.equal(terminal.status, terminalEvent === 'done' ? 'done' : 'failed');
+    assert.equal(fake.killed, true);
+    assert.equal(fake.stdout.listenerCount('data'), 0);
+    assert.equal(fake.stderr.listenerCount('data'), 0);
+    assert.equal(fake.listenerCount('error'), 0);
+    assert.equal(fake.listenerCount('close'), 0);
+
+    fake.stdout.write('PROMPT:{"qrCodePath":"late.png"}\n');
+    fake.emit('close', 1);
+    await tick();
+    assert.equal(manager.getSession(`${terminalEvent}-session`).status, terminal.status);
+    assert.equal(fake.killCount, 1);
+  }
+});
+
+test('logout atomically invalidates sessions and ignores all late child events', async () => {
+  const fake = createFakeChild();
+  const calls = [];
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: args => {
+      calls.push(args);
+      assert.equal(manager.getSession('session-1'), null);
+      assert.equal(fake.killed, true);
+      return { credentials: { loggedIn: false } };
+    },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.startLogin();
+  assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
+  const result = manager.logout();
+  assert.deepEqual(calls, [['logout']]);
+  assert.equal(result.loggedIn, false);
+  assert.equal(manager.getSession('session-1'), null);
+
+  fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":10}\n');
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
+  fake.emit('close', 0);
+  await tick();
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('accepts a chunk over 64 KiB when every complete line is short', () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.startLogin();
+  fake.stdout.write(Buffer.from('noise\n'.repeat(11000)));
+  assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
+  assert.equal(fake.killed, false);
+});
+
+test('fails safely when an individual complete stdout line exceeds 64 KiB', () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.startLogin();
+  fake.stdout.write(Buffer.from(`TEST_OUTPUT_SECRET${'x'.repeat(64 * 1024)}\n`));
+  const failed = manager.getSession('session-1');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, '登录进程输出异常');
+  assert.equal(fake.killed, true);
+  assert.equal(JSON.stringify(failed).includes('TEST_OUTPUT_SECRET'), false);
+});
+
+test('fails generically and kills the child when an unterminated stdout line exceeds 64 KiB', () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.startLogin();
+  fake.stdout.write(Buffer.from(`TEST_OUTPUT_SECRET${'x'.repeat(64 * 1024)}`));
+  const failed = manager.getSession('session-1');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, '登录进程输出异常');
+  assert.equal(fake.killed, true);
+  assert.equal(JSON.stringify(failed).includes('TEST_OUTPUT_SECRET'), false);
+});
+
+test('keeps every work-creating method closed after disposal', () => {
+  let spawnCount = 0;
+  let runCount = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => { spawnCount += 1; return createFakeChild(); },
+    runCli: () => { runCount += 1; return { credentials: { loggedIn: false } }; },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.dispose();
+  for (const call of [
+    () => manager.startLogin(),
+    () => manager.getStatus(),
+    () => manager.cancelLogin('session-1'),
+    () => manager.logout()
+  ]) {
+    assert.throws(call, { message: '授权管理器已关闭' });
+  }
+  assert.equal(spawnCount, 0);
+  assert.equal(runCount, 0);
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('rejects login starts permanently after disposal', () => {
+  let spawnCount = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => { spawnCount += 1; return createFakeChild(); },
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.dispose();
+  assert.throws(() => manager.startLogin(), { message: '授权管理器已关闭' });
+  assert.equal(spawnCount, 0);
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('decodes split UTF-8 characters in prompt and result lines', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+
+  manager.startLogin();
+  const prompt = Buffer.from('PROMPT:{"qrCodePath":"x.png","userCode":"授权码"}\n');
+  const promptSplit = prompt.indexOf(Buffer.from('授')) + 1;
+  fake.stdout.write(prompt.subarray(0, promptSplit));
+  fake.stdout.write(prompt.subarray(promptSplit));
+  await tick();
+  assert.equal(manager.getSession('session-1').status, 'waiting_scan');
+  assert.equal(manager.getSession('session-1').userCode, '授权码');
+
+  const result = Buffer.from('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"scope":"基础信息"}}\n');
+  const resultSplit = result.indexOf(Buffer.from('基')) + 1;
+  fake.stdout.write(result.subarray(0, resultSplit));
+  fake.stdout.write(result.subarray(resultSplit));
+  await tick();
+  const done = manager.getSession('session-1');
+  assert.equal(done.status, 'done');
+  assert.deepEqual(done.auth.scope, ['基础信息']);
+});
 
 test('parses PROMPT and RESULT_JSON lines', () => {
   const parsed = parseTaggedOutput([
