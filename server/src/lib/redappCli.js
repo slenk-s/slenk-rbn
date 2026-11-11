@@ -2,15 +2,17 @@
 // 再按 Skill 的 dry-run → confirm 两段式执行 upload / preview，解析 RESULT_JSON 回执。
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { paths } from '../paths.js';
 
-const SKILL_GATE = path.join(os.homedir(), '.claude', 'skills', 'redapp-cli', 'scripts', 'ensure-cli.mjs');
+export const redappSkillGatePath = path.join(paths.root, '.skills', 'redapp-cli', 'scripts', 'ensure-cli.mjs');
 const NPM_HOME = path.join(paths.dataDir, 'redapp-npm');
 const NPM_PREFIX = path.join(NPM_HOME, 'prefix');
 const NPM_CACHE = path.join(NPM_HOME, 'cache');
 const CLI_ENTRY = path.join(NPM_PREFIX, 'node_modules', 'redskillhub-upload', 'cli', 'redapp', 'index.mjs');
+
+const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
+const MAX_QR_BYTES = 2 * 1024 * 1024;
 
 function npmEnv() {
   return {
@@ -35,6 +37,82 @@ function spawnNode(args, timeoutMs) {
     error: r.error || null
   };
 }
+
+export function createAsyncProcessRunner({
+  spawnProcess = spawn,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  maxOutputBytes = MAX_PROCESS_OUTPUT_BYTES
+} = {}) {
+  return function runNodeAsync(args, timeoutMs) {
+    return new Promise(resolve => {
+      let child;
+      const stdoutChunks = [];
+      const stderrChunks = [];
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let timer = null;
+      let settled = false;
+
+      const append = (chunks, byteCount, chunk) => {
+        const remaining = maxOutputBytes - byteCount;
+        if (remaining <= 0) return byteCount;
+        const incoming = Buffer.from(chunk);
+        const accepted = incoming.subarray(0, remaining);
+        chunks.push(accepted);
+        return byteCount + accepted.length;
+      };
+      const onStdout = chunk => { stdoutBytes = append(stdoutChunks, stdoutBytes, chunk); };
+      const onStderr = chunk => { stderrBytes = append(stderrChunks, stderrBytes, chunk); };
+      const cleanup = () => {
+        if (timer !== null) {
+          clearTimer(timer);
+          timer = null;
+        }
+        child?.stdout?.off?.('data', onStdout);
+        child?.stderr?.off?.('data', onStderr);
+        child?.off?.('error', onError);
+        child?.off?.('close', onClose);
+      };
+      const finalize = (status, errorMarker, kill = false) => {
+        if (settled) return;
+        settled = true;
+        if (kill) {
+          try { child?.kill?.(); } catch {}
+        }
+        cleanup();
+        resolve({
+          status,
+          stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
+          stderr: Buffer.concat(stderrChunks, stderrBytes).toString('utf8'),
+          error: errorMarker ? new Error(errorMarker) : null
+        });
+      };
+      const onError = () => finalize(null, 'process_error', true);
+      const onClose = status => finalize(status, null);
+
+      try {
+        child = spawnProcess(process.execPath, args, {
+          env: npmEnv(),
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+      } catch {
+        finalize(null, 'process_error');
+        return;
+      }
+
+      child.stdout?.on?.('data', onStdout);
+      child.stderr?.on?.('data', onStderr);
+      child.on('error', onError);
+      child.on('close', onClose);
+      timer = setTimer(() => finalize(null, 'timeout', true), timeoutMs);
+      timer?.unref?.();
+    });
+  };
+}
+
+const spawnNodeAsync = createAsyncProcessRunner();
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -89,6 +167,7 @@ function sanitizeResult(value) {
   if (!isRecord(value)) return {};
   const safe = {};
   assignBoundedString(safe, value, 'status', 64);
+  assignBoundedString(safe, value, 'code', 128);
   assignBoundedString(safe, value, 'command', 128);
   if (Object.hasOwn(value, 'credentials')) safe.credentials = sanitizeCredentials(value.credentials);
   if (isRecord(value.plan)) {
@@ -179,10 +258,75 @@ export function createRedappCliEnsurer({ gateExists, cliExists, prepareCache, ex
 }
 
 export const ensureRedappCli = createRedappCliEnsurer({
-  gateExists: () => fs.existsSync(SKILL_GATE),
+  gateExists: () => fs.existsSync(redappSkillGatePath),
   cliExists: () => fs.existsSync(CLI_ENTRY),
   prepareCache: () => fs.mkdirSync(NPM_CACHE, { recursive: true }),
-  executeGate: () => spawnNode([SKILL_GATE], 180 * 1000)
+  executeGate: () => spawnNode([redappSkillGatePath], 180 * 1000)
+});
+
+export function createRedappCliEnsurerAsync({ gateExists, cliExists, prepareCache, executeGate }) {
+  return async function ensureCliAsync() {
+    if (!gateExists()) throw new Error('redapp-cli Skill 未安装');
+    prepareCache();
+    const r = await executeGate();
+    if (r.error || r.status !== 0) throw new Error('CLI 版本门禁执行失败');
+    const verdict = extractTaggedLine(String(r.stdout || '') + '\n' + String(r.stderr || ''), 'CLI_VERSION_JSON');
+    if (!verdict) throw new Error('CLI 版本门禁输出无法解析');
+    if (!['current', 'installed', 'updated'].includes(verdict.status)) throw new Error('CLI 版本门禁未通过');
+    if (!cliExists()) throw new Error('redapp CLI 入口不存在');
+    return { status: verdict.status };
+  };
+}
+
+export const ensureRedappCliAsync = createRedappCliEnsurerAsync({
+  gateExists: () => fs.existsSync(redappSkillGatePath),
+  cliExists: () => fs.existsSync(CLI_ENTRY),
+  prepareCache: () => fs.mkdirSync(NPM_CACHE, { recursive: true }),
+  executeGate: () => spawnNodeAsync([redappSkillGatePath], 180 * 1000)
+});
+
+export async function spawnRedappLogin() {
+  await ensureRedappCliAsync();
+  return spawn(process.execPath, [CLI_ENTRY, 'login', '--agent'], {
+    env: npmEnv(),
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+}
+
+export function createRedappQrReader({ open, maxBytes = MAX_QR_BYTES }) {
+  return function readQrFile(filePath) {
+    let handle;
+    try {
+      handle = open(filePath, 'r');
+      const stat = handle.stat();
+      if (!stat.isFile() || stat.size > maxBytes) throw new Error('二维码文件无效');
+      const image = Buffer.alloc(Math.min(stat.size + 1, maxBytes + 1));
+      const bytesRead = handle.read(image, 0, image.length, 0);
+      if (bytesRead !== stat.size || bytesRead > maxBytes) throw new Error('二维码文件无效');
+      const result = image.subarray(0, bytesRead);
+      const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      if (result.length < pngSignature.length || !result.subarray(0, pngSignature.length).equals(pngSignature)) {
+        throw new Error('二维码文件无效');
+      }
+      return result;
+    } catch {
+      throw new Error('二维码文件无效');
+    } finally {
+      try { handle?.close(); } catch {}
+    }
+  };
+}
+
+export const readRedappQrFile = createRedappQrReader({
+  open(filePath, flags) {
+    const fd = fs.openSync(filePath, flags);
+    return {
+      stat: () => fs.fstatSync(fd),
+      read: (buffer, offset, length, position) => fs.readSync(fd, buffer, offset, length, position),
+      close: () => fs.closeSync(fd)
+    };
+  }
 });
 
 // 未门禁的执行原语只供版本检查后的公共 runner 使用。
@@ -191,13 +335,21 @@ function runRedappCommandUngated(args, { timeoutMs = 120 * 1000 } = {}) {
 }
 
 function parseCommandExecution(execution = {}) {
-  if (execution.error || execution.status !== 0) throw new Error('redapp 命令执行失败');
+  if (execution.error) throw new Error('redapp 命令执行失败');
+  if (!Number.isFinite(execution.status) || !Number.isInteger(execution.status)) {
+    throw new Error('redapp 命令执行失败');
+  }
   const output = String(execution.stdout || '') + '\n' + String(execution.stderr || '');
   const parsed = parseTaggedOutput(output);
+  const result = parsed.results.at(-1);
+  const isAuthRequired = result?.status === 'error'
+    && result.code === 'AUTH_REQUIRED'
+    && Object.keys(result).length === 2;
+  if (isAuthRequired) return result;
+  if (execution.status !== 0) throw new Error('redapp 命令执行失败');
   if (parsed.prompts.length > 0) {
     throw new Error('redapp 需要重新登录授权，请在终端完成 redapp login 后再试');
   }
-  const result = parsed.results.at(-1);
   if (!result) throw new Error('redapp 未返回可解析的结果');
   if (result.status === 'error') throw new Error('redapp 执行失败');
   return result;
@@ -209,6 +361,22 @@ export function createRedappCommandRunner({ ensureCli, execute }) {
     return parseCommandExecution(execute(args, options));
   };
 }
+
+export function createRedappCommandRunnerAsync({ ensureCli, execute }) {
+  return async function run(args, options) {
+    await ensureCli();
+    return parseCommandExecution(await execute(args, options));
+  };
+}
+
+function runRedappCommandUngatedAsync(args, { timeoutMs = 120 * 1000 } = {}) {
+  return spawnNodeAsync([CLI_ENTRY, ...args, '--agent'], timeoutMs);
+}
+
+export const runRedappCommandAsync = createRedappCommandRunnerAsync({
+  ensureCli: ensureRedappCliAsync,
+  execute: runRedappCommandUngatedAsync
+});
 
 // 公共执行边界始终先通过版本门禁，再执行 redapp 业务命令。
 export const runRedappCommand = createRedappCommandRunner({

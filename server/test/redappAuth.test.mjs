@@ -2,14 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import path from 'node:path';
 import { createRedappAuthManager } from '../src/lib/redappAuth.js';
+import { paths } from '../src/paths.js';
 import {
+  createAsyncProcessRunner,
   createRedappCliEnsurer,
+  createRedappCliEnsurerAsync,
   createRedappCommandRunner,
+  createRedappCommandRunnerAsync,
   createRedappOperations,
+  createRedappQrReader,
   parseTaggedOutput,
+  redappSkillGatePath,
   sanitizeCredentials
 } from '../src/lib/redappCli.js';
+
+let createRedappAuthRouter;
+let createMiniToolPublishHandler;
+let publishQueue;
+
+test.before(async () => {
+  process.env.TEST_DATABASE_URL ||= 'postgres://test:test@127.0.0.1:1/test?sslmode=disable';
+  ({ createRedappAuthRouter } = await import('../src/routes/redappAuth.js'));
+  ({ createMiniToolPublishHandler, publishQueue } = await import('../src/routes/publish.js'));
+});
+
+test.after(async () => {
+  await publishQueue.disconnect();
+});
 
 function createFakeChild() {
   const child = new EventEmitter();
@@ -28,6 +49,546 @@ function createFakeChild() {
 function tick() {
   return new Promise(resolve => setImmediate(resolve));
 }
+
+function createResponse() {
+  return {
+    statusCode: 200,
+    body: undefined,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; }
+  };
+}
+
+async function invokeHandler(handler, body = {}) {
+  const response = createResponse();
+  await handler({ body }, response, error => { throw error; });
+  return response;
+}
+
+test('maps only CLI AUTH_REQUIRED to safe available logged-out status', async () => {
+  const parsed = parseTaggedOutput('RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED","message":"TEST_AUTH_SECRET"}');
+  assert.deepEqual(parsed.results, [{ status: 'error', code: 'AUTH_REQUIRED' }]);
+  assert.equal(JSON.stringify(parsed).includes('TEST_AUTH_SECRET'), false);
+  assert.equal(parseTaggedOutput(`RESULT_JSON:${JSON.stringify({ status: 'error', code: 'x'.repeat(256) })}`).results[0].code.length, 128);
+
+  const runCli = createRedappCommandRunnerAsync({
+    ensureCli: async () => ({ status: 'current' }),
+    execute: async () => ({
+      status: 0,
+      stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED","message":"TEST_AUTH_SECRET"}',
+      stderr: '',
+      error: null
+    })
+  });
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli,
+    readFile: () => Buffer.from('qr')
+  });
+  assert.deepEqual(await manager.getStatus(), {
+    available: true,
+    loggedIn: false,
+    openIdMasked: null,
+    scope: [],
+    expireTimeMs: null,
+    refreshExpireTimeMs: null,
+    needsReauth: true
+  });
+});
+
+test('nonzero exact AUTH_REQUIRED remains a safe available logged-out status', async () => {
+  const runCli = createRedappCommandRunnerAsync({
+    ensureCli: async () => ({ status: 'current' }),
+    execute: async () => ({
+      status: 17,
+      stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED","message":"TEST_AUTH_SECRET"}',
+      stderr: '',
+      error: null
+    })
+  });
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli,
+    readFile: () => Buffer.from('qr')
+  });
+
+  assert.deepEqual(await manager.getStatus(), {
+    available: true,
+    loggedIn: false,
+    openIdMasked: null,
+    scope: [],
+    expireTimeMs: null,
+    refreshExpireTimeMs: null,
+    needsReauth: true
+  });
+});
+
+test('execution errors and non-AUTH_REQUIRED nonzero results stay unavailable', async () => {
+  const executions = [
+    { status: 17, stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED"}', stderr: '', error: new Error('compromised') },
+    { status: 17, stdout: 'RESULT_JSON:{"status":"error","code":"OTHER"}', stderr: '', error: null },
+    { status: 17, stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED","command":"whoami"}', stderr: '', error: null },
+    { status: 17, stdout: 'RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}', stderr: '', error: null },
+    { status: 17, stdout: 'RESULT_JSON:{malformed', stderr: '', error: null }
+  ];
+
+  for (const execution of executions) {
+    const runCli = createRedappCommandRunnerAsync({
+      ensureCli: async () => ({ status: 'current' }),
+      execute: async () => execution
+    });
+    await assert.rejects(() => runCli(['whoami']), /redapp 命令执行失败/);
+  }
+});
+
+test('exact AUTH_REQUIRED rejects abnormal process statuses', async () => {
+  for (const status of [null, undefined, '1', NaN, Infinity]) {
+    const runCli = createRedappCommandRunnerAsync({
+      ensureCli: async () => ({ status: 'current' }),
+      execute: async () => ({
+        status,
+        stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED"}',
+        stderr: '',
+        error: null
+      })
+    });
+    await assert.rejects(() => runCli(['whoami']), { message: 'redapp 命令执行失败' });
+  }
+});
+
+test('null process status projects manager status as unavailable', async () => {
+  const runCli = createRedappCommandRunnerAsync({
+    ensureCli: async () => ({ status: 'current' }),
+    execute: async () => ({
+      status: null,
+      stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED"}',
+      stderr: '',
+      error: null
+    })
+  });
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli,
+    readFile: () => Buffer.from('qr')
+  });
+
+  assert.deepEqual(await manager.getStatus(), {
+    available: false,
+    loggedIn: false,
+    openIdMasked: null,
+    scope: [],
+    expireTimeMs: null,
+    refreshExpireTimeMs: null,
+    needsReauth: true,
+    error: 'redapp CLI 不可用'
+  });
+});
+
+test('null process status publish returns unavailable before all work', async () => {
+  const calls = [];
+  const runCli = createRedappCommandRunnerAsync({
+    ensureCli: async () => ({ status: 'current' }),
+    execute: async () => ({
+      status: null,
+      stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED"}',
+      stderr: '',
+      error: null
+    })
+  });
+  const manager = createRedappAuthManager({
+    spawnCli: () => { calls.push('login'); return createFakeChild(); },
+    runCli,
+    readFile: () => Buffer.from('qr')
+  });
+  const handler = createMiniToolPublishHandler({
+    authManager: manager,
+    buildMiniToolZip: async () => { calls.push('build'); },
+    runAudit: () => { calls.push('audit'); return { output: '' }; },
+    uploadPackage: async () => { calls.push('upload'); },
+    createPreview: async () => { calls.push('preview'); }
+  });
+
+  const response = await invokeHandler(handler, { title: '标题', images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.body, { error: 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
+  assert.deepEqual(calls, []);
+  manager.dispose();
+});
+
+test('nonzero AUTH_REQUIRED publish starts login before build audit upload or preview', async () => {
+  const calls = [];
+  const runCli = createRedappCommandRunnerAsync({
+    ensureCli: async () => ({ status: 'current' }),
+    execute: async () => ({ status: 17, stdout: 'RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED"}', stderr: '', error: null })
+  });
+  const manager = createRedappAuthManager({
+    spawnCli: () => { calls.push('login'); return createFakeChild(); },
+    runCli,
+    readFile: () => Buffer.from('qr')
+  });
+  const handler = createMiniToolPublishHandler({
+    authManager: manager,
+    buildMiniToolZip: async () => { calls.push('build'); },
+    runAudit: () => { calls.push('audit'); return { output: '' }; },
+    uploadPackage: async () => { calls.push('upload'); },
+    createPreview: async () => { calls.push('preview'); }
+  });
+  const response = await invokeHandler(handler, { title: '标题', images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.code, 'AUTH_REQUIRED');
+  assert.equal(response.body.auth.status, 'waiting_prompt');
+  assert.deepEqual(calls, ['login']);
+  manager.dispose();
+});
+
+test('production skill gate is rooted in the repository and independent of user skill junctions', () => {
+  assert.equal(redappSkillGatePath, path.join(paths.root, '.skills', 'redapp-cli', 'scripts', 'ensure-cli.mjs'));
+  assert.equal(redappSkillGatePath.includes(path.join('.claude', 'skills')), false);
+});
+
+test('async process runner finalizes error without close and removes listeners', async () => {
+  const child = createFakeChild();
+  const run = createAsyncProcessRunner({ spawnProcess: () => child });
+  const resultPromise = run(['fake'], 1000);
+  child.emit('error', new Error('TEST_PROCESS_SECRET'));
+  const result = await resultPromise;
+  assert.equal(result.status, null);
+  assert.equal(result.error?.message, 'process_error');
+  assert.equal(child.listenerCount('error'), 0);
+  assert.equal(child.listenerCount('close'), 0);
+  assert.equal(child.stdout.listenerCount('data'), 0);
+  assert.equal(child.stderr.listenerCount('data'), 0);
+});
+
+test('async process runner timeout kills and settles without close', async () => {
+  const child = createFakeChild();
+  let timeoutCallback;
+  const cleared = [];
+  const timer = { unref() {} };
+  const run = createAsyncProcessRunner({
+    spawnProcess: () => child,
+    setTimer(callback) { timeoutCallback = callback; return timer; },
+    clearTimer(value) { cleared.push(value); }
+  });
+  const resultPromise = run(['fake'], 10);
+  timeoutCallback();
+  const result = await resultPromise;
+  assert.equal(child.killCount, 1);
+  assert.equal(result.error?.message, 'timeout');
+  assert.deepEqual(cleared, [timer]);
+  assert.equal(child.listenerCount('close'), 0);
+});
+
+test('async process runner close clears timer, caps output, and ignores late terminals', async () => {
+  const child = createFakeChild();
+  const baselineErrorHandler = () => {};
+  child.on('error', baselineErrorHandler);
+  let timeoutCallback;
+  let resolveCount = 0;
+  const timer = { unref() {} };
+  const cleared = [];
+  const run = createAsyncProcessRunner({
+    spawnProcess: () => child,
+    setTimer(callback) { timeoutCallback = callback; return timer; },
+    clearTimer(value) { cleared.push(value); },
+    maxOutputBytes: 4
+  });
+  const resultPromise = run(['fake'], 10).then(result => { resolveCount += 1; return result; });
+  child.stdout.write('abcdef');
+  child.stderr.write('uvwxyz');
+  child.emit('close', 0);
+  const result = await resultPromise;
+  assert.deepEqual(result, { status: 0, stdout: 'abcd', stderr: 'uvwx', error: null });
+  assert.deepEqual(cleared, [timer]);
+  assert.equal(child.listenerCount('error'), 1);
+  assert.equal(child.listeners('error')[0], baselineErrorHandler);
+  assert.equal(child.listenerCount('close'), 0);
+  assert.doesNotThrow(() => child.emit('close', 9));
+  assert.doesNotThrow(() => child.emit('error', new Error('late')));
+  timeoutCallback();
+  await tick();
+  assert.equal(resolveCount, 1);
+  assert.equal(child.killCount, 0);
+});
+
+test('async process runner captures many tiny chunks exactly up to each byte cap', async () => {
+  const child = createFakeChild();
+  const run = createAsyncProcessRunner({ spawnProcess: () => child, maxOutputBytes: 4097 });
+  const pending = run(['fake'], 1000);
+
+  for (let index = 0; index < 5000; index += 1) {
+    child.stdout.write(Buffer.from([97 + (index % 26)]));
+    child.stderr.write(Buffer.from([65 + (index % 26)]));
+  }
+  child.emit('close', 0);
+
+  const result = await pending;
+  assert.equal(Buffer.byteLength(result.stdout), 4097);
+  assert.equal(Buffer.byteLength(result.stderr), 4097);
+  assert.equal(result.stdout, Array.from({ length: 4097 }, (_, index) => String.fromCharCode(97 + (index % 26))).join(''));
+  assert.equal(result.stderr, Array.from({ length: 4097 }, (_, index) => String.fromCharCode(65 + (index % 26))).join(''));
+});
+
+test('async process runner safely handles missing output streams and synchronous spawn throws', async () => {
+  const streamless = new EventEmitter();
+  streamless.kill = () => true;
+  const runStreamless = createAsyncProcessRunner({ spawnProcess: () => streamless });
+  const pending = runStreamless(['fake'], 1000);
+  streamless.emit('close', 0);
+  assert.deepEqual(await pending, { status: 0, stdout: '', stderr: '', error: null });
+
+  const runThrowing = createAsyncProcessRunner({ spawnProcess: () => { throw new Error('TEST_SPAWN_SECRET'); } });
+  const thrown = await runThrowing(['fake'], 1000);
+  assert.equal(thrown.error?.message, 'process_error');
+  assert.equal(JSON.stringify(thrown).includes('TEST_SPAWN_SECRET'), false);
+});
+
+test('projects CLI failures as a safe unavailable auth status', async () => {
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: () => { throw new Error('secret credential path C:/private/token.json'); },
+    readFile: () => Buffer.from('qr')
+  });
+  assert.deepEqual(await manager.getStatus(), {
+    available: false,
+    loggedIn: false,
+    openIdMasked: null,
+    scope: [],
+    expireTimeMs: null,
+    refreshExpireTimeMs: null,
+    needsReauth: true,
+    error: 'redapp CLI 不可用'
+  });
+});
+
+test('minitool publish returns AUTH_REQUIRED before building files', async () => {
+  let built = false;
+  const handler = createMiniToolPublishHandler({
+    authManager: {
+      getStatus: () => ({ available: true, loggedIn: false }),
+      startLogin: () => ({ sessionId: 's1', status: 'waiting_scan' })
+    },
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { title: '标题', images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.code, 'AUTH_REQUIRED');
+  assert.deepEqual(response.body.auth, { sessionId: 's1', status: 'waiting_scan' });
+  assert.equal(built, false);
+});
+
+test('minitool publish treats expired credentials as AUTH_REQUIRED before building', async () => {
+  let built = false;
+  const handler = createMiniToolPublishHandler({
+    authManager: {
+      getStatus: () => ({ available: true, loggedIn: true, needsReauth: true }),
+      startLogin: () => ({ sessionId: 'expired', status: 'waiting_prompt' })
+    },
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { title: '标题', images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.code, 'AUTH_REQUIRED');
+  assert.equal(response.body.auth.sessionId, 'expired');
+  assert.equal(built, false);
+});
+
+test('minitool publish returns safe unavailable response before building files', async () => {
+  let built = false;
+  const handler = createMiniToolPublishHandler({
+    authManager: { getStatus: () => ({ available: false, loggedIn: false, error: 'safe unavailable' }) },
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { title: '标题', images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.body, { error: 'safe unavailable', code: 'REDAPP_UNAVAILABLE' });
+  assert.equal(built, false);
+});
+
+test('authorization router applies JWT middleware before route handlers', async () => {
+  let statusCalls = 0;
+  const router = createRedappAuthRouter({
+    authManager: { getStatus: () => { statusCalls += 1; return {}; } },
+    verify: (req, res) => res.status(401).json({ error: 'unauthorized' })
+  });
+  const response = createResponse();
+  const request = { method: 'GET', url: '/', originalUrl: '/', path: '/' };
+  await new Promise((resolve, reject) => {
+    router.handle(request, response, error => error ? reject(error) : resolve());
+    setImmediate(resolve);
+  });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.body, { error: 'unauthorized' });
+  assert.equal(statusCalls, 0);
+});
+
+test('authorization router protects every endpoint and delegates safe manager DTOs', async () => {
+  const calls = [];
+  const manager = {
+    getStatus: () => ({ available: true, loggedIn: false }),
+    startLogin: () => ({ sessionId: 's1', status: 'waiting_prompt' }),
+    getSession: id => id === 's1' ? ({ sessionId: id, status: 'waiting_scan', qrImage: 'data:image/png;base64,cXI=' }) : null,
+    cancelLogin: id => { calls.push(['cancel', id]); return { sessionId: id, status: 'cancelled' }; },
+    logout: () => { calls.push(['logout']); return { available: true, loggedIn: false }; }
+  };
+  const verified = [];
+  const router = createRedappAuthRouter({
+    authManager: manager,
+    verify: (req, res, next) => { verified.push(req.path); next(); }
+  });
+  const stack = router.stack;
+  assert.equal(stack[0].handle, router.stack[0].handle);
+  const route = (method, path) => stack.find(layer => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
+  const requests = [
+    ['get', '/', {}, { available: true, loggedIn: false }],
+    ['post', '/login', {}, { sessionId: 's1', status: 'waiting_prompt' }],
+    ['get', '/session/:id', { params: { id: 's1' } }, { sessionId: 's1', status: 'waiting_scan', qrImage: 'data:image/png;base64,cXI=' }],
+    ['post', '/session/:id/cancel', { params: { id: 's1' } }, { sessionId: 's1', status: 'cancelled' }],
+    ['post', '/logout', {}, { available: true, loggedIn: false }]
+  ];
+  for (const [method, path, request, expected] of requests) {
+    const response = createResponse();
+    await route(method, path)(request, response, error => { throw error; });
+    assert.deepEqual(response.body, expected);
+  }
+  assert.deepEqual(calls, [['cancel', 's1'], ['logout']]);
+});
+
+test('authorization router returns 404 when a session is not found', async () => {
+  const router = createRedappAuthRouter({
+    authManager: { getSession: () => null },
+    verify: (req, res, next) => next()
+  });
+  const handler = router.stack.find(layer => layer.route?.path === '/session/:id' && layer.route.methods.get).route.stack[0].handle;
+  const response = createResponse();
+  await handler({ params: { id: 'missing' } }, response, error => { throw error; });
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'session_not_found' });
+});
+
+test('accepts URL and code only prompts without reading a QR file', async () => {
+  const fake = createFakeChild();
+  let readCount = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => { readCount += 1; throw new Error('must not read'); },
+    now: () => 1000,
+    randomId: () => 'link-session'
+  });
+
+  manager.startLogin();
+  fake.stdout.write('PROMPT:{"authorizeUrl":"https://auth.example/device","userCode":"ABCD-EFGH","expiresInSeconds":30}\n');
+  await tick();
+
+  assert.deepEqual(manager.getSession('link-session'), {
+    sessionId: 'link-session',
+    status: 'waiting_scan',
+    qrImage: null,
+    authorizeUrl: 'https://auth.example/device',
+    userCode: 'ABCD-EFGH',
+    expiresAt: 31000,
+    auth: null,
+    error: null
+  });
+  assert.equal(readCount, 0);
+});
+
+test('accepts URL and code only prompts from stderr without exposing raw output', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => { throw new Error('must not read'); },
+    now: () => 1000,
+    randomId: () => 'stderr-link-session'
+  });
+
+  manager.startLogin();
+  fake.stderr.write('raw secret TEST_STDERR_SECRET\n');
+  fake.stderr.write('PROMPT:{"authorizeUrl":"https://auth.example/device","userCode":"STDERR-CODE","expiresInSeconds":30}\n');
+  await tick();
+
+  const session = manager.getSession('stderr-link-session');
+  assert.equal(session.status, 'waiting_scan');
+  assert.equal(session.authorizeUrl, 'https://auth.example/device');
+  assert.equal(session.userCode, 'STDERR-CODE');
+  assert.equal(JSON.stringify(session).includes('TEST_STDERR_SECRET'), false);
+});
+
+test('accepts successful RESULT_JSON entirely from stderr and releases both streams', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'stderr-result-session'
+  });
+
+  manager.startLogin();
+  fake.stderr.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openIdMasked":"ob12…7890"}}\n');
+  await tick();
+
+  const session = manager.getSession('stderr-result-session');
+  assert.equal(session.status, 'done');
+  assert.equal(session.auth.loggedIn, true);
+  assert.equal(fake.stdout.listenerCount('data'), 0);
+  assert.equal(fake.stderr.listenerCount('data'), 0);
+  assert.equal(fake.listenerCount('close'), 0);
+});
+
+test('decodes split multibyte stderr without mixing stdout fragments', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'stderr-utf8-session'
+  });
+
+  manager.startLogin();
+  fake.stdout.write('PROMPT:{"authorizeUrl":"https://must-not-combine/');
+  const line = Buffer.from('PROMPT:{"authorizeUrl":"https://auth.example/登录","userCode":"中文"}\n');
+  const splitAt = line.indexOf(Buffer.from('登')) + 1;
+  fake.stderr.write(line.subarray(0, splitAt));
+  fake.stderr.write(line.subarray(splitAt));
+  await tick();
+
+  const session = manager.getSession('stderr-utf8-session');
+  assert.equal(session.status, 'waiting_scan');
+  assert.equal(session.authorizeUrl, 'https://auth.example/登录');
+  assert.equal(session.userCode, '中文');
+});
+
+test('fails safely on overlong complete or unterminated stderr lines', async () => {
+  for (const [id, suffix] of [['stderr-complete', '\n'], ['stderr-incomplete', '']]) {
+    const fake = createFakeChild();
+    const manager = createRedappAuthManager({
+      spawnCli: () => fake,
+      runCli: async () => ({ credentials: { loggedIn: false } }),
+      readFile: () => Buffer.from('png'),
+      randomId: () => id
+    });
+
+    manager.startLogin();
+    fake.stderr.write('x'.repeat(64 * 1024 + 1) + suffix);
+    await tick();
+
+    const session = manager.getSession(id);
+    assert.equal(session.status, 'failed');
+    assert.equal(session.error, '登录进程输出异常');
+    assert.equal(JSON.stringify(session).includes('x'.repeat(100)), false);
+  }
+});
 
 test('reuses one active login session and sanitizes completion', async () => {
   const fake = createFakeChild();
@@ -65,7 +626,7 @@ test('reuses one active login session and sanitizes completion', async () => {
   assert.equal(JSON.stringify(done).includes('ob1234567890'), false);
 });
 
-test('cancels locally before invoking the exact remote cancel command', () => {
+test('cancels locally before invoking the exact remote cancel command', async () => {
   const fake = createFakeChild();
   const calls = [];
   const manager = createRedappAuthManager({
@@ -82,7 +643,7 @@ test('cancels locally before invoking the exact remote cancel command', () => {
   });
 
   manager.startLogin();
-  const cancelled = manager.cancelLogin('session-1');
+  const cancelled = await manager.cancelLogin('session-1');
   assert.equal(cancelled.status, 'cancelled');
   assert.deepEqual(calls, [['login', '--cancel']]);
   assert.equal(fake.killed, true);
@@ -224,7 +785,7 @@ test('clears temporary session state when spawn throws or returns an unusable ch
   }
 });
 
-test('removes terminal sessions after five minutes', () => {
+test('removes terminal sessions after five minutes', async () => {
   const fake = createFakeChild();
   const timers = [];
   const manager = createRedappAuthManager({
@@ -241,7 +802,7 @@ test('removes terminal sessions after five minutes', () => {
   });
 
   manager.startLogin();
-  manager.cancelLogin('session-1');
+  await manager.cancelLogin('session-1');
   assert.equal(timers.at(-1).delay, 300000);
   timers.at(-1).callback();
   assert.equal(manager.getSession('session-1'), null);
@@ -269,7 +830,7 @@ test('dispose kills active children, clears timers, and removes every session', 
   manager.startLogin();
   terminalChild.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":10}\n');
   await tick();
-  manager.cancelLogin('session-1');
+  await manager.cancelLogin('session-1');
   manager.startLogin();
   manager.dispose();
 
@@ -279,7 +840,7 @@ test('dispose kills active children, clears timers, and removes every session', 
   assert.equal(timers.every(timer => timer.cleared), true);
 });
 
-test('projects credential status and logout results through safe DTOs', () => {
+test('projects credential status and logout results through safe DTOs', async () => {
   const calls = [];
   const manager = createRedappAuthManager({
     spawnCli: () => createFakeChild(),
@@ -302,7 +863,7 @@ test('projects credential status and logout results through safe DTOs', () => {
     readFile: () => Buffer.from('png')
   });
 
-  for (const result of [manager.getStatus(), manager.logout()]) {
+  for (const result of [await manager.getStatus(), await manager.logout()]) {
     assert.equal(result.loggedIn, true);
     assert.equal(result.openIdMasked, 'ob12…7890');
     assert.equal(JSON.stringify(result).includes('TEST_AUTH_SECRET'), false);
@@ -340,8 +901,8 @@ test('preserves already-sanitized auth DTOs and drops raw or unknown fields', as
     refreshExpireTimeMs: 4102448400000,
     needsReauth: false
   };
-  assert.deepEqual(manager.getStatus(), expected);
-  assert.deepEqual(manager.logout(), expected);
+  assert.deepEqual(await manager.getStatus(), expected);
+  assert.deepEqual(await manager.logout(), expected);
 
   manager.startLogin();
   fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: safeCredentials })}\n`);
@@ -379,7 +940,7 @@ test('ignores late prompts and replaces prompt expiry timers safely', async () =
   assert.equal(timers[1].cleared, true);
   assert.equal(timers[2].delay, 20000);
 
-  manager.cancelLogin('session-1');
+  await manager.cancelLogin('session-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":30}\n');
   await tick();
   assert.equal(manager.getSession('session-1').status, 'cancelled');
@@ -465,6 +1026,43 @@ test('cleans up child streams and listeners on done and process error', async ()
   }
 });
 
+test('logout invalidates sessions first and rejects with a fixed safe error on CLI failure', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async args => {
+      assert.deepEqual(args, ['logout']);
+      assert.equal(manager.getSession('session-1'), null);
+      assert.equal(fake.killed, true);
+      throw new Error('TEST_LOGOUT_SECRET');
+    },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+  manager.startLogin();
+
+  await assert.rejects(manager.logout(), error => {
+    assert.equal(error.message, 'redapp 退出登录失败');
+    assert.equal(error.message.includes('TEST_LOGOUT_SECRET'), false);
+    return true;
+  });
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('logout router passes failure to middleware without writing a success DTO', async () => {
+  const router = createRedappAuthRouter({
+    authManager: { logout: async () => { throw new Error('redapp 退出登录失败'); } },
+    verify: (req, res, next) => next()
+  });
+  const handler = router.stack.find(layer => layer.route?.path === '/logout').route.stack[0].handle;
+  const response = createResponse();
+  let routedError;
+  await handler({}, response, error => { routedError = error; });
+  await tick();
+  assert.equal(routedError?.message, 'redapp 退出登录失败');
+  assert.equal(response.body, undefined);
+});
+
 test('logout atomically invalidates sessions and ignores all late child events', async () => {
   const fake = createFakeChild();
   const calls = [];
@@ -482,7 +1080,7 @@ test('logout atomically invalidates sessions and ignores all late child events',
 
   manager.startLogin();
   assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
-  const result = manager.logout();
+  const result = await manager.logout();
   assert.deepEqual(calls, [['logout']]);
   assert.equal(result.loggedIn, false);
   assert.equal(manager.getSession('session-1'), null);
@@ -545,7 +1143,7 @@ test('fails generically and kills the child when an unterminated stdout line exc
   assert.equal(JSON.stringify(failed).includes('TEST_OUTPUT_SECRET'), false);
 });
 
-test('keeps every work-creating method closed after disposal', () => {
+test('keeps every work-creating method closed after disposal', async () => {
   let spawnCount = 0;
   let runCount = 0;
   const manager = createRedappAuthManager({
@@ -556,14 +1154,10 @@ test('keeps every work-creating method closed after disposal', () => {
   });
 
   manager.dispose();
-  for (const call of [
-    () => manager.startLogin(),
-    () => manager.getStatus(),
-    () => manager.cancelLogin('session-1'),
-    () => manager.logout()
-  ]) {
-    assert.throws(call, { message: '授权管理器已关闭' });
-  }
+  assert.throws(() => manager.startLogin(), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.getStatus(), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.cancelLogin('session-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.logout(), { message: '授权管理器已关闭' });
   assert.equal(spawnCount, 0);
   assert.equal(runCount, 0);
   assert.equal(manager.getSession('session-1'), null);
@@ -660,6 +1254,85 @@ test('preserves numeric zero expiry and marks it for reauthorization', () => {
   assert.equal(dto.expireTimeMs, 0);
   assert.equal(dto.refreshExpireTimeMs, 0);
   assert.equal(dto.needsReauth, true);
+});
+
+test('async command runner gates before command and stays pending without blocking', async () => {
+  const calls = [];
+  let releaseGate;
+  const pendingGate = new Promise(resolve => { releaseGate = resolve; });
+  const ensureCli = createRedappCliEnsurerAsync({
+    gateExists: () => true,
+    cliExists: () => true,
+    prepareCache() {},
+    executeGate: async () => {
+      calls.push('gate');
+      await pendingGate;
+      return { status: 0, stdout: 'CLI_VERSION_JSON:{"status":"current"}', stderr: '', error: null };
+    }
+  });
+  const run = createRedappCommandRunnerAsync({
+    ensureCli,
+    execute: async args => {
+      calls.push(args);
+      return { status: 0, stdout: 'RESULT_JSON:{"status":"ok","credentials":{"loggedIn":false}}', stderr: '', error: null };
+    }
+  });
+
+  let settled = false;
+  const resultPromise = run(['whoami']).then(value => { settled = true; return value; });
+  await tick();
+  assert.equal(settled, false);
+  assert.deepEqual(calls, ['gate']);
+  releaseGate();
+  assert.equal((await resultPromise).credentials.loggedIn, false);
+  assert.deepEqual(calls, ['gate', ['whoami']]);
+});
+
+test('async command runner rejects bounded execution failures safely', async () => {
+  const run = createRedappCommandRunnerAsync({
+    ensureCli: async () => ({ status: 'current' }),
+    execute: async () => ({ status: null, stdout: 'x'.repeat(1024), stderr: 'TEST_ASYNC_SECRET', error: new Error('timeout') })
+  });
+  await assert.rejects(run(['whoami']), error => {
+    assert.equal(error.message, 'redapp 命令执行失败');
+    assert.equal(error.message.includes('TEST_ASYNC_SECRET'), false);
+    return true;
+  });
+});
+
+test('QR reader uses one handle, enforces strict cap, and validates PNG signature', () => {
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('body')]);
+  const calls = [];
+  const reader = createRedappQrReader({
+    open: () => {
+      calls.push('open');
+      return {
+        stat: () => ({ isFile: () => true, size: png.length }),
+        read: buffer => { png.copy(buffer); return png.length; },
+        close: () => calls.push('close')
+      };
+    }
+  });
+  assert.deepEqual(reader('ignored-path'), png);
+  assert.deepEqual(calls, ['open', 'close']);
+
+  const tooLarge = createRedappQrReader({
+    open: () => ({
+      stat: () => ({ isFile: () => true, size: 2 * 1024 * 1024 + 1 }),
+      read: () => { throw new Error('must not read'); },
+      close() {}
+    })
+  });
+  assert.throws(() => tooLarge('secret-path'), { message: '二维码文件无效' });
+
+  const wrongSignature = createRedappQrReader({
+    open: () => ({
+      stat: () => ({ isFile: () => true, size: 8 }),
+      read: buffer => { Buffer.from('not png!').copy(buffer); return 8; },
+      close() {}
+    })
+  });
+  assert.throws(() => wrongSignature('secret-path'), { message: '二维码文件无效' });
 });
 
 test('blocks business commands when the version gate fails', () => {

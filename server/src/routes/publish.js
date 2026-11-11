@@ -10,7 +10,8 @@ import { nanoid } from 'nanoid';
 import { addTask, updateTask, listTasks } from '../store.js';
 import { verify } from '../auth.js';
 import { buildMiniToolZip } from '../lib/minitoolBuild.js';
-import { ensureRedappCli, uploadPackage, createPreview } from '../lib/redappCli.js';
+import { uploadPackage, createPreview } from '../lib/redappCli.js';
+import { authManager } from './redappAuth.js';
 
 const conn = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 export const publishQueue = new Queue('xhs-publish', { connection: conn });
@@ -78,44 +79,69 @@ function runAudit(target) {
   return { target, output: String(r.stdout || '') + String(r.stderr || '') };
 }
 
-router.post('/minitool', async (req, res, next) => {
-  try {
-    const title = String(req.body?.title || '').trim();
-    const content = String(req.body?.content || '').trim();
-    const tags = Array.isArray(req.body?.tags) ? req.body.tags : [];
-    const images = (Array.isArray(req.body?.images) ? req.body.images : []).map(String).filter(Boolean).slice(0, 9);
-    if (!images.length) return res.status(400).json({ error: '发布需要至少 1 张图片（最多 9 张）' });
-    if (!title && !content) return res.status(400).json({ error: '标题和正文至少填一项' });
+export function createMiniToolPublishHandler({
+  authManager,
+  buildMiniToolZip,
+  runAudit,
+  uploadPackage,
+  createPreview
+}) {
+  return async (req, res, next) => {
+    try {
+      const title = String(req.body?.title || '').trim();
+      const content = String(req.body?.content || '').trim();
+      const tags = Array.isArray(req.body?.tags) ? req.body.tags : [];
+      const images = (Array.isArray(req.body?.images) ? req.body.images : []).map(String).filter(Boolean).slice(0, 9);
+      if (!images.length) return res.status(400).json({ error: '发布需要至少 1 张图片（最多 9 张）' });
+      if (!title && !content) return res.status(400).json({ error: '标题和正文至少填一项' });
 
-    // 1. 打包（图片压缩、note.js 烧入、mini_tool.json 标记）
-    const buildId = nanoid(12);
-    const built = await buildMiniToolZip({ buildId, title, content, tags, imageUrls: images });
+      const auth = await authManager.getStatus();
+      if (!auth.available) {
+        return res.status(503).json({ error: auth.error || 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
+      }
+      if (!auth.loggedIn || auth.needsReauth) {
+        return res.status(401).json({
+          error: '需要连接小红书后继续',
+          code: 'AUTH_REQUIRED',
+          auth: await authManager.startLogin()
+        });
+      }
 
-    // 2. 按 Skill 规范跑产物审计；zip 超 10MiB 是 ERROR，直接拒绝。
-    const audits = [runAudit(built.dir), runAudit(built.zipPath)];
-    const auditLog = audits.map(a => `[${path.basename(a.target)}]\n${a.output.trim()}`).join('\n');
-    if (/^ERROR/m.test(audits[1].output)) {
-      return res.status(422).json({ error: '产物审计未通过：包体超过上传上限', audit: auditLog });
+      const buildId = nanoid(12);
+      const built = await buildMiniToolZip({ buildId, title, content, tags, imageUrls: images });
+
+      const audits = [runAudit(built.dir), runAudit(built.zipPath)];
+      const auditLog = audits.map(a => `[${path.basename(a.target)}]\n${a.output.trim()}`).join('\n');
+      if (/^ERROR/m.test(audits[1].output)) {
+        return res.status(422).json({ error: '产物审计未通过：包体超过上传上限', audit: auditLog });
+      }
+
+      const uploaded = await uploadPackage(built.zipPath);
+      const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
+      const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut });
+
+      const qrPath = preview.qrCodePath && fs.existsSync(preview.qrCodePath) ? preview.qrCodePath : (fs.existsSync(qrOut) ? qrOut : null);
+      const qrImage = qrPath ? 'data:image/png;base64,' + fs.readFileSync(qrPath).toString('base64') : null;
+
+      return res.json({
+        ok: true,
+        qrImage,
+        previewUrl: preview.previewUrl || '',
+        package: { size: built.size, imageCount: built.imageCount },
+        audit: auditLog
+      });
+    } catch (err) {
+      next(err);
     }
+  };
+}
 
-    // 3. CLI 版本门禁 → 上传 → 预览二维码
-    const cli = ensureRedappCli();
-    const uploaded = uploadPackage(built.zipPath);
-    const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
-    const preview = createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut });
-
-    const qrPath = preview.qrCodePath && fs.existsSync(preview.qrCodePath) ? preview.qrCodePath : (fs.existsSync(qrOut) ? qrOut : null);
-    const qrImage = qrPath ? 'data:image/png;base64,' + fs.readFileSync(qrPath).toString('base64') : null;
-
-    res.json({
-      ok: true,
-      qrImage,
-      previewUrl: preview.previewUrl || '',
-      cli: { version: cli.version, status: cli.status },
-      package: { size: built.size, imageCount: built.imageCount },
-      audit: auditLog
-    });
-  } catch (err) {
-    next(err);
-  }
+export const miniToolPublishHandler = createMiniToolPublishHandler({
+  authManager,
+  buildMiniToolZip,
+  runAudit,
+  uploadPackage,
+  createPreview
 });
+
+router.post('/minitool', miniToolPublishHandler);
