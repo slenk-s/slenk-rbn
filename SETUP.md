@@ -36,14 +36,17 @@ npm --prefix web install
 启动（确保 Redis 已运行）：
 
 ```bash
-npm run dev:server   # 后端 API + 静态页面，http://localhost:3001
-npm run dev:queue    # 队列 worker（生图/视频任务）
-npm run dev:web      # 可选：前端开发模式，http://localhost:5173
+start-slenk-notes.bat    # 一键启动：自动探测 Node/Redis，构建前端，启动 API+worker，打开浏览器
+npm run dev:server       # 手动：后端 API + 静态页面，http://localhost:3001
+npm run dev:queue        # 手动：队列 worker（生图/视频任务）
+npm run dev:web          # 可选：前端开发模式，http://localhost:5173
 ```
+
+停止：`stop-slenk-notes.bat`。
 
 不用 dev:web 时先 `npm --prefix web run build`，访问 3001 即可。
 
 ## 注意
 
-- 一键启动 `start-slenk-notes.bat`（或 `start-slenk-notes.ps1`）会自动探测 Node 与 Redis 的位置（winget 包 → PATH → 旧路径 `E:\Redis` / `F:\Node`），无需手动改路径。
+- 一键启动 `start-slenk-notes.bat`（或 `start-slenk-notes.ps1`）会自动探测 Node 与 Redis 的位置（winget 包 → PATH → 旧路径 `E:\Redis` / `F:\Node` / `D:\slenk\YLan\Redis`），无需手动改路径。
 - 首次登录：admin / 123456（云端数据库共享，账号与旧机器一致；登录后建议改密）。

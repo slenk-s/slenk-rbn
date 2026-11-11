@@ -56,19 +56,13 @@ node server/scripts/migrate-app-json.mjs
 - 数据库连接固定做 TLS 校验，CA 使用仓库内的 `server/certs/prod-ca-2021.crt`。Supabase 轮换根证书时必须把该文件替换为新证书，否则连接会在建立阶段直接失败（不会降级为不校验）。
 
 ## 运行
-1. 启动 Redis：`E:\Redis\redis-server.exe redis.windows.conf`
-2. 启动后端：`npm --prefix server run dev`（先在 `.env` 配好 `DATABASE_URL`，见「数据层」一节）
-3. 启动队列 worker：`npm --prefix server run queue`
-4. 启动前端：`npm --prefix web run dev`
-5. 在网页中添加 AI 供应商并填入 API Key
-
-```powershell
-E:\Redis\redis-server.exe redis.windows.conf
-
-npm --prefix server run dev
-npm --prefix server run queue
-npm --prefix web run dev
-```
+1. 一键启动：双击 `start-slenk-notes.bat`（或运行 `start-slenk-notes.ps1`）
+   - 自动探测 Node / Redis（winget 包 → PATH → 旧路径 `E:\Redis`、`D:\slenk\YLan\Redis`）
+   - 自动安装缺失依赖、构建前端、启动 Redis + API(3001) + 队列 worker，最后打开浏览器
+2. 停止：双击 `stop-slenk-notes.bat`（会停止 Node 进程并请求 Redis shutdown）
+3. 手动启动（可选）：`npm --prefix server run dev`（需先在 `.env` 配好 `DATABASE_URL`，见「数据层」一节）
+4. 首次登录：`admin / 123456`
+5. 在网页中添加 AI 供应商并填入 API Key（工作区顶部「AI 供应商」）
 
 ## 本地存储
 当前配置目录：
@@ -77,34 +71,6 @@ npm --prefix web run dev
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/videos`
 
 视频生成通过本地 FFmpeg 处理，默认优先使用 `E:/FFmpeg/ffmpeg.exe`；如果不存在，则回退到项目内置 `ffmpeg-static`。
-## 一键启动
-
-在项目目录双击或运行：
-
-```powershell
-start-slenk-notes.bat
-```
-
-脚本会自动打开 4 个窗口：
-
-- `Slenk Notes - Redis`
-- `Slenk Notes - Server`
-- `Slenk Notes - Queue Worker`
-- `Slenk Notes - Web`
-
-前端启动后访问：
-
-```text
-http://localhost:5173
-```
-
-如果端口已经被占用，先运行：
-
-```powershell
-stop-slenk-notes.bat
-```
-
-然后重新启动。
 
 ## 内置 Skill（小红书小工具）
 
