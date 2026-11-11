@@ -146,6 +146,62 @@ test('protected unknown jobs survive capacity pressure and reject admission', as
   registry.dispose();
 });
 
+test('failed_after_side_effect tombstone survives terminal TTL and is retired only by acknowledgement', async () => {
+  let current = 1_000_000;
+  const registry = createMiniToolPublishJobRegistry({ now: () => current });
+  let uploads = 0;
+  const handler = createMiniToolPublishHandler(operationDeps({
+    registry,
+    uploadPackage: async () => { uploads++; return { fileId: 'f-ttl', md5: 'm-ttl' }; },
+    createPreview: async () => { throw new Error('preview down'); }
+  }));
+  await invoke(handler, valid);
+  const job = registry.get('u1', valid.attemptId);
+  await job.promise;
+  assert.equal(job.status, 'failed_after_side_effect');
+  current += 31 * 60 * 1000;
+  registry.cleanup();
+  assert.equal(registry.get('u1', valid.attemptId), job);
+  assert.equal(registry.getByFingerprint('u1', canonicalizeMiniToolPublishRequest(valid).fingerprint), job);
+  const resubmit = await invoke(handler, { ...valid, attemptId: 'attempt-second' });
+  assert.equal(resubmit.body.status, 'failed_after_side_effect');
+  assert.equal(uploads, 1);
+  assert.equal(registry.acknowledgeUnknown('u1', valid.attemptId), true);
+  assert.equal(registry.get('u1', valid.attemptId), null);
+  registry.dispose();
+});
+
+test('done DTO keeps authoritative identity and status over hostile result keys', async () => {
+  const registry = createMiniToolPublishJobRegistry();
+  const job = registry.createOrReuse('u1', 'attempt-safe', 'fp', async () => ({
+    attemptId: 'hostile', requestedAttemptId: 'hostile', status: 'failed', ok: true
+  }));
+  await job.promise;
+  const dto = registry.toDto(job, 'attempt-safe');
+  assert.equal(dto.attemptId, 'attempt-safe');
+  assert.equal(dto.status, 'done');
+  assert.equal(dto.ok, true);
+  assert.equal(dto.requestedAttemptId, undefined);
+  registry.dispose();
+});
+
+test('unknown-outcome DTO surfaces only a sanitized upload receipt', async () => {
+  const registry = createMiniToolPublishJobRegistry();
+  const handler = createMiniToolPublishHandler(operationDeps({
+    registry,
+    uploadPackage: async () => ({ fileId: 'file-123', md5: 'md5abc', raw: '/private/path' }),
+    createPreview: async () => { throw new Error('preview down'); }
+  }));
+  await invoke(handler, valid);
+  const job = registry.get('u1', valid.attemptId);
+  await job.promise;
+  const dto = registry.toDto(job, valid.attemptId);
+  assert.equal(dto.status, 'failed_after_side_effect');
+  assert.deepEqual(dto.uploadReceipt, { fileId: 'file-123', md5: 'md5abc' });
+  assert.equal(JSON.stringify(dto).includes('/private'), false);
+  registry.dispose();
+});
+
 test('post-upload failure retains fingerprint and prevents automatic re-upload', async () => {
   let uploads = 0;
   const registry = createMiniToolPublishJobRegistry();

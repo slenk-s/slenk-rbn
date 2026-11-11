@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createRedappAuthClient } from './redappAuthFlow.js';
+import { createRedappAuthClient, REDAPP_GATED_ACTION_DEADLINE_MS } from './redappAuthFlow.js';
 import {
   authActionPermissions,
   boundedSessionError,
   canCommitLifecycle,
   cancelOperationCompletion,
   cancelSessionStateCompletion,
+  dashboardPollFailureDisposition,
   fetchWithDeadline,
   focusNavigationIndex,
   formatAuthExpiry,
@@ -49,21 +50,26 @@ function useCurrentTime(enabled, initialNow) {
   return now;
 }
 
-function waitForNextPoll(signal) {
+function waitForNextPoll(signal, delayMs = 1500) {
   if (signal.aborted) return Promise.reject(Object.assign(new Error('cancelled'), { code: 'AUTH_POLL_CANCELLED' }));
   return new Promise((resolve, reject) => {
     const onAbort = () => { clearTimeout(timer); reject(Object.assign(new Error('cancelled'), { code: 'AUTH_POLL_CANCELLED' })); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, 1500);
+    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, delayMs);
     signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
+// options.deadlineMs 覆盖默认 20s 截止：status/login/cancel/logout 等服务端动作要等待
+// 版本门禁（180s）+ CLI（120s），必须给宽截止；会话轮询 GET 保持小截止。
 function createFetchAdapter(apiBase, token, getSignal) {
-  return (path, options = {}) => fetchWithDeadline(fetch, apiBase + path, {
-    ...options,
-    signal: typeof getSignal === 'function' ? getSignal() : getSignal,
-    headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, ...(options.headers || {}) }
-  });
+  return (path, options = {}) => {
+    const { deadlineMs, ...init } = options;
+    return fetchWithDeadline(fetch, apiBase + path, {
+      ...init,
+      signal: typeof getSignal === 'function' ? getSignal() : getSignal,
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, ...(init.headers || {}) }
+    }, deadlineMs ?? 20_000);
+  };
 }
 
 export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, onRetry, onRefreshStatus, cancelling, refreshing }) {
@@ -176,7 +182,7 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
     setBusy(true);
     setError('');
     try {
-      const next = await client.status();
+      const next = await client.status({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
       if (!isCurrent(generation, controller)) return null;
       setAuth(next);
       if (closeDone && isUsableAuth(next)) {
@@ -232,13 +238,18 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
       && canCommitLifecycle(lifecycle.current, generation, sessionId);
 
     async function pollExactSession() {
+      // 与服务端会话寿命（MAX_LOGIN_SECONDS = 600s）一致的轮询预算：
+      // 瞬时失败在预算内按有界退避重试，只有取消与 404 立即终止。
+      const budgetAt = Date.now() + 10 * 60 * 1000;
+      let transientFailures = 0;
       while (!controller.signal.aborted) {
         try {
           const current = await pollClient.session(sessionId);
           if (!pollIsCurrent() || current?.sessionId !== sessionId) return;
+          transientFailures = 0;
           if (current.status === 'done') {
             try {
-              const nextAuth = await pollClient.status();
+              const nextAuth = await pollClient.status({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
               if (!pollIsCurrent()) return;
               setAuth(nextAuth);
               const transition = pollCompletionTransition('done', nextAuth);
@@ -269,10 +280,20 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
           }
           await waitForNextPoll(controller.signal);
         } catch (cause) {
-          if (!pollIsCurrent() || cause?.code === 'AUTH_POLL_CANCELLED' || cause?.name === 'AbortError') return;
-          const status = cause?.status === 404 ? 'not-found' : 'failed';
-          setSession(previous => previous?.sessionId === sessionId ? { ...previous, status, error: boundedSessionError(cause?.message) } : previous);
-          return;
+          if (!pollIsCurrent()) return;
+          const disposition = dashboardPollFailureDisposition(cause);
+          if (disposition === 'abort') return;
+          if (disposition === 'not-found') {
+            setSession(previous => previous?.sessionId === sessionId ? { ...previous, status: 'not-found', error: boundedSessionError(cause?.message) } : previous);
+            return;
+          }
+          transientFailures += 1;
+          if (Date.now() >= budgetAt) {
+            setSession(previous => previous?.sessionId === sessionId ? { ...previous, status: 'failed', error: boundedSessionError(cause?.message) } : previous);
+            return;
+          }
+          const waited = await waitForNextPoll(controller.signal, Math.min(1500 * transientFailures, 5000)).then(() => true, () => false);
+          if (!waited) return;
         }
       }
     }
@@ -288,7 +309,7 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
     const { controller, generation, client } = beginOperation();
     setBusy(true);
     try {
-      const next = await client.login();
+      const next = await client.login({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
       if (!isCurrent(generation, controller)) return;
       setSession(next);
       setModalOpen(true);
@@ -306,7 +327,7 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
     let releasedBusy = false;
     setBusy(true); setError('');
     try {
-      const cancelled = await client.cancel(cancellingId);
+      const cancelled = await client.cancel(cancellingId, { deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
       const transition = cancelOperationCompletion({
         lifecycle: lifecycle.current,
         operationGeneration: generation,
@@ -363,7 +384,7 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
     const { controller, generation, client } = beginOperation({ abortPoll: true, sessionId: null });
     setBusy(true); setLoading(true); setError('');
     try {
-      const next = await client.logout();
+      const next = await client.logout({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
       if (!isCurrent(generation, controller, null)) return;
       setAuth(next); setSession(null); setModalOpen(false); setConfirmLogout(false); setMessage?.('已退出本机共享的小红书授权。');
     } catch (cause) {

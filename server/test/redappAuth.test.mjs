@@ -1210,6 +1210,143 @@ test('logout atomically invalidates sessions and ignores all late child events',
   assert.equal(manager.getSession('session-1'), null);
 });
 
+test('logout during the pending spawn window kills the late child without throwing', async () => {
+  const late = createFakeChild();
+  let resolveSpawn;
+  const manager = createRedappAuthManager({
+    spawnCli: () => new Promise(resolve => { resolveSpawn = resolve; }),
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+  manager.startLogin();
+  await manager.logout();
+  resolveSpawn(late);
+  await tick();
+  assert.equal(late.killed, true);
+  assert.doesNotThrow(() => {
+    late.stdout.write('PROMPT:{"qrCodePath":"x.png"}\n');
+    late.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
+    late.emit('close', 0);
+  });
+  await tick();
+  assert.equal(manager.getSession('session-1'), null);
+});
+
+test('release during the pending spawn window keeps late stream events inert', async () => {
+  const late = createFakeChild();
+  let resolveSpawn;
+  const manager = createRedappAuthManager({
+    spawnCli: () => new Promise(resolve => { resolveSpawn = resolve; }),
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+  manager.startLogin();
+  manager.dispose();
+  resolveSpawn(late);
+  await tick();
+  assert.equal(late.killed, true);
+  assert.equal(late.stdout.listenerCount('data'), 0);
+  assert.equal(late.listenerCount('close'), 0);
+});
+
+test('termination racing a successful exit-0 child salvages the completed receipt', async () => {
+  const child = createFakeChild();
+  const timers = [];
+  const run = createAsyncProcessRunner({
+    spawnProcess: () => child,
+    platform: 'win32',
+    terminateTree: async () => false,
+    setTimer(callback) { const timer = { callback, unref() {} }; timers.push(timer); return timer; },
+    clearTimer() {}
+  });
+  const controller = new AbortController();
+  const pending = run(['fake'], 1000, { signal: controller.signal });
+  controller.abort();
+  await tick();
+  child.stdout.write('RESULT_JSON:{"status":"ok","data":{"fileId":"f","md5":"m"}}\n');
+  child.emit('close', 0);
+  const result = await pending;
+  assert.equal(result.status, 0);
+  assert.equal(result.error, null);
+  assert.match(result.stdout, /RESULT_JSON/);
+});
+
+test('termination with an unsuccessful exit-0 close still reaches the supervisor bound', async () => {
+  const child = createFakeChild();
+  const timers = [];
+  const run = createAsyncProcessRunner({
+    spawnProcess: () => child,
+    platform: 'win32',
+    terminateTree: async () => false,
+    setTimer(callback) { const timer = { callback, unref() {} }; timers.push(timer); return timer; },
+    clearTimer() {}
+  });
+  const controller = new AbortController();
+  const pending = run(['fake'], 1000, { signal: controller.signal });
+  controller.abort();
+  await tick();
+  child.stdout.write('garbage without a receipt\n');
+  child.emit('close', 0);
+  await tick();
+  assert.equal(await Promise.race([pending.then(() => 'settled'), tick().then(() => 'pending')]), 'pending');
+  timers.at(-1).callback();
+  const result = await pending;
+  assert.equal(result.error?.message, 'process_termination_unconfirmed');
+});
+
+test('default randomId produces a valid session id without injection', () => {
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png')
+  });
+  const session = manager.startLogin();
+  assert.match(session.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  manager.dispose();
+});
+
+test('projection recomputes needsReauth from expiry instead of trusting the stored flag', async () => {
+  const past = Date.now() - 1000;
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: () => ({
+      status: 'ok',
+      credentials: {
+        available: true, loggedIn: true, openIdMasked: 'ob12…7890', scope: [],
+        expireTimeMs: past, refreshExpireTimeMs: null, needsReauth: false
+      }
+    }),
+    readFile: () => Buffer.from('png')
+  });
+  const status = await manager.getStatus();
+  assert.equal(status.loggedIn, true);
+  assert.equal(status.needsReauth, true);
+});
+
+test('retained session auth recomputes needsReauth as expiry passes within retention', async () => {
+  let current = 1_000_000;
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1',
+    now: () => current
+  });
+  manager.startLogin();
+  fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: { loggedIn: true, expireTimeMs: current + 1000 } })}\n`);
+  await tick();
+  assert.equal(manager.getSession('session-1').auth.needsReauth, false);
+  current += 2000;
+  const retained = manager.getSession('session-1');
+  assert.equal(retained.status, 'done');
+  assert.equal(retained.auth.loggedIn, true);
+  assert.equal(retained.auth.needsReauth, true);
+  manager.dispose();
+});
+
 test('accepts a chunk over 64 KiB when every complete line is short', () => {
   const fake = createFakeChild();
   const manager = createRedappAuthManager({

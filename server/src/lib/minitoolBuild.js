@@ -23,24 +23,31 @@ export function cleanupMiniToolArtifacts(buildId) {
   for (const suffix of ['.zip', '-qr.png', '-qr.json']) fs.rmSync(prefix + suffix, { force: true });
 }
 
-export function janitorMiniToolArtifacts({ maxEntries = 100, maxAgeMs = 24 * 60 * 60 * 1000, now = Date.now } = {}) {
-  fs.mkdirSync(BUILD_ROOT, { recursive: true });
+// 启动清理只扫自有构建根目录的元数据（O(n) 次 lstat，跳过符号链接），
+// 单次运行删除所有确实过期的条目——不为过期删除设上限，避免脏目录跨多次重启才收敛。
+// maxEntries 仅作为防御性总量护栏保留（默认不设限）。由服务器启动入口显式调用，
+// 模块被测试或其他代码 import 时绝不触碰真实存储。
+export function janitorMiniToolArtifacts({ root = BUILD_ROOT, maxEntries = Infinity, maxAgeMs = 24 * 60 * 60 * 1000, now = Date.now } = {}) {
+  const resolvedRoot = path.resolve(root);
+  fs.mkdirSync(resolvedRoot, { recursive: true });
   const candidates = [];
-  for (const entry of fs.readdirSync(BUILD_ROOT, { withFileTypes: true })) {
-    const target = path.resolve(BUILD_ROOT, entry.name);
-    if (path.dirname(target) !== BUILD_ROOT) continue;
+  for (const entry of fs.readdirSync(resolvedRoot, { withFileTypes: true })) {
+    const target = path.resolve(resolvedRoot, entry.name);
+    if (path.dirname(target) !== resolvedRoot) continue;
     try {
       const stat = fs.lstatSync(target);
       if (stat.isSymbolicLink()) continue;
       candidates.push({ target, mtimeMs: stat.mtimeMs });
     } catch {}
   }
-  for (const { target, mtimeMs } of candidates.sort((a, b) => a.mtimeMs - b.mtimeMs).slice(0, maxEntries)) {
-    try { if (now() - mtimeMs >= maxAgeMs) fs.rmSync(target, { recursive: true, force: true }); } catch {}
+  let removed = 0;
+  for (const { target, mtimeMs } of candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)) {
+    if (removed >= maxEntries) break;
+    if (now() - mtimeMs < maxAgeMs) continue;
+    try { fs.rmSync(target, { recursive: true, force: true }); removed++; } catch {}
   }
+  return removed;
 }
-
-janitorMiniToolArtifacts();
 
 const ZIP_HARD_LIMIT = 9.5 * 1024 * 1024; // 上传硬上限 10MiB，留 0.5MiB 余量
 export const MINITOOL_TITLE_MAX = 20;

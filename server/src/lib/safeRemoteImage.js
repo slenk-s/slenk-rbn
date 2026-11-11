@@ -70,6 +70,13 @@ export function isPublicAddress(address) {
     if (teredo) {
       return isPublicAddress(`${(~groups[6] >>> 8) & 0xff}.${~groups[6] & 0xff}.${(~groups[7] >>> 8) & 0xff}.${~groups[7] & 0xff}`);
     }
+    // 已废弃的 IPv4-compatible ::/96 残余（含 :: 与 ::1）：无论内嵌 IPv4 是否公网一律拒绝，
+    // 防止支持该历史语义的协议栈把 ::127.0.0.1 / ::7f00:1 路由到内嵌的私有地址。
+    const ipv4CompatibleRemainder = groups[0] === 0 && groups[1] === 0 && groups[2] === 0
+      && groups[3] === 0 && groups[4] === 0 && groups[5] === 0;
+    // RFC 6666 discard-only 100::/64。
+    const discardOnly = groups[0] === 0x0100 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0;
+    if (ipv4CompatibleRemainder || discardOnly) return false;
     return !allZero && !loopback && !uniqueLocal && !linkLocal && !siteLocal && !multicast && !documentation;
   }
   return false;

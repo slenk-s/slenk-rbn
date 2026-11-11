@@ -5,6 +5,7 @@ import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   MINITOOL_PUBLISH_DEADLINE_MS,
+  MINITOOL_PUBLISH_REQUEST_DEADLINE_MS,
   canCommitPublishFlow,
   createPublishContinuation,
   createPublishFlow,
@@ -1000,6 +1001,10 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     const isCurrent = () => canCommitPublishFlow(publishFlowRef.current, flow, flow.generation, continuation);
     const authApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
     const publishApi = createRedappFetchAdapter({ apiBase: API, token, getSignal: () => flow.controller.signal });
+    // 服务端建任务前最坏要跑 180s 版本门禁 + 120s whoami，POST 截止必须覆盖该窗口；GET 轮询仍用小截止。
+    const publishPostApi = createRedappFetchAdapter({
+      apiBase: API, token, getSignal: () => flow.controller.signal, deadlineMs: MINITOOL_PUBLISH_REQUEST_DEADLINE_MS
+    });
     const authClient = createRedappAuthClient({ api: authApi, pollMs: 1500 });
     const requestJob = async path => {
       const response = await publishApi(path);
@@ -1010,7 +1015,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       attemptId: flow.attemptId,
       post: async () => {
         flow.postDispatched = true;
-        const response = await publishApi('/api/publish/minitool', {
+        const response = await publishPostApi('/api/publish/minitool', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(request)
@@ -1234,7 +1239,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     setPublishAuthCancelling(true);
     flow.controller.abort();
     try {
-      const cancelApi = createRedappFetchAdapter({ apiBase: API, token });
+      // 服务端取消要等版本门禁+CLI（最坏约 300s），给宽截止；失败仍按“取消结果不确定”处理。
+      const cancelApi = createRedappFetchAdapter({ apiBase: API, token, deadlineMs: MINITOOL_PUBLISH_REQUEST_DEADLINE_MS });
       const response = await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId);
       if (publishFlowRef.current !== flow) return;
       const result = interpretCancelResponse(flow.sessionId, response);

@@ -1,6 +1,14 @@
 const DATA_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\s]+$/i;
 export const MAX_QR_IMAGE_LENGTH = Math.ceil(2 * 1024 * 1024 / 3) * 4 + 64;
 
+// 仪表盘轮询的失败分级：只有取消与 404（会话确已不存在）立即终止；
+// 瞬时失败（网络抖动、单次 5xx、单次超时）应在会话预算内重试，服务端会话最长存活 10 分钟。
+export function dashboardPollFailureDisposition(cause) {
+  if (cause?.code === 'AUTH_POLL_CANCELLED' || cause?.name === 'AbortError') return 'abort';
+  if (cause?.status === 404) return 'not-found';
+  return 'retry';
+}
+
 export async function fetchWithDeadline(fetchImpl, input, options = {}, deadlineMs = 20_000) {
   const deadline = new AbortController();
   const callerSignal = options.signal;

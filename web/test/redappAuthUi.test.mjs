@@ -9,6 +9,7 @@ import {
   canCommitLifecycle,
   cancelOperationCompletion,
   cancelSessionStateCompletion,
+  dashboardPollFailureDisposition,
   fetchWithDeadline,
   focusNavigationIndex,
   formatAuthExpiry,
@@ -374,6 +375,26 @@ test('resume publish UI exposes timeout guidance, retry wiring, and usable reope
   assert.match(cssSource, /\.auth-qr-backdrop\s*\{\s*z-index:\s*(\d+)/u);
   const modalZ = Number(cssSource.match(/\.auth-qr-backdrop\s*\{\s*z-index:\s*(\d+)/u)?.[1]);
   assert.ok(modalZ > zIndex, 'auth modal must sit above reopen control');
+});
+
+test('dashboard poll failures only treat cancellation and 404 as immediate', () => {
+  assert.equal(dashboardPollFailureDisposition(Object.assign(new Error('cancelled'), { code: 'AUTH_POLL_CANCELLED' })), 'abort');
+  assert.equal(dashboardPollFailureDisposition(new DOMException('aborted', 'AbortError')), 'abort');
+  assert.equal(dashboardPollFailureDisposition(Object.assign(new Error('missing'), { status: 404 })), 'not-found');
+  assert.equal(dashboardPollFailureDisposition(new TypeError('network down')), 'retry');
+  assert.equal(dashboardPollFailureDisposition(new DOMException('timed out', 'TimeoutError')), 'retry');
+  assert.equal(dashboardPollFailureDisposition(Object.assign(new Error('boom'), { status: 500 })), 'retry');
+});
+
+test('dashboard poller tolerates transient failures within the session budget', () => {
+  const source = readFileSync(new URL('../src/RedappAuth.jsx', import.meta.url), 'utf8');
+  assert.match(source, /dashboardPollFailureDisposition/u);
+  assert.match(source, /transientFailures/u);
+});
+
+test('publish POST wiring uses the gated server-envelope deadline', () => {
+  const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(appSource, /MINITOOL_PUBLISH_REQUEST_DEADLINE_MS/u);
 });
 
 test('countdown supports an immediate deterministic initial time', () => {

@@ -138,7 +138,15 @@ export function createAsyncProcessRunner({
       };
       const onError = () => finalize(null, terminatingError || 'process_error');
       const onClose = status => {
-        if (!terminatingError) finalize(status, null);
+        if (!terminatingError) {
+          finalize(status, null);
+          return;
+        }
+        // Windows 终止竞态：taskkill 常杀不死一个正在收尾的进程。若子进程仍以 0 退出且
+        // stdout 已含完整成功回执，抢救这次成功结果，绝不把已确认的上报误判为结果未知。
+        if (status === 0 && hasSuccessfulResult(Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'))) {
+          finalize(0, null);
+        }
       };
 
       try {
@@ -169,6 +177,11 @@ export function createAsyncProcessRunner({
 }
 
 const spawnNodeAsync = createAsyncProcessRunner();
+
+// 终止竞态抢救仅认完整可解析的 RESULT_JSON 成功回执。
+function hasSuccessfulResult(output) {
+  return parseTaggedOutput(output).results.at(-1)?.status === 'ok';
+}
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);

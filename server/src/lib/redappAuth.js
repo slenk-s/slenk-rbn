@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { parseTaggedOutput } from './redappCli.js';
 
@@ -12,7 +13,9 @@ function finiteNumberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function projectAuthStatus(value) {
+// needsReauth 永远在投影时刻按 loggedIn/expireTimeMs 重算，不信任上游存入的布尔值：
+// 已完成的会话快照在保留窗口内继续被读取，期间凭证可能刚刚过期。
+function projectAuthStatus(value, now = Date.now) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const loggedIn = source.loggedIn === true;
   const expireTimeMs = finiteNumberOrNull(source.expireTimeMs);
@@ -27,9 +30,7 @@ function projectAuthStatus(value) {
       : [],
     expireTimeMs,
     refreshExpireTimeMs: finiteNumberOrNull(source.refreshExpireTimeMs),
-    needsReauth: typeof source.needsReauth === 'boolean'
-      ? source.needsReauth
-      : !loggedIn || (expireTimeMs !== null && expireTimeMs <= Date.now())
+    needsReauth: !loggedIn || (expireTimeMs !== null && expireTimeMs <= now())
   };
 }
 
@@ -79,7 +80,7 @@ export function createRedappAuthManager({
       authorizeUrl: session.authorizeUrl || null,
       userCode: session.userCode || null,
       expiresAt: session.expiresAt || null,
-      auth: session.auth || null,
+      auth: session.auth ? projectAuthStatus(session.auth, now) : null,
       error: session.error || null
     };
   }
@@ -109,6 +110,9 @@ export function createRedappAuthManager({
         try { child.kill?.(); } catch {}
       }
     }
+    // 标记已释放：挂起的 spawn 之后完成时，attachChild 必须杀死迟到的子进程并直接返回，
+    // 不得再触碰已清空的 streams/handlers（logout/dispose 撞上 180s 门禁窗口时会发生）。
+    session.released = true;
     session.child = null;
     session.streams = null;
     session.stdoutHandler = null;
@@ -172,7 +176,7 @@ export function createRedappAuthManager({
     for (const prompt of parsed.prompts) handlePrompt(session, prompt);
     for (const result of parsed.results) {
       if (result.status === 'ok' && result.credentials?.loggedIn === true) {
-        finish(session, 'done', { auth: projectAuthStatus(result.credentials) });
+        finish(session, 'done', { auth: projectAuthStatus(result.credentials, now) });
       }
     }
   }
@@ -183,13 +187,21 @@ export function createRedappAuthManager({
 
   function attachChild(session, child) {
     session.child = child;
-    if (!ACTIVE_STATUSES.has(session.status) || disposed) {
-      try { session.child?.kill?.(); } catch {}
+    if (session.released || !ACTIVE_STATUSES.has(session.status) || disposed) {
+      // 会话已在 spawn 挂起期间被释放（logout/dispose）：杀死迟到的子进程并保持状态清空。
+      try { child?.kill?.(); } catch {}
+      session.child = null;
+      session.streams = null;
+      session.stdoutHandler = null;
+      session.stderrHandler = null;
+      session.errorHandler = null;
+      session.closeHandler = null;
       return;
     }
     const feedStream = (streamName, chunk) => {
-      if (!ACTIVE_STATUSES.has(session.status)) return;
-      const stream = session.streams[streamName];
+      if (session.released || !ACTIVE_STATUSES.has(session.status)) return;
+      const stream = session.streams?.[streamName];
+      if (!stream) return;
       stream.buffer += stream.decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       const lines = stream.buffer.split(/\r?\n/);
       stream.buffer = lines.pop() || '';
@@ -209,10 +221,11 @@ export function createRedappAuthManager({
     session.stderrHandler = chunk => feedStream('stderr', chunk);
     session.errorHandler = () => finish(session, 'failed', { error: '登录进程启动失败' });
     session.closeHandler = () => {
-      if (!ACTIVE_STATUSES.has(session.status)) return;
+      if (session.released || !ACTIVE_STATUSES.has(session.status)) return;
       for (const streamName of ['stdout', 'stderr']) {
         if (!ACTIVE_STATUSES.has(session.status)) return;
-        const stream = session.streams[streamName];
+        const stream = session.streams?.[streamName];
+        if (!stream) return;
         stream.buffer += stream.decoder.end();
         if (Buffer.byteLength(stream.buffer, 'utf8') > MAX_LOGIN_OUTPUT_LINE_LENGTH) {
           finish(session, 'failed', { error: '登录进程输出异常' }, { kill: false });
@@ -241,6 +254,7 @@ export function createRedappAuthManager({
       status: 'waiting_prompt',
       deadlineAt: createdAt + MAX_LOGIN_SECONDS * 1000,
       child: null,
+      released: false,
       streams: {
         stdout: { buffer: '', decoder: new StringDecoder('utf8') },
         stderr: { buffer: '', decoder: new StringDecoder('utf8') }
@@ -281,7 +295,7 @@ export function createRedappAuthManager({
     try {
       const result = await runCli(['whoami']);
       if (result?.status === 'error' && result.code === 'AUTH_REQUIRED') return loggedOutAuthStatus();
-      return projectAuthStatus(result?.credentials);
+      return projectAuthStatus(result?.credentials, now);
     } catch {
       return unavailableAuthStatus();
     }
@@ -313,7 +327,7 @@ export function createRedappAuthManager({
     invalidateSessions();
     try {
       const result = await runCli(['logout']);
-      return projectAuthStatus(result?.credentials);
+      return projectAuthStatus(result?.credentials, now);
     } catch {
       throw new Error('redapp 退出登录失败');
     }

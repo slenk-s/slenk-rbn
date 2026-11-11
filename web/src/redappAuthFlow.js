@@ -23,13 +23,22 @@ const RETAINED_TERMINAL_CODES = new Set([
 ]);
 export const GENERIC_AUTH_DEADLINE_MS = 20_000;
 export const MINITOOL_PUBLISH_DEADLINE_MS = 30 * 60 * 1000;
+// 发布 POST（首次与重放）必须覆盖服务端建任务前的最坏窗口：180s 版本门禁 + 120s whoami + 30s 余量。
+// 过短的截止会让客户端在服务端即将建任务时放弃，把正常发布误报为 RESTART_UNKNOWN。
+// GET 轮询仍走 20s 小截止。
+export const MINITOOL_PUBLISH_REQUEST_DEADLINE_MS = 330_000;
+// cancelLogin/logout/getStatus 等服务端动作同样要等门禁+CLI，客户端调用给同样的宽截止；
+// 即便如此失败时也必须按“结果不确定”处理，因为服务端可能已经执行了动作。
+export const REDAPP_GATED_ACTION_DEADLINE_MS = 330_000;
 export const RESTART_UNKNOWN_GUIDANCE = '服务已重启，无法确认原任务结果；请先到小红书小工具预览记录核对，再决定是否重新发布。';
 export const OUTCOME_UNKNOWN_GUIDANCE = '上传可能已经生效，但本机无法确认最终结果；请先检查小红书小工具的上传记录和预览记录，再决定是否重新发布。';
 const AUTHORITATIVE_PRECREATION_CODES = new Set([
   'AUTH_REQUIRED', 'PUBLISH_JOB_CAPACITY', 'PUBLISH_ALIAS_CAPACITY', 'REDAPP_UNAVAILABLE',
   'PUBLISH_ATTEMPT_CONFLICT', 'PUBLISH_VALIDATION', 'PUBLISH_USER_LIMIT'
 ]);
-const POST_DISPATCHED_PHASES = new Set(['replaying', 'job-created', 'job-polling', 'uncertain', 'cancel-failed']);
+// cancel-failed 只会出现在从未成功 POST 的分支，刻意不属于已派发阶段；
+// 真正的派发历史由 flow.postDispatched 在 mustRecover 表达式里单独 OR 进去。
+const POST_DISPATCHED_PHASES = new Set(['replaying', 'job-created', 'job-polling', 'uncertain']);
 const SENSITIVE_MESSAGE_MARKERS = new Set([
   'token',
   'accesstoken',
@@ -363,15 +372,16 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
     return readResponse(await api(path, options));
   }
 
-  const status = () => request('/api/redapp/auth');
-  const login = () => request('/api/redapp/auth/login', { method: 'POST' });
+  const status = (options = {}) => request('/api/redapp/auth', options);
+  const login = (options = {}) => request('/api/redapp/auth/login', { method: 'POST', ...options });
   const session = id => request(`/api/redapp/auth/session/${encodeURIComponent(id)}`);
-  const cancel = id => request(`/api/redapp/auth/session/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
-  const logout = () => request('/api/redapp/auth/logout', { method: 'POST' });
+  const cancel = (id, options = {}) => request(`/api/redapp/auth/session/${encodeURIComponent(id)}/cancel`, { method: 'POST', ...options });
+  const logout = (options = {}) => request('/api/redapp/auth/logout', { method: 'POST', ...options });
 
   async function pollSession(id, { signal, timeoutMs = 10 * 60 * 1000, onUpdate = () => {} } = {}) {
     if (!isNonemptyString(id)) throw authFlowError('not-found');
     const startedAt = Date.now();
+    let transientFailures = 0;
     while (true) {
       if (signal?.aborted) throw cancellationError();
       const elapsed = Date.now() - startedAt;
@@ -384,9 +394,19 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
           remainingMs: timeoutMs - elapsed
         });
       } catch (error) {
+        // 只有 404（会话确已不存在）/取消/整体超时是立即终止；
+        // 瞬时失败（重启中的连接错误、单次 5xx、单次请求超时）在会话预算内按有界退避重试，
+        // 避免一次网络抖动就放弃整个发布流程而服务端授权仍在继续。
         if (error?.status === 404) throw authFlowError('not-found', 404);
-        throw error;
+        if (error?.code === 'AUTH_POLL_CANCELLED' || error?.code === 'AUTH_POLL_TIMEOUT') throw error;
+        transientFailures += 1;
+        const backoffMs = Math.min(Math.max(interval, 100) * transientFailures, 5000);
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+        if (remainingMs <= 0) throw timeoutError();
+        await delay(Math.min(backoffMs, remainingMs), signal);
+        continue;
       }
+      transientFailures = 0;
 
       if (typeof current?.sessionId !== 'string' || current.sessionId !== id) {
         throw authFlowError('not-found');

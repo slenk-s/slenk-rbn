@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureAdmin } from './store.js';
 import { paths } from './paths.js';
 import { startNotesImagesJanitor } from './cacheJanitor.js';
+import { janitorMiniToolArtifacts } from './lib/minitoolBuild.js';
 import { router as authRoutes } from './routes/auth.js';
 import { router as userRoutes } from './routes/users.js';
 import { router as uploadRoutes } from './routes/upload.js';
@@ -20,6 +21,8 @@ import { router as redappAuthRoutes } from './routes/redappAuth.js';
 
 await ensureAdmin();
 startNotesImagesJanitor();
+// 启动时清理小工具构建残留（仅在此处显式触发，模块 import 不再带副作用）。
+try { janitorMiniToolArtifacts(); } catch { /* 清理失败不阻塞启动 */ }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = paths.uploadsDir;
 const videosDir = paths.videosDir;

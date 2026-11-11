@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   GENERIC_AUTH_DEADLINE_MS,
   MINITOOL_PUBLISH_DEADLINE_MS,
+  MINITOOL_PUBLISH_REQUEST_DEADLINE_MS,
   canCommitPublishFlow,
   createPublishContinuation,
   createPublishFlow,
@@ -96,13 +97,19 @@ test('failed canonical reuse is terminal and never polled', async () => {
 });
 
 test('every cancellation after POST dispatch retains the exact attempt for recovery', () => {
-  for (const phase of ['replaying', 'job-created', 'job-polling', 'uncertain', 'cancel-failed']) {
+  for (const phase of ['replaying', 'job-created', 'job-polling', 'uncertain']) {
     for (const outcome of ['cancelled', 'failed', 'done', 'not-found', 'mismatch', 'server-failure']) {
       assert.equal(shouldRecoverAttemptAfterCancel(phase, outcome), true, `${phase}/${outcome}`);
     }
   }
   assert.equal(shouldRecoverAttemptAfterCancel('auth-required', 'cancelled'), false);
   assert.equal(shouldRecoverAttemptAfterCancel('publishing', 'cancelled'), false);
+});
+
+test('cancel-failed from a never-dispatched attempt never enters recovery', () => {
+  // cancel-failed 只能在未成功 POST 的分支产生；真正的派发历史由 flow.postDispatched 单独追踪。
+  assert.equal(shouldRecoverAttemptAfterCancel('cancel-failed'), false);
+  assert.equal(shouldRecoverAttemptAfterCancel('cancel-failed') || false, false);
 });
 
 test('post-side-effect unknown has terminal inspection guidance and explicit acknowledgement', () => {
@@ -296,7 +303,10 @@ test('cancel response only claims cancellation for exact cancelled session', () 
 
 test('publish adapter deadline covers the server operation envelope', () => {
   assert.equal(GENERIC_AUTH_DEADLINE_MS, 20_000);
-  assert.ok(MINITOOL_PUBLISH_DEADLINE_MS >= 900_000);
+  assert.equal(MINITOOL_PUBLISH_DEADLINE_MS, 30 * 60 * 1000);
+  // 服务端在建任务前最坏要跑 180s 版本门禁 + 120s whoami，POST 截止必须覆盖该窗口。
+  assert.ok(MINITOOL_PUBLISH_REQUEST_DEADLINE_MS >= 180_000 + 120_000);
+  assert.ok(MINITOOL_PUBLISH_REQUEST_DEADLINE_MS < MINITOOL_PUBLISH_DEADLINE_MS);
 });
 
 test('adapter fallback composes caller and deadline aborts and cleans listeners', async () => {
@@ -630,6 +640,59 @@ test('polling timeout wins while a session request is pending', async () => {
   });
 
   await assert.rejects(() => client.pollSession('s1', { timeoutMs: 5 }), error => error.code === 'AUTH_POLL_TIMEOUT');
+});
+
+test('polling tolerates transient failures with bounded backoff inside the session budget', async () => {
+  let calls = 0;
+  const client = createRedappAuthClient({
+    api: async () => {
+      calls++;
+      if (calls === 1) throw new TypeError('network down');
+      if (calls === 2) return response(500, { error: 'boom', code: 'API_ERROR' });
+      return response(200, { sessionId: 's1', status: 'done' });
+    },
+    pollMs: 0
+  });
+
+  const session = await client.pollSession('s1', { timeoutMs: 5000 });
+  assert.equal(session.status, 'done');
+  assert.equal(calls, 3);
+});
+
+test('polling still fails a session that never recovers within its budget', async () => {
+  let calls = 0;
+  const client = createRedappAuthClient({
+    api: async () => { calls++; throw new TypeError('network down'); },
+    pollMs: 0
+  });
+
+  await assert.rejects(() => client.pollSession('s1', { timeoutMs: 60 }), error => error.code === 'AUTH_POLL_TIMEOUT');
+  assert.ok(calls >= 1);
+});
+
+test('polling keeps 404 immediate even within the session budget', async () => {
+  let calls = 0;
+  const client = createRedappAuthClient({
+    api: async () => { calls++; return response(404, { error: 'session_not_found' }); },
+    pollMs: 0
+  });
+
+  await assert.rejects(() => client.pollSession('missing', { timeoutMs: 5000 }), error => error.code === 'AUTH_SESSION_NOT_FOUND');
+  assert.equal(calls, 1);
+});
+
+test('polling cancellation still wins over transient retry backoff', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const client = createRedappAuthClient({
+    api: async () => { calls++; throw new TypeError('network down'); },
+    pollMs: 0
+  });
+
+  const pending = client.pollSession('s1', { signal: controller.signal, timeoutMs: 5000 });
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(pending, error => error.code === 'AUTH_POLL_CANCELLED');
+  assert.equal(calls, 1);
 });
 
 test('polling rejects unknown session states instead of waiting indefinitely', async () => {

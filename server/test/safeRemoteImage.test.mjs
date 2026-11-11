@@ -9,7 +9,9 @@ const blocked = [
   'ff02::1', 'fec0::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:169.254.169.254',
   '::ffff:7f00:1', '::ffff:a00:1', '::ffff:a9fe:a9fe',
   '64:ff9b::a00:1', '64:ff9b::a9fe:a9fe', '64:ff9b:1::c0a8:101', '64:ff9b:1::7f00:1',
-  '::ffff:0:7f00:1', '2002:0a00:0001::1', '2001:0000:4136:e378:8000:63bf:f5ff:fffe'
+  '::ffff:0:7f00:1', '2002:0a00:0001::1', '2001:0000:4136:e378:8000:63bf:f5ff:fffe',
+  '::127.0.0.1', '::7f00:1', '::10.0.0.1', '::192.168.1.1', '::169.254.1.1', '::8.8.8.8',
+  '100::1'
 ];
 for (const address of blocked) test(`SSRF policy rejects ${address}`, () => assert.equal(isPublicAddress(address), false));
 for (const address of ['1.1.1.1', '8.8.8.8', '2001:4860:4860::8888']) test(`SSRF policy permits public ${address}`, () => assert.equal(isPublicAddress(address), true));
@@ -19,6 +21,16 @@ test('safe fetch rejects credentials, non-http protocols, and private literal ho
   for (const url of ['http://user:pass@example.com/x', 'file:///secret', 'http://127.0.0.1/x', 'http://[::1]/x']) {
     await assert.rejects(() => safeFetch(url), { message: 'remote_image_not_allowed' });
   }
+});
+
+test('safe fetch rejects a hostile DNS AAAA answer in the deprecated ::/96 space', async () => {
+  let fetches = 0;
+  const safeFetch = createSafeRemoteImageFetcher({
+    lookup: async () => [{ address: '::7f00:1', family: 6 }],
+    fetchImpl: async () => { fetches++; return { status: 200, headers: new Headers(), body: null }; }
+  });
+  await assert.rejects(() => safeFetch('https://hostile.test/image'), { message: 'remote_image_not_allowed' });
+  assert.equal(fetches, 0);
 });
 
 test('safe fetch resolves every redirect hop and blocks redirect to private DNS', async () => {

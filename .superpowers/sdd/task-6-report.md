@@ -257,3 +257,38 @@ RED was observed for the real Node lookup contract, Windows leader-close supervi
 - `git diff --check`: passes; Git reports only LF-to-CRLF checkout notices.
 
 No real redapp login/upload/preview or external network operation was performed. Local controlled HTTP sockets and injected process/CLI fakes provided deterministic transport and cancellation coverage.
+
+## Third final review repair — 2026-11-12
+
+Closed all 7 Important (N1–N7) and 6 Minor (N8–N13) findings from `task-6-third-rereview.md` on top of `bd71325`.
+
+### Per-finding disposition
+
+- **N1:** `cleanup()` no longer TTL-evicts `failed_after_side_effect` tombstones; the lifetime is documented inline (never TTL/capacity-evicted, retired only by owner-scoped `acknowledgeUnknown`, bounded by `maxEntries` fail-closed capacity). Regression test: +31 min `cleanup()` retains the record, same-fingerprint resubmit pre-acknowledgement returns the tombstone DTO with no second upload, and acknowledgement still retires it.
+- **N2:** `isPublicAddress` now rejects the deprecated `::/96` IPv4-compatible remainder (`groups[0..5]` all zero, covering `::`/`::1`/`::7f00:1`-style embeddings of private *and* public IPv4 — policy decision: block the entire deprecated space) and discard-only `100::/64` (RFC 6666). Blocked matrix extended with `::127.0.0.1`, `::7f00:1`, `::10.0.0.1`, `::192.168.1.1`, `::169.254.1.1`, `::8.8.8.8` (blocked), `100::1`, plus a hostile-DNS-AAAA fetch test proving no transport is attempted.
+- **N3:** `releaseChild` now marks `session.released`; a late `attachChild` kills the late child, re-nulls state, and returns; `feedStream`/`closeHandler` guard on `released` and `session.streams?.[name]`. Regression tests: pending spawn → logout → resolve spawn → emit output/close (no throw, child killed, session gone) and pending spawn → dispose → resolve spawn (child killed, no listeners attached).
+- **N4:** the async runner salvages a raced success: when termination is in progress and the child closes 0 with a complete `RESULT_JSON` `status:"ok"` in captured stdout, it resolves `{ status: 0, error: null }` so publish records `done` instead of `failed_after_side_effect`; an unsuccessful close-0 still settles as `process_termination_unconfirmed` at the supervisor bound. Both paths tested with an injected failing `terminateTree` on the win32 path.
+- **N5:** new `MINITOOL_PUBLISH_REQUEST_DEADLINE_MS = 330_000` (gate 180 s + whoami 120 s + 30 s margin) backs the publish POST (initial and replay) and the publish-flow cancel; GET polls keep the 20 s deadline; the deadline test now asserts the exact 30-minute `MINITOOL_PUBLISH_DEADLINE_MS` and the ≥300 s POST envelope. Dashboard `status/login/cancel/logout` use `REDAPP_GATED_ACTION_DEADLINE_MS` via per-call `deadlineMs`, and their failure wording stays outcome-uncertain (“可能仍在进行”/“没有被确认移除”).
+- **N6:** `pollSession` tolerates transient failures (non-404, non-cancel, non-timeout) with bounded linear backoff (`max(interval,100) * failures`, capped 5 s) inside the session budget; 404/cancel/budget-timeout remain immediate. The dashboard `pollExactSession` applies the same policy via `dashboardPollFailureDisposition` with a 10-minute budget and 1.5 s→5 s backoff. Tests: transient-then-done succeeds, persistent failure ends in `AUTH_POLL_TIMEOUT`, 404 stays immediate, cancel wins over backoff.
+- **N7:** `'cancel-failed'` removed from `POST_DISPATCHED_PHASES`; a test pins that a `cancel-failed` phase never triggers recovery/uncertain for a never-dispatched attempt (actual dispatch history remains `flow.postDispatched`, OR-ed at the call site).
+- **N8:** `redappAuth.js` imports `node:crypto`; a test exercises the default `randomId` (UUID session id without injection).
+- **N9:** `janitorMiniToolArtifacts` accepts a `root` parameter; janitor tests use `fs.mkdtempSync` isolation; the module-level invocation was removed and the janitor now runs once from `server/src/index.js` startup inside try/catch, so imports/tests never touch real storage.
+- **N10:** `projectAuthStatus` always recomputes `needsReauth` from `loggedIn`/`expireTimeMs` (manager passes its injected `now`), and `publicSession` reprojects retained session auth at read time. Tests: past-expiry with stored `needsReauth:false` projects `true`; a session expiring inside the retention window flips to `needsReauth:true` on read.
+- **N11:** `toDto` spreads `job.result` first, then authoritative identity/status; a hostile result cannot inject `attemptId`/`requestedAttemptId`/`status` (test with hostile keys).
+- **N12:** the janitor deletes every genuinely-expired entry per run (O(n) metadata, `maxEntries` retained only as a defensive guard defaulting to unlimited), symlinks still skipped; a 130-expired-entry test proves full convergence in one run.
+- **N13:** the `failed_after_side_effect` DTO surfaces a sanitized `uploadReceipt` (`fileId`/`md5` strings only, bounded; dropped when absent); test proves no raw/path fields leak.
+
+### RED/GREEN evidence
+
+RED observed before implementation: server — tombstone TTL test, hostile-result DTO test, sanitized-receipt test, 7 new SSRF matrix entries + hostile-AAAA test, 2 janitor tests (root param ignored, >100 expired stranded), logout-during-spawn crash test, termination-salvage test (hangs pre-fix; bounded with `--test-timeout` for observation), 2 needsReauth projection tests. Web — missing exports (`MINITOOL_PUBLISH_REQUEST_DEADLINE_MS`, `dashboardPollFailureDisposition`) failed both suites at import; poll-tolerance/cancel-failed tests failed. GREEN after implementation as below. One incidental regression during repair (an added bare `catch {` widened an existing source-regex test's match) was restructured to a `.then(() => true, () => false)` wait guard.
+
+### Final verification
+
+- `TEST_DATABASE_URL=... DATABASE_URL=... node --test server/test/redappAuth.test.mjs server/test/referenceImages.test.mjs server/test/publishJobs.test.mjs server/test/safeRemoteImage.test.mjs server/test/minitoolBuild.test.mjs`: **179/179 pass** (fake unreachable DB URLs; no real database/network).
+- `npm --prefix web test`: **99/99 pass**.
+- `npm --prefix web run lint`: exits 0 with the same **15 pre-existing `App.jsx` warnings**, no errors.
+- `npm --prefix web run build`: succeeds; **49 modules transformed**.
+- `node --check` on all changed server files (`publish.js`, `redappAuth.js`, `redappCli.js`, `safeRemoteImage.js`, `minitoolBuild.js`, `index.js`): passes.
+- `git diff --check`: passes (only existing LF-to-CRLF checkout notices).
+
+No real redapp login/upload/preview or external network operation was performed; all new coverage uses fakes and isolated temp directories.

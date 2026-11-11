@@ -80,6 +80,15 @@ export function createArtifactAuditor({ scriptPath = AUDIT_SCRIPT, scriptExists 
 }
 export const runAudit = createArtifactAuditor();
 
+// 只保留可对账的 fileId/md5，绝不透出路径、原始 CLI 输出或其他回执字段。
+function sanitizeUploadReceipt(receipt) {
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
+  const safe = {};
+  if (typeof receipt.fileId === 'string' && receipt.fileId) safe.fileId = receipt.fileId.slice(0, 4096);
+  if (typeof receipt.md5 === 'string' && receipt.md5) safe.md5 = receipt.md5.slice(0, 128);
+  return Object.keys(safe).length ? safe : null;
+}
+
 export function createMiniToolPublishJobRegistry({
   terminalTtlMs = 30 * 60 * 1000, maxEntries = 100, maxConcurrent = 2, perUserLimit = 1,
   jobDeadlineMs = 30 * 60 * 1000, maxAliasesPerJob = 8, now = Date.now,
@@ -99,11 +108,14 @@ export function createMiniToolPublishJobRegistry({
     for (const alias of job.aliases) aliases.delete(keyFor(job.userId, alias));
     if (fingerprints.get(keyFor(job.userId, job.fingerprint)) === job) fingerprints.delete(keyFor(job.userId, job.fingerprint));
   }
+  // failed_after_side_effect 墓碑的生命周期：永不按 TTL 或容量淘汰（淘汰会让同指纹重新上传，
+  // 正是该状态要防止的事故）；只能由属主显式 acknowledgeUnknown 退役。
+  // 总量仍受 maxEntries 约束——极端情况下所有槽位都是墓碑时，新任务以 PUBLISH_JOB_CAPACITY 关闭，绝不误删墓碑。
   function cleanup() {
     const current = now();
-    for (const job of [...jobs]) if (['done', 'failed', 'failed_after_side_effect'].includes(job.status) && current - job.finishedAt >= terminalTtlMs) remove(job);
+    for (const job of [...jobs]) if (['done', 'failed'].includes(job.status) && current - job.finishedAt >= terminalTtlMs) remove(job);
     if (jobs.size > maxEntries) {
-      const terminal = [...jobs].filter(j => ['done', 'failed', 'failed_after_side_effect'].includes(j.status)).sort((a, b) => a.finishedAt - b.finishedAt);
+      const terminal = [...jobs].filter(j => ['done', 'failed'].includes(j.status)).sort((a, b) => a.finishedAt - b.finishedAt);
       while (jobs.size > maxEntries && terminal.length) remove(terminal.shift());
     }
   }
@@ -206,8 +218,17 @@ export function createMiniToolPublishJobRegistry({
     const identity = requestedAttemptId === job.canonicalAttemptId
       ? { attemptId: job.canonicalAttemptId }
       : { attemptId: job.canonicalAttemptId, requestedAttemptId };
-    if (job.status === 'done') return { ...identity, status: 'done', ...job.result };
-    if (job.status === 'failed_after_side_effect') return { ...identity, status: 'failed_after_side_effect', error: '上传结果无法安全重试，请先核对小红书预览记录' };
+    if (job.status === 'done') {
+      const dto = { ...job.result, ...identity, status: 'done' };
+      if (!('requestedAttemptId' in identity)) delete dto.requestedAttemptId;
+      return dto;
+    }
+    if (job.status === 'failed_after_side_effect') {
+      const dto = { ...identity, status: 'failed_after_side_effect', error: '上传结果无法安全重试，请先核对小红书预览记录' };
+      const receipt = sanitizeUploadReceipt(job.uploadReceipt);
+      if (receipt) dto.uploadReceipt = receipt;
+      return dto;
+    }
     if (job.status === 'failed') return { ...identity, status: 'failed', error: FAILED_JOB_ERROR };
     return { ...identity, status: job.status };
   }

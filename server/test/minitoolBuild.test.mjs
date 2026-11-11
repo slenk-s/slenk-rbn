@@ -19,23 +19,60 @@ function response(chunks, headers = {}) {
   };
 }
 
-test('startup janitor selects the bounded oldest candidates fairly', () => {
-  const root = path.join(paths.dataDir, 'minitool-builds');
-  fs.mkdirSync(root, { recursive: true });
-  const names = Array.from({ length: 105 }, (_, index) => `janitor-${Date.now()}-${index}`);
+function janitorRoot(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'minitool-janitor-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+test('startup janitor selects the bounded oldest candidates fairly in an isolated root', (t) => {
+  const root = janitorRoot(t);
+  const names = Array.from({ length: 105 }, (_, index) => `janitor-${index}`);
   const now = Date.now();
-  try {
-    for (let index = 0; index < names.length; index++) {
-      const target = path.join(root, names[index]);
-      fs.writeFileSync(target, 'x');
-      const age = index >= 100 ? now - 48 * 60 * 60 * 1000 : now;
-      fs.utimesSync(target, age / 1000, age / 1000);
-    }
-    janitorMiniToolArtifacts({ maxEntries: 100, maxAgeMs: 24 * 60 * 60 * 1000, now: () => now });
-    assert.equal(names.slice(100).every(name => !fs.existsSync(path.join(root, name))), true);
-  } finally {
-    for (const name of names) fs.rmSync(path.join(root, name), { force: true });
+  for (let index = 0; index < names.length; index++) {
+    const target = path.join(root, names[index]);
+    fs.writeFileSync(target, 'x');
+    const age = index >= 100 ? now - 48 * 60 * 60 * 1000 : now;
+    fs.utimesSync(target, age / 1000, age / 1000);
   }
+  janitorMiniToolArtifacts({ root, maxEntries: 100, maxAgeMs: 24 * 60 * 60 * 1000, now: () => now });
+  assert.equal(names.slice(100).every(name => !fs.existsSync(path.join(root, name))), true);
+  assert.equal(names.slice(0, 100).every(name => fs.existsSync(path.join(root, name))), true);
+});
+
+test('janitor removes every genuinely expired entry in one run beyond the first 100', (t) => {
+  const root = janitorRoot(t);
+  const now = Date.now();
+  const expired = Array.from({ length: 130 }, (_, index) => `expired-${index}`);
+  for (const name of expired) {
+    const target = path.join(root, name);
+    fs.writeFileSync(target, 'x');
+    const age = (now - 48 * 60 * 60 * 1000) / 1000;
+    fs.utimesSync(target, age, age);
+  }
+  fs.writeFileSync(path.join(root, 'fresh'), 'x');
+  janitorMiniToolArtifacts({ root, maxAgeMs: 24 * 60 * 60 * 1000, now: () => now });
+  assert.equal(expired.every(name => !fs.existsSync(path.join(root, name))), true);
+  assert.equal(fs.existsSync(path.join(root, 'fresh')), true);
+});
+
+test('janitor never traverses or removes symlinks even when expired', (t) => {
+  const root = janitorRoot(t);
+  const now = Date.now();
+  const outside = path.join(root, '..', `outside-${Date.now()}`);
+  fs.mkdirSync(outside, { recursive: true });
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const link = path.join(root, 'expired-link');
+  try {
+    fs.symlinkSync(outside, link, 'junction');
+  } catch {
+    return; // 平台不支持软链时跳过断言
+  }
+  const age = (now - 48 * 60 * 60 * 1000) / 1000;
+  try { fs.utimesSync(link, age, age); } catch {}
+  janitorMiniToolArtifacts({ root, maxAgeMs: 24 * 60 * 60 * 1000, now: () => now });
+  assert.equal(fs.existsSync(link), true);
+  assert.equal(fs.existsSync(outside), true);
 });
 
 test('remote image rejects oversized Content-Length before reading', async () => {
