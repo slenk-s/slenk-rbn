@@ -3,7 +3,7 @@
 ## 当前实现
 - 前端：React + Vite
 - 后端：Express
-- 账号：固定 `admin / 123456`
+- 账号：Supabase Postgres 中的用户账号（首次初始化会创建 `admin / 123456`，登录后建议修改）
 - AI：类似 `cc-switch` 的可切换供应商管理，不写死 SenseNova
 - 队列：Redis + BullMQ
 - 文件存储：本地自定义路径 `STORAGE_PATH`
@@ -56,15 +56,18 @@ node server/scripts/migrate-app-json.mjs
 - 数据库连接固定做 TLS 校验，CA 使用仓库内的 `server/certs/prod-ca-2021.crt`。Supabase 轮换根证书时必须把该文件替换为新证书，否则连接会在建立阶段直接失败（不会降级为不校验）。
 
 ## 运行
-1. 启动 Redis：`E:\Redis\redis-server.exe redis.windows.conf`
-2. 启动后端：`npm --prefix server run dev`（先在 `.env` 配好 `DATABASE_URL`，见「数据层」一节）
+
+推荐直接运行 `start-slenk-notes.bat`；脚本会自动探测 Node/Redis、安装缺失依赖、构建前端并启动 API/worker。
+
+手动启动时：
+1. 确保 Redis 已在 6379 运行（安装路径不固定，执行 `redis-cli.exe -p 6379 PING` 应返回 `PONG`）
+2. 启动后端：`npm --prefix server run dev`（先在 `.env` 配好 `DATABASE_URL`）
 3. 启动队列 worker：`npm --prefix server run queue`
 4. 启动前端：`npm --prefix web run dev`
 5. 在网页中添加 AI 供应商并填入 API Key
 
 ```powershell
-E:\Redis\redis-server.exe redis.windows.conf
-
+redis-cli.exe -p 6379 PING
 npm --prefix server run dev
 npm --prefix server run queue
 npm --prefix web run dev
@@ -85,20 +88,15 @@ npm --prefix web run dev
 start-slenk-notes.bat
 ```
 
-脚本会自动打开 4 个窗口：
+脚本会在后台启动或复用以下进程，并把日志写入 `logs/`：
 
-- `Slenk Notes - Redis`
-- `Slenk Notes - Server`
-- `Slenk Notes - Queue Worker`
-- `Slenk Notes - Web`
+- Redis（如果 6379 未运行）
+- Express API（3001）
+- BullMQ Worker
 
-前端启动后访问：
+启动完成后会打开 `http://localhost:3001/`。需要前端 HMR 时再单独运行 `npm run dev:web` 访问 5173。
 
-```text
-http://localhost:5173
-```
-
-如果端口已经被占用，先运行：
+如果端口 3001 被其他程序占用，启动器会拒绝复用并报告 PID；先确认该进程后再释放端口。停止当前仓库由启动器创建的 API/worker 可运行：
 
 ```powershell
 stop-slenk-notes.bat

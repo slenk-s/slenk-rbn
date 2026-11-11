@@ -20,7 +20,7 @@
 
 | 文件/目录 | 必要性 | 说明 |
 |---|---|---|
-| `.env` | **必须** | 含 DATABASE_URL、REDIS_URL 等，git 不跟踪；`.env` 里 SUPABASE_* 三个键是遗留，server 已不读 |
+| `.env` | **必须** | 含 DATABASE_URL、REDIS_URL，以及生成结果云存储使用的 SUPABASE_URL / SUPABASE_SECRET_KEY / SUPABASE_STORAGE_BUCKET；git 不跟踪 |
 | `storage/` | 可选 | 上传素材、生成的图/视频、notes-images 缓存；不拷则历史素材丢失，应用照常运行 |
 
 ## 步骤

@@ -5,16 +5,15 @@
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSCommandPath
 Set-Location -LiteralPath $root
+. (Join-Path $root 'launcher-utils.ps1')
 
-# Auto-detect: system PATH first, then legacy F:\Node.
-$nodeDir = $null
-$nodeCmd = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
-if ($nodeCmd) { $nodeDir = Split-Path -Parent $nodeCmd }
-elseif (Test-Path 'F:\Node\node.exe') { $nodeDir = 'F:\Node' }
-if ($nodeDir) { $env:PATH = "$nodeDir;" + $env:PATH }
-$npm = if ($nodeDir -and (Test-Path (Join-Path $nodeDir 'npm.cmd'))) { Join-Path $nodeDir 'npm.cmd' } else { 'npm.cmd' }
+$nodeTools = Resolve-NodeTools
+if (-not $nodeTools) { throw 'Node.js + npm not found. Install Node.js LTS or add it to PATH.' }
+$env:PATH = "$($nodeTools.Dir);$env:PATH"
 
 $logDir = Join-Path $root 'logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
-& $npm --prefix server run queue *>> (Join-Path $logDir 'worker-dev.log')
+$srcDir = Join-Path $root 'server\src'
+$entry = Join-Path $srcDir 'worker.js'
+& $nodeTools.Node --watch "--watch-path=$srcDir" $entry *>> (Join-Path $logDir 'worker-dev.log')

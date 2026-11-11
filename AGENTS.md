@@ -26,8 +26,10 @@ discoverable by both Codex and Claude Code:
 ## When working on mini-tools
 
 - For CLI operations (upload / preview / submit / edit), follow `redapp-cli`
-  and always run the version gate first:
-  `node .skills/redapp-cli/scripts/ensure-cli.mjs`
+  and always run the version gate first with a process-scoped writable npm
+  prefix/cache (for example under `storage/redapp-npm/`); do not permanently
+  change global npm config. Only continue when `CLI_VERSION_JSON.status` is
+  `current`, `installed`, or `updated`.
 - For building/packaging H5 as a mini-tool zip, follow `minitool-zip-builder`
   and validate with `.skills/minitool-zip-builder/scripts/audit_artifact.mjs`.
 - Do not invent API contracts; read the references under each skill's

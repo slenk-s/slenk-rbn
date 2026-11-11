@@ -54,6 +54,9 @@ fs.mkdirSync(notesImagesDir, { recursive: true });
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
+// Unauthenticated identity endpoint for the Windows launcher: lets it distinguish
+// this API from an unrelated process that happens to occupy port 3001.
+app.get('/api/health', (req, res) => res.json({ ok: true, app: 'slenk-notes' }));
 // Static asset dirs. If you add one here, mirror it in the dev proxy at
 // web/vite.config.js (server.proxy) — otherwise dev mode serves broken assets.
 app.use('/uploads', express.static(uploadsDir));

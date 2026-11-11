@@ -7,6 +7,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSCommandPath
 Set-Location -LiteralPath $root
+. (Join-Path $root 'launcher-utils.ps1')
 
 function Write-Step([string]$msg) { Write-Host "`n[$($script:step)/6] $msg" -ForegroundColor Cyan; $script:step++ }
 function Write-Ok([string]$msg) { Write-Host "  OK  $msg" -ForegroundColor Green }
@@ -15,44 +16,15 @@ function Write-Err([string]$msg) { Write-Host "  ERROR $msg" -ForegroundColor Re
 
 $script:step = 1
 
-# --- 0. Find Redis executables -------------------------------------------
-function Find-Redis {
-  $candidates = @()
-  # winget packages dir
-  $wg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Directory -Filter '*redis-windows*' -ErrorAction SilentlyContinue
-  foreach ($d in $wg) {
-    $srv = Join-Path $d.FullName 'redis-server.exe'
-    $cli = Join-Path $d.FullName 'redis-cli.exe'
-    if (Test-Path $srv) { $candidates += [pscustomobject]@{ Server = $srv; Cli = $cli } }
-  }
-  # PATH lookup
-  $srvFromPath = (Get-Command redis-server.exe -ErrorAction SilentlyContinue).Source
-  $cliFromPath = (Get-Command redis-cli.exe -ErrorAction SilentlyContinue).Source
-  if ($srvFromPath) { $candidates += [pscustomobject]@{ Server = $srvFromPath; Cli = $cliFromPath } }
-  # legacy fixed paths (E:\Redis, D:\slenk\YLan\Redis)
-  foreach ($legacy in @('E:\Redis', 'D:\slenk\YLan\Redis')) {
-    # Build the path as a string; Test-Path on a missing drive would throw during arg evaluation.
-    $legacySrv = "$legacy\redis-server.exe"
-    $legacyCli = "$legacy\redis-cli.exe"
-    if (Test-Path -LiteralPath $legacySrv -ErrorAction SilentlyContinue) {
-      $candidates += [pscustomobject]@{ Server = $legacySrv; Cli = $legacyCli }
-    }
-  }
-  return $candidates | Select-Object -First 1
-}
-
-function Find-Node {
-  $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
-  if (-not $node -and (Test-Path 'F:\Node\node.exe')) { $node = 'F:\Node\node.exe' }
-  if ($node) { return Split-Path -Parent $node }
-  return $null
-}
-
-$redis = Find-Redis
-$nodeDir = Find-Node
-if (-not $nodeDir) { Write-Err 'Node.js not found. Install Node.js LTS and add it to PATH.'; exit 1 }
-Write-Host "Node dir : $nodeDir"
-if ($redis) { Write-Host "Redis    : $($redis.Server)" } else { Write-Warn 'Redis not found (will try redis-cli on PATH later).' }
+# --- 0. Find Node / Redis executables -------------------------------------
+$redis = Resolve-RedisTools
+$nodeTools = Resolve-NodeTools
+if (-not $nodeTools) { Write-Err 'Node.js + npm not found. Install Node.js LTS and add it to PATH.'; exit 1 }
+# Add the detected Node directory for child processes, but also use explicit paths below.
+$env:PATH = "$($nodeTools.Dir);$env:PATH"
+Write-Host "Node     : $($nodeTools.Node)"
+Write-Host "npm      : $($nodeTools.Npm)"
+if ($redis) { Write-Host "Redis    : $($redis.Server)" } else { Write-Warn 'Redis server + cli pair not found.' }
 
 # --- 1. Check .env ---------------------------------------------------------
 if (-not (Test-Path '.env')) { Write-Err '.env not found. Copy the .env from the old machine.'; exit 1 }
@@ -62,33 +34,31 @@ Write-Ok '.env found'
 Write-Step 'Checking dependencies'
 if (-not (Test-Path 'server\node_modules')) {
   Write-Host '  Installing server deps ...'
-  & npm --prefix server install --no-audit --no-fund
+  & $nodeTools.Npm --prefix server install --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { Write-Err 'server deps install failed.'; exit 1 }
 } else { Write-Ok 'server deps present' }
 if (-not (Test-Path 'web\node_modules')) {
   Write-Host '  Installing web deps ...'
-  & npm --prefix web install --no-audit --no-fund
+  & $nodeTools.Npm --prefix web install --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { Write-Err 'web deps install failed.'; exit 1 }
 } else { Write-Ok 'web deps present' }
 
 # --- 3. Build frontend ----------------------------------------------------
 Write-Step 'Building web frontend'
-& npm --prefix web run build
+& $nodeTools.Npm --prefix web run build
 if ($LASTEXITCODE -ne 0) { Write-Err 'web build failed.'; exit 1 }
 Write-Ok 'web\dist built'
 
 # --- 4. Start Redis --------------------------------------------------------
 Write-Step 'Starting Redis'
-$redisCli = $null
-if ($redis -and (Test-Path $redis.Cli)) { $redisCli = $redis.Cli }
-else { $redisCli = (Get-Command redis-cli.exe -ErrorAction SilentlyContinue).Source }
+$redisCli = if ($redis) { $redis.Cli } else { $null }
 
 $ping = $false
 if ($redisCli) {
   $oldEAP = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
-  & $redisCli -p 6379 PING 2>$null | Out-Null
-  $ping = ($LASTEXITCODE -eq 0)
+  $reply = & $redisCli -p 6379 PING 2>$null
+  $ping = ($LASTEXITCODE -eq 0 -and "$reply".Trim() -eq 'PONG')
   $ErrorActionPreference = $oldEAP
 }
 if ($ping) {
@@ -96,16 +66,19 @@ if ($ping) {
 } elseif ($redis) {
   Write-Host '  Starting redis-server ...'
   Start-Process -FilePath $redis.Server -ArgumentList '--port','6379' -WindowStyle Hidden
-  Start-Sleep -Seconds 2
-  if ($redisCli) {
+  $deadline = (Get-Date).AddSeconds(10)
+  do {
+    Start-Sleep -Milliseconds 500
     $oldEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    & $redisCli -p 6379 PING 2>$null | Out-Null
+    $reply = & $redisCli -p 6379 PING 2>$null
+    $redisReady = ($LASTEXITCODE -eq 0 -and "$reply".Trim() -eq 'PONG')
     $ErrorActionPreference = $oldEAP
-  }
-  if ($LASTEXITCODE -eq 0) { Write-Ok 'Redis started' } else { Write-Err 'Redis did not respond to PING.'; exit 1 }
+  } while (-not $redisReady -and (Get-Date) -lt $deadline)
+  if ($redisReady) { Write-Ok 'Redis started' } else { Write-Err 'Redis did not respond with PONG within 10 seconds.'; exit 1 }
 } else {
-  Write-Warn 'Redis not found. Install Redis (winget: taizod1024.redis-windows-fork) or start it manually.'
+  Write-Err 'Redis server + redis-cli not found. Install Redis (winget: taizod1024.redis-windows-fork) or add both executables to PATH.'
+  exit 1
 }
 
 # --- 5. Start API + worker ------------------------------------------------
@@ -114,9 +87,24 @@ $logDir = Join-Path $root 'logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $portBusy = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue
 if ($portBusy) {
-  Write-Ok "Port 3001 already in use (PID $($portBusy.OwningProcess)) - reusing"
+  $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$($portBusy.OwningProcess)" -ErrorAction SilentlyContinue
+  $isOwnCommand = $owner -and (Test-SlenkProcessCommandLine -CommandLine $owner.CommandLine -RootPath $root)
+  $isSlenkApi = $false
+  if (-not $isOwnCommand) {
+    try {
+      $healthJson = (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:3001/api/health' -TimeoutSec 3).Content
+      $isSlenkApi = Test-SlenkHealthPayload -Json $healthJson
+    } catch { $isSlenkApi = $false }
+  }
+  if ($isOwnCommand -or $isSlenkApi) {
+    Write-Ok "Slenk API already running on 3001 (PID $($portBusy.OwningProcess)) - reusing"
+  } else {
+    Write-Err "Port 3001 is occupied by another process (PID $($portBusy.OwningProcess)); refusing to reuse it."
+    exit 1
+  }
 } else {
-  Start-Process -FilePath 'node' -ArgumentList 'src/index.js' -WorkingDirectory (Join-Path $root 'server') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'server.log') -RedirectStandardError (Join-Path $logDir 'server.err.log')
+  $serverScript = Join-Path $root 'server\src\index.js'
+  Start-Process -FilePath $nodeTools.Node -ArgumentList "`"$serverScript`"" -WorkingDirectory (Join-Path $root 'server') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'server.log') -RedirectStandardError (Join-Path $logDir 'server.err.log')
   # Poll up to ~15s for the port to come up (first boot can be slow).
   $deadline = (Get-Date).AddSeconds(15)
   $portBusy = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue
@@ -128,11 +116,12 @@ if ($portBusy) {
 }
 
 Write-Step 'Starting queue worker'
-$workerRunning = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'src[\\/]worker\.js' }
+$workerRunning = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { Test-SlenkProcessCommandLine -CommandLine $_.CommandLine -RootPath $root } | Where-Object { $_.CommandLine.Replace('/', '\').IndexOf((Join-Path $root 'server\src\worker.js'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }
 if ($workerRunning) {
   Write-Ok "Worker already running (PID $($workerRunning.ProcessId -join ','))"
 } else {
-  Start-Process -FilePath 'node' -ArgumentList 'src/worker.js' -WorkingDirectory (Join-Path $root 'server') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'worker.log') -RedirectStandardError (Join-Path $logDir 'worker.err.log')
+  $workerScript = Join-Path $root 'server\src\worker.js'
+  Start-Process -FilePath $nodeTools.Node -ArgumentList "`"$workerScript`"" -WorkingDirectory (Join-Path $root 'server') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'worker.log') -RedirectStandardError (Join-Path $logDir 'worker.err.log')
   Write-Ok 'Worker started'
 }
 
