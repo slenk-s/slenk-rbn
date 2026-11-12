@@ -56,8 +56,13 @@ function Resolve-RedisTools {
   $pathCli = Find-ExecutableOnPath -Name 'redis-cli.exe' -PathValue $PathValue
   if ($pathServer -and $pathCli) { $pairs += [pscustomobject]@{ Server = $pathServer; Cli = $pathCli } }
   foreach ($dir in $FallbackDirs) {
-    $server = Join-Path $dir 'redis-server.exe'
-    $cli = Join-Path $dir 'redis-cli.exe'
+    if (-not $dir) { continue }
+    # Join-Path throws for a missing drive under ErrorActionPreference=Stop;
+    # build the candidate strings first so unavailable legacy drives are skipped.
+    $base = [string]$dir
+    $separator = if ($base.EndsWith('\') -or $base.EndsWith('/')) { '' } else { '\' }
+    $server = $base + $separator + 'redis-server.exe'
+    $cli = $base + $separator + 'redis-cli.exe'
     if ((Test-Path -LiteralPath $server -PathType Leaf -ErrorAction SilentlyContinue) -and
         (Test-Path -LiteralPath $cli -PathType Leaf -ErrorAction SilentlyContinue)) {
       $pairs += [pscustomobject]@{ Server = $server; Cli = $cli }
