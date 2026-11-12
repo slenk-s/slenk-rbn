@@ -274,7 +274,12 @@ export function createMiniToolPublishHandler({
       }
       const retained = registry.getByFingerprint?.(req.user?.userId, fingerprint);
       if (retained && retained.status !== 'failed') {
-        const reused = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async () => null);
+        // Retained running/done/protected work is reused as-is; this operation runs
+        // only if the record expires between the lookup above and createOrReuse,
+        // which must never silently mint an empty done job.
+        const reused = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async () => {
+          throw Object.assign(new Error('retained_publish_missing'), { code: 'PUBLISH_ATTEMPT_CONFLICT' });
+        });
         const dto = registry.toDto(reused, attemptId);
         return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);
       }

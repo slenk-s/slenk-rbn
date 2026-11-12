@@ -21,6 +21,7 @@
 | 文件/目录 | 必要性 | 说明 |
 |---|---|---|
 | `.env` | **必须** | 含 DATABASE_URL、REDIS_URL，以及生成结果云存储使用的 SUPABASE_URL / SUPABASE_SECRET_KEY / SUPABASE_STORAGE_BUCKET；git 不跟踪 |
+| `JWT_SECRET` | 强烈建议 | `.env` 中自行设置任意随机串；不设置时服务回退到仓库内置默认值，局域网内其他设备可伪造登录令牌访问 API（含小红书共享授权管理）。只在本机使用且无对外暴露时可接受 |
 | `storage/` | 可选 | 上传素材、生成的图/视频、notes-images 缓存；不拷则历史素材丢失，应用照常运行 |
 
 ## 小红书凭证（不用拷贝）
