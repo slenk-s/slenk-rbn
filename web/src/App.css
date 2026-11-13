@@ -2961,6 +2961,8 @@ button:hover { transform: translateY(-1px); }
 .publish-account-select { width: 100%; flex: 1 1 auto; }
 .publish-account-select .themed-select-trigger { width: 100%; min-height: 40px; font-size: 13px; }
 .publish-account-select .themed-select-value { max-width: none; flex: 1 1 auto; text-align: left; }
+/* 发布弹框内联展开：弹层回到文档流，选项增多时弹框随内容增高，不再被滚动容器裁切、不出现滚动条。 */
+.publish-account-select .themed-select-pop { position: static; margin-top: 6px; min-width: 0; max-width: none; max-height: none; box-shadow: none; animation: none; }
 .publish-account-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 2px; padding: 11px 13px; border: 1px solid rgba(234, 179, 8, .26); border-radius: 12px; background: rgba(254, 249, 195, .42); }
 .publish-account-empty span { color: #713f12; font-size: 12px; line-height: 1.55; }
 .publish-account-empty button { flex: 0 0 auto; }
