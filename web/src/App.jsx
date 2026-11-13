@@ -868,8 +868,12 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     if (!id) throw new Error('任务创建失败');
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
-      const list = await api('/api/tasks');
-      const task = list.tasks?.find(t => t.id === id);
+      // 轮询单任务端点而不是全量列表：原来每 1.5s 拉 200 行跨用户任务表（含完整 JSONB）。
+      // 单次读取失败（网络抖动/短暂 404）不放弃，在总预算内继续重试。
+      let task = null;
+      try {
+        ({ task } = await api(`/api/tasks/${id}`));
+      } catch {}
       if (task?.status === 'done') return task;
       if (task?.status === 'failed') {
         let message2 = task.error;
@@ -1640,7 +1644,23 @@ function Workspace({ token }) {
       setTasks(taskData.tasks || []); setProviders(providerData.providers || []); setActiveProviderId(providerData.activeProviderId || ''); setActiveTextProviderId(providerData.activeTextProviderId || ''); setActiveImageProviderId(providerData.activeImageProviderId || '');
     } catch (err) { setStatus(err.message); }
   }, [token]);
-  useEffect(() => { if (!token) return; refresh(); const timer = setInterval(refresh, 4000); return () => clearInterval(timer); }, [token, refresh]);
+  // 仅任务列表的轻量刷新：provider 变更后已有主动更新（onProvidersUpdate/onProviderChange），
+  // 定时轮询只刷任务，并在页面不可见时暂停，回到前台立即补刷。
+  const refreshTasks = useCallback(async () => {
+    try {
+      const taskData = await api('/api/tasks', { token });
+      setTasks(taskData.tasks || []);
+    } catch (err) { setStatus(err.message); }
+  }, [token]);
+  useEffect(() => {
+    if (!token) return;
+    refresh();
+    const tick = () => { if (!document.hidden) refreshTasks(); };
+    const timer = setInterval(tick, 4000);
+    const onVisible = () => { if (!document.hidden) refreshTasks(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [token, refresh, refreshTasks]);
   useEffect(() => { if (!token) return; api('/api/auth/me', { token }).then(data => setMe(data.user || null)).catch(() => setMe(null)); }, [token]);
   const clearedTabs = useRef(new Set());
   const pendingTaskId = useRef('');

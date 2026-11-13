@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { nanoid } from 'nanoid';
-import { addTask, getTask, getTaskById, listTasks, listAllTasks, deleteTask, deleteTaskById, deleteTasksByIds, updateTask, getActiveProvider, findUserById } from '../store.js';
+import { addTask, getTask, getTaskById, listTasks, countTasksByType, listAllTasks, deleteTask, deleteTaskById, deleteTasksByIds, updateTask, getActiveProvider, findUserById } from '../store.js';
 import { paths } from '../paths.js';
 import { verify } from '../auth.js';
 
@@ -41,13 +43,15 @@ export async function enqueueTask(type, payload, userId, tab) {
   const sourceTab = input.tab || tab || null;
   const aiPayload = { ...input };
   delete aiPayload.tab;
-  const active = await getActiveProvider(mode, userId);
+  // provider 解析与同类任务计数相互独立，并行发出；计数用 COUNT 查询而非拉 100 行全量。
+  const [active, sameTypeBase] = await Promise.all([
+    getActiveProvider(mode, userId),
+    countTasksByType(userId, type, sourceTab)
+  ]);
   const taskPayload = { ...aiPayload, providerId: aiPayload.providerId || active?.id || null };
   const id = nanoid(16);
   const now = new Date().toISOString();
-  const sameTypeCount = (await listTasks(userId))
-    .filter(t => t.type === type && (type !== 'image' || (t.tab || null) === sourceTab))
-    .length + 1;
+  const sameTypeCount = sameTypeBase + 1;
   await addTask({
     id,
     userId,
@@ -109,7 +113,8 @@ router.post('/batch-delete', async (req, res, next) => {
     if (!ids.length) return res.status(400).json({ error: 'missing_ids' });
     const me = await findUserById(req.user.userId);
     const deleted = await deleteTasksByIds(ids, req.user.userId, Boolean(me?.isAdmin));
-    res.json({ ok: true, deleted, tasks: await listAllTasks() });
+    // 不再附带全量任务列表（远程库每次数百毫秒）：前端删除后会主动刷新。
+    res.json({ ok: true, deleted });
   } catch (err) {
     next(err);
   }
@@ -129,7 +134,7 @@ router.delete('/:id', async (req, res, next) => {
       removed = await deleteTaskById(req.params.id);
     }
     if (!removed) return res.status(404).json({ error: 'task_not_found' });
-    res.json({ ok: true, tasks: await listAllTasks() });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -156,13 +161,14 @@ router.get('/:id/download', async (req, res, next) => {
 
     const mediaUrl = format === 'video' ? (parsed.video || '') : (parsed.image || parsed.images?.[0] || '');
     if (!mediaUrl) return res.status(404).json({ error: 'no_media' });
-    // 云端 URL（Supabase Storage 公网地址）：服务端拉回字节再转发，保住附件下载的文件名。
+    // 云端 URL（Supabase Storage 公网地址）：服务端流式拉回并转发，保住附件下载的文件名，不再整体缓冲。
     if (/^https?:\/\//i.test(mediaUrl)) {
       const upstream = await fetch(mediaUrl);
       if (!upstream.ok) return res.status(502).json({ error: 'upstream_fetch_failed' });
       res.setHeader('Content-Type', upstream.headers.get('content-type') || (format === 'video' ? 'video/mp4' : 'image/png'));
       res.setHeader('Content-Disposition', 'attachment; filename="' + name.replace(/"/g, '') + '"');
-      return res.send(Buffer.from(await upstream.arrayBuffer()));
+      await pipeline(Readable.fromWeb(upstream.body), res);
+      return;
     }
     const base = mediaUrl.startsWith('/uploads/')
       ? paths.uploadsDir

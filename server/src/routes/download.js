@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { verify } from '../auth.js';
 import { paths } from '../paths.js';
 
@@ -60,7 +62,6 @@ router.get('/', async (req, res, next) => {
     const name = String(req.query.name || 'image').replace(/[\\/:*?"<>|]/g, '_');
     const localPath = safeLocalAssetPath(target);
     if (localPath && fs.existsSync(localPath)) {
-      const localBuf = fs.readFileSync(localPath);
       const localType = contentTypeForLocalPath(localPath);
       const hasExt = /\.[a-z0-9]{2,5}$/i.test(name);
       const ext = hasExt ? '' : (localType.includes('mp4') ? '.mp4' : (localType.includes('png') ? '.png' : ''));
@@ -71,7 +72,10 @@ router.get('/', async (req, res, next) => {
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
       }
-      return res.send(localBuf);
+      // 流式输出本地文件：不再整文件读进内存阻塞事件循环。
+      res.setHeader('Content-Length', fs.statSync(localPath).size);
+      await pipeline(fs.createReadStream(localPath), res);
+      return;
     }
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 25000); // 25秒超时
@@ -106,9 +110,10 @@ router.get('/', async (req, res, next) => {
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', 'attachment; filename="' + encodeURIComponent(name + ext) + '"');
     }
-    const buf = Buffer.from(await resp.arrayBuffer());
-    res.send(buf);
+    // 流式转发上游字节：大视频不再整体缓冲进内存，首字节到达即开始下发。
+    await pipeline(Readable.fromWeb(resp.body), res);
   } catch (err) {
+    if (res.headersSent) return;
     res.status(500).json({ error: err.message });
   }
 });

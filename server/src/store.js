@@ -16,15 +16,19 @@ function mapUser(row) {
   };
 }
 
+// 幂等自检：admin 用户存在与否一旦确认过就不再每次登录都查库（远程库往返成本高）。
+let adminEnsured = false;
 async function ensureAdmin() {
+  if (adminEnsured) return;
   const existing = await query('select id from slenk_notes_users where username = $1', ['admin']);
-  if (existing.rows.length) return;
+  if (existing.rows.length) { adminEnsured = true; return; }
   await query(
     `insert into slenk_notes_users (id, username, password_hash, is_admin)
      values ($1, $2, $3, true) on conflict (username) do nothing`,
     ['admin', 'admin', bcrypt.hashSync('123456', 10)]
   );
   await query('insert into slenk_notes_user_settings (user_id) values ($1) on conflict do nothing', ['admin']);
+  adminEnsured = true;
 }
 
 async function findUserByUsername(username) {
@@ -136,6 +140,17 @@ async function listTasks(userId, limit = 100) {
 async function getTask(userId, id) {
   const { rows } = await query('select * from slenk_notes_tasks where user_id = $1 and id = $2', [userId, id]);
   return rows[0] ? mapTask(rows[0]) : null;
+}
+
+// 任务编号计数：image 类型按来源页签区分（替换生图与 AI 生图共用 type=image）。
+async function countTasksByType(userId, type, tab) {
+  const { rows } = await query(
+    `select count(*)::int as n from slenk_notes_tasks
+     where user_id = $1 and type = $2
+       and ($2 <> 'image' or coalesce(tab, '') = coalesce($3, ''))`,
+    [userId, type, tab ?? null]
+  );
+  return rows[0].n;
 }
 
 // 任务结果全站共享：列表与详情不再按 user_id 过滤，附带生成者用户名用于前端署名。
@@ -308,17 +323,13 @@ async function getActiveProvider(mode, userId) {
   const preferredId = mode === 'text' ? settings.activeTextProviderId
     : mode === 'image' ? settings.activeImageProviderId
     : settings.activeProviderId;
-  if (preferredId) {
-    const preferred = await getProviderUnmaskedById(preferredId);
-    if (preferred) return preferred;
-  }
-  const byMode = await query(
-    `select ${PROVIDER_COLUMNS} from slenk_notes_providers where mode = $1 order by created_at, id limit 1`,
-    [mode]
+  // 一次查询完成三段回退（用户偏好 > 按模式首个 > 任意首个），省掉多次串行的远程往返。
+  const { rows } = await query(
+    `select ${PROVIDER_COLUMNS} from slenk_notes_providers
+     order by (id = $2) desc, (mode = $1) desc, created_at, id limit 1`,
+    [mode, preferredId || '']
   );
-  if (byMode.rows[0]) return mapProvider(byMode.rows[0]);
-  const fallback = await query(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at, id limit 1`);
-  return fallback.rows[0] ? mapProvider(fallback.rows[0]) : null;
+  return rows[0] ? mapProvider(rows[0]) : null;
 }
 
 async function setActiveProvider(providerId, mode, userId) {
@@ -488,6 +499,7 @@ export {
   deleteUser,
   addTask,
   listTasks,
+  countTasksByType,
   listAllTasks,
   getTask,
   getTaskById,

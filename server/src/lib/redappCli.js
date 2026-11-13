@@ -349,12 +349,35 @@ export function createRedappCliEnsurerAsync({ gateExists, cliExists, prepareCach
   };
 }
 
-export const ensureRedappCliAsync = createRedappCliEnsurerAsync({
+// 版本门禁结果进程内缓存：门禁要访问 npm registry（境外、间歇不可达），每条 CLI 命令
+// 都跑一次会让账号列表/发布链路抖动明显。单飞 + 短 TTL；失败不缓存（下次重试）。
+export function createMemoizedCliEnsurer(ensureCli, { ttlMs = 10 * 60 * 1000, now = Date.now } = {}) {
+  let cached = null;
+  let inflight = null;
+  return async function memoizedEnsureCli(...args) {
+    if (cached && now() - cached.at < ttlMs) return cached.value;
+    if (inflight) return inflight;
+    inflight = (async () => {
+      try {
+        const value = await ensureCli(...args);
+        cached = { at: now(), value };
+        return value;
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
+  };
+}
+
+const ensureRedappCliAsyncRaw = createRedappCliEnsurerAsync({
   gateExists: () => fs.existsSync(redappSkillGatePath),
   cliExists: () => fs.existsSync(CLI_ENTRY),
   prepareCache: () => fs.mkdirSync(NPM_CACHE, { recursive: true }),
   executeGate: options => spawnNodeAsync([redappSkillGatePath], 180 * 1000, options)
 });
+
+export const ensureRedappCliAsync = createMemoizedCliEnsurer(ensureRedappCliAsyncRaw);
 
 export async function spawnRedappLogin({ credentialHome } = {}) {
   await ensureRedappCliAsync({ credentialHome });

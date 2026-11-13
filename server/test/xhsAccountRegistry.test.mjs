@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { createRedappNpmEnv, createAsyncProcessRunner, createRedappOperationsAsync } from '../src/lib/redappCli.js';
+import { createRedappNpmEnv, createAsyncProcessRunner, createRedappOperationsAsync, createMemoizedCliEnsurer } from '../src/lib/redappCli.js';
 import { createXhsAccountRegistry } from '../src/lib/xhsAccountRegistry.js';
 import { matchLoginToAccount } from '../src/lib/xhsAccountMatcher.js';
 import { paths } from '../src/paths.js';
@@ -24,6 +24,47 @@ test('registry passes renameForUser through to the injected store', async () => 
 test('omits SKILLHUB_UPLOAD_HOME when credentialHome is absent', () => {
   const env = createRedappNpmEnv('win32');
   assert.equal('SKILLHUB_UPLOAD_HOME' in env, false);
+});
+
+// 版本门禁每次都要访问 npm registry（境外、不稳），结果进程内单飞 + TTL 缓存。
+test('memoized CLI ensurer caches the verdict within the TTL', async () => {
+  let calls = 0;
+  const ensure = createMemoizedCliEnsurer(async () => { calls += 1; return { status: 'current' }; }, { ttlMs: 1000 });
+  await ensure();
+  await ensure();
+  assert.equal(calls, 1);
+});
+
+test('memoized CLI ensurer is single-flight for concurrent callers', async () => {
+  let calls = 0;
+  let release;
+  const ensure = createMemoizedCliEnsurer(() => { calls += 1; return new Promise(r => { release = () => r({ status: 'current' }); }); }, { ttlMs: 1000 });
+  const first = ensure();
+  const second = ensure();
+  await new Promise(r => setImmediate(r));
+  release();
+  await Promise.all([first, second]);
+  assert.equal(calls, 1);
+});
+
+test('memoized CLI ensurer does not cache failures', async () => {
+  let calls = 0;
+  let fail = true;
+  const ensure = createMemoizedCliEnsurer(async () => { calls += 1; if (fail) throw new Error('npm registry unreachable'); return { status: 'current' }; });
+  await assert.rejects(() => ensure(), /npm registry unreachable/);
+  fail = false;
+  assert.deepEqual(await ensure(), { status: 'current' });
+  assert.equal(calls, 2);
+});
+
+test('memoized CLI ensurer refreshes after the TTL', async () => {
+  let calls = 0;
+  let nowValue = 1000;
+  const ensure = createMemoizedCliEnsurer(async () => { calls += 1; return { status: 'current' }; }, { ttlMs: 100, now: () => nowValue });
+  await ensure();
+  nowValue += 200;
+  await ensure();
+  assert.equal(calls, 2);
 });
 
 function createFakeChild() {

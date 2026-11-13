@@ -13,6 +13,12 @@ import {
 export const router = Router();
 router.use(verify);
 
+// 供应商列表与用户激活设置相互独立，并行查询（远程库每次往返数百毫秒，串行白付一倍）。
+async function providerSnapshot(userId) {
+  const [providers, activeIds] = await Promise.all([listProviders(), getActiveProviderIds(userId)]);
+  return { providers, ...activeIds };
+}
+
 
 export const PROVIDER_PRESETS = [
   {
@@ -71,9 +77,8 @@ export const PROVIDER_PRESETS = [
 
 router.get('/', async (req, res, next) => {
   try {
-    const providers = await listProviders();
-    const activeIds = await getActiveProviderIds(req.user.userId);
-    res.json({ providers, ...activeIds, presets: PROVIDER_PRESETS });
+    const snapshot = await providerSnapshot(req.user.userId);
+    res.json({ ...snapshot, presets: PROVIDER_PRESETS });
   } catch (err) {
     next(err);
   }
@@ -82,9 +87,7 @@ router.get('/', async (req, res, next) => {
 router.post('/', requireAdmin, async (req, res, next) => {
   try {
     const created = await addProvider(req.body);
-    const providers = await listProviders();
-    const activeIds = await getActiveProviderIds(req.user.userId);
-    res.status(201).json({ provider: created, providers, ...activeIds });
+    res.status(201).json({ provider: created, ...await providerSnapshot(req.user.userId) });
   } catch (err) {
     next(err);
   }
@@ -94,9 +97,7 @@ router.put('/:id', requireAdmin, async (req, res, next) => {
   try {
     const updated = await updateProvider(req.params.id, req.body);
     if (!updated) return res.status(404).json({ error: 'provider_not_found' });
-    const providers = await listProviders();
-    const activeIds = await getActiveProviderIds(req.user.userId);
-    res.json({ provider: updated, providers, ...activeIds });
+    res.json({ provider: updated, ...await providerSnapshot(req.user.userId) });
   } catch (err) {
     next(err);
   }
@@ -106,9 +107,7 @@ router.delete('/:id', requireAdmin, async (req, res, next) => {
   try {
     const removed = await deleteProvider(req.params.id);
     if (!removed) return res.status(404).json({ error: 'provider_not_found' });
-    const providers = await listProviders();
-    const activeIds = await getActiveProviderIds(req.user.userId);
-    res.json({ providers, ...activeIds });
+    res.json(await providerSnapshot(req.user.userId));
   } catch (err) {
     next(err);
   }
@@ -170,9 +169,7 @@ router.post('/:id/duplicate', requireAdmin, async (req, res, next) => {
       notes: existing.notes,
       active: false
     });
-    const providers = await listProviders();
-    const activeIds = await getActiveProviderIds(req.user.userId);
-    res.status(201).json({ provider: created, providers, ...activeIds });
+    res.status(201).json({ provider: created, ...await providerSnapshot(req.user.userId) });
   } catch (err) {
     next(err);
   }
@@ -182,9 +179,7 @@ router.post('/:id/active', async (req, res, next) => {
   try {
     const mode = (req.body && req.body.mode) || null;
     await setActiveProvider(req.params.id, mode, req.user.userId);
-    const providers = await listProviders();
-    const activeIds = await getActiveProviderIds(req.user.userId);
-    res.json({ providers, ...activeIds });
+    res.json(await providerSnapshot(req.user.userId));
   } catch (err) {
     next(err);
   }
