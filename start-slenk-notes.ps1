@@ -1,15 +1,16 @@
 # Slenk Notes one-click launcher (auto-detect Node / Redis).
 #
 # Auto-detects Redis (winget package -> PATH -> E:\Redis) and Node (PATH -> F:\Node),
-# installs deps if missing, builds the web frontend, starts Redis + API + queue worker,
-# then opens the browser.
+# installs deps if missing, builds the web frontend (keeps the API's dist fresh for the
+# tunnel), starts Redis + API + queue worker + Vite dev server, then opens the browser
+# at the dev server (http://localhost:5173).
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSCommandPath
 Set-Location -LiteralPath $root
 . (Join-Path $root 'launcher-utils.ps1')
 
-function Write-Step([string]$msg) { Write-Host "`n[$($script:step)/6] $msg" -ForegroundColor Cyan; $script:step++ }
+function Write-Step([string]$msg) { Write-Host "`n[$($script:step)/7] $msg" -ForegroundColor Cyan; $script:step++ }
 function Write-Ok([string]$msg) { Write-Host "  OK  $msg" -ForegroundColor Green }
 function Write-Warn([string]$msg) { Write-Host "  WARN $msg" -ForegroundColor Yellow }
 function Write-Err([string]$msg) { Write-Host "  ERROR $msg" -ForegroundColor Red }
@@ -125,12 +126,30 @@ if ($workerRunning) {
   Write-Ok 'Worker started'
 }
 
-# --- 6. Open browser ------------------------------------------------------
+# --- 6. Start web dev server (Vite, port 5173) -----------------------------
+Write-Step 'Starting web dev server (port 5173)'
+$viteBusy = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
+if ($viteBusy) {
+  Write-Ok 'Web dev server already running on 5173 - reusing'
+} else {
+  $viteBin = Join-Path $root 'web\node_modules\vite\bin\vite.js'
+  Start-Process -FilePath $nodeTools.Node -ArgumentList "`"$viteBin`"" -WorkingDirectory (Join-Path $root 'web') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'web-dev.log') -RedirectStandardError (Join-Path $logDir 'web-dev.err.log')
+  # Poll up to ~20s for the dev server to come up.
+  $deadline = (Get-Date).AddSeconds(20)
+  while (-not $viteBusy -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    $viteBusy = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
+  }
+  if ($viteBusy) { Write-Ok 'Web dev server listening on 5173' } else { Write-Err 'Web dev server did not start. Check logs\web-dev.err.log'; exit 1 }
+}
+
+# --- 7. Open browser ------------------------------------------------------
 Write-Step 'Opening browser'
-Start-Process 'http://localhost:3001/'
+Start-Process 'http://localhost:5173/'
 
 Write-Host "`n==================================================" -ForegroundColor Green
 Write-Host "  Ready" -ForegroundColor Green
-Write-Host "  Web + API : http://localhost:3001/" -ForegroundColor Green
+Write-Host "  Web (dev) : http://localhost:5173/" -ForegroundColor Green
+Write-Host "  API       : http://localhost:3001/" -ForegroundColor Green
 Write-Host "  Login     : admin / 123456" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Green

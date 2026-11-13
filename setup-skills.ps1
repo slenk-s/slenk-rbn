@@ -7,7 +7,7 @@ $root = Split-Path -Parent $PSCommandPath
 $projSkills = Join-Path $root '.skills'
 . (Join-Path $root 'launcher-utils.ps1')
 
-$targets = @('redapp-cli', 'minitool-zip-builder')
+$targets = @('redapp-cli', 'minitool-zip-builder', 'turnstile-spin')
 foreach ($name in $targets) {
   $manifest = Join-Path $projSkills "$name\SKILL.md"
   if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {

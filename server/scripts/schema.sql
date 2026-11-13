@@ -64,25 +64,7 @@ create index if not exists slenk_notes_notes_user_created_idx
 -- Upgrades for databases created before a column existed. Safe to re-run.
 alter table slenk_notes_providers add column if not exists image_api text not null default 'json';
 
--- Access model: the backend connects as the table owner and is the only client.
--- RLS with no policies keeps anon/authenticated at zero rows, but Supabase grants
--- those roles on new public tables by default, so the grants have to be revoked
--- explicitly below to take the tables off the Data API surface.
-alter table slenk_notes_users enable row level security;
-alter table slenk_notes_user_settings enable row level security;
-alter table slenk_notes_providers enable row level security;
-alter table slenk_notes_tasks enable row level security;
-alter table slenk_notes_notes enable row level security;
-
--- Least privilege: remove the default Data API grants on the tables above.
-revoke all on slenk_notes_users from anon, authenticated;
--- The backend is the only client and connects as the table owner, so removing PUBLIC cannot affect it.
-revoke all on slenk_notes_users from public;
-revoke all on slenk_notes_user_settings from anon, authenticated;
-revoke all on slenk_notes_user_settings from public;
-revoke all on slenk_notes_providers from anon, authenticated;
-revoke all on slenk_notes_providers from public;
-revoke all on slenk_notes_tasks from anon, authenticated;
-revoke all on slenk_notes_tasks from public;
-revoke all on slenk_notes_notes from anon, authenticated;
-revoke all on slenk_notes_notes from public;
+-- Supabase-specific hardening (RLS + revoking the anon/authenticated Data API
+-- grants) lives in supabase-hardening.sql; apply-schema.mjs runs it only when
+-- those roles exist (Supabase), so this file stays portable to TiDB Cloud or
+-- a plain local PostgreSQL.

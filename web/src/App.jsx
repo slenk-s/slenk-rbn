@@ -1766,19 +1766,53 @@ function Workspace({ token }) {
     </div>
   );
 }
+const TURNSTILE_SITEKEY = '0x4AAAAAAF-KfPS4yQCRHsCg';
 function Auth() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const turnstileRef = useRef(null);
+  const turnstileIdRef = useRef(null);
+  // Explicit render so we keep the widget id: tokens are single-use, and the
+  // page stays active after a failed login, so each retry needs a reset.
+  useEffect(() => {
+    let cancelled = false;
+    function render() {
+      if (cancelled || !window.turnstile || !turnstileRef.current || turnstileIdRef.current !== null) return;
+      turnstileIdRef.current = window.turnstile.render(turnstileRef.current, {
+        sitekey: TURNSTILE_SITEKEY,
+        action: 'login',
+        'error-callback': (code) => setError('人机验证失败（错误码 ' + code + '），请刷新重试'),
+        'expired-callback': () => { if (turnstileIdRef.current !== null) window.turnstile.reset(turnstileIdRef.current); },
+      });
+    }
+    if (window.turnstile) render();
+    else if (!document.querySelector('script[data-turnstile]')) {
+      const s = document.createElement('script');
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+      s.async = true; s.defer = true; s.dataset.turnstile = '';
+      s.onload = render;
+      s.onerror = () => setError('人机验证加载失败，请检查网络后刷新');
+      document.head.appendChild(s);
+    } else {
+      document.querySelector('script[data-turnstile]').addEventListener('load', render, { once: true });
+    }
+    return () => { cancelled = true; };
+  }, []);
   async function login(e) {
     e.preventDefault(); setError('');
     try {
-      const r = await fetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+      const token = window.turnstile?.getResponse(turnstileIdRef.current ?? undefined);
+      if (!token) { setError('人机验证未完成，请稍后重试'); return; }
+      const r = await fetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, 'cf-turnstile-response': token }) });
       const data = await readJsonResponse(r);
-      if (!r.ok) throw new Error(data.error || '登录失败');
+      if (!r.ok) throw new Error(data.error === 'forbidden' ? '人机验证失败，请重试' : data.error === 'invalid_credentials' ? '用户名或密码错误' : (data.error || '登录失败'));
       localStorage.setItem('token', data.token);
       location.reload();
-    } catch (err) { setError(err.message); }
+    } catch (err) {
+      setError(err.message);
+      if (window.turnstile && turnstileIdRef.current !== null) window.turnstile.reset(turnstileIdRef.current);
+    }
   }
   return (
     <div className="auth-screen">
@@ -1786,6 +1820,7 @@ function Auth() {
         <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>
         <label>用户名<input value={username} onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" required /></label>
         <label>密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" required /></label>
+        <div ref={turnstileRef}></div>
         {error && <p className="auth-error">{error}</p>}
         <button className="btn-primary" type="submit">登录</button>
       </form>

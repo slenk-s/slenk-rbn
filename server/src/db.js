@@ -1,10 +1,5 @@
 import './loadEnv.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const isTestProcess = process.argv.includes('--test') || Boolean(process.env.NODE_TEST_CONTEXT);
 const connectionString = isTestProcess
@@ -19,8 +14,9 @@ if (isTestProcess && !process.env.TEST_DATABASE_URL) {
   console.warn('⚠️ tests are running against DATABASE_URL (shared with the app); set TEST_DATABASE_URL to use a throwaway database');
 }
 
-// The Supabase pooler needs the bundled CA. A local or CI database has no
-// cert signed by that CA, so opt out explicitly with ?sslmode=disable.
+// sslmode=disable opts a local/CI database out of TLS. Everything else (TiDB
+// Cloud, Supabase-style poolers) uses TLS verified against Node's bundled
+// Mozilla root store, which includes the CAs TiDB Cloud serves (ISRG Root X1).
 let disableSsl = false;
 try {
   disableSsl = new URL(connectionString).searchParams.get('sslmode') === 'disable';
@@ -29,12 +25,7 @@ try {
 }
 const sslOptions = disableSsl
   ? {}
-  : {
-      ssl: {
-        ca: fs.readFileSync(path.resolve(__dirname, '../certs/prod-ca-2021.crt')),
-        rejectUnauthorized: true
-      }
-    };
+  : { ssl: { rejectUnauthorized: true } };
 
 export const pool = new pg.Pool({
   connectionString,

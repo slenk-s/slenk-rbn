@@ -40,7 +40,7 @@ if not "%EXIT_CODE%"=="0" (
 )
 
 echo.
-echo Done. Slenk Notes should be running at http://localhost:3001/
+echo Done. Slenk Notes should be running at http://localhost:5173/
 echo You can close this window.
 pause >nul
 exit /b 0

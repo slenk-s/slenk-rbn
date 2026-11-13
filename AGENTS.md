@@ -2,13 +2,17 @@
 
 ## Bundled skills
 
-This repo bundles two Xiaohongshu (XHS) skills under `.skills/`:
+This repo bundles two Xiaohongshu (XHS) skills under `.skills/`, plus one
+Cloudflare skill:
 
 - `redapp-cli` — management/CLI skill: run the `redapp` CLI to debug locally,
   query mini-tools, upload packages/images, generate phone previews, submit
   versions, and edit basic info.
 - `minitool-zip-builder` — development/spec skill: build H5 pages into
   container-compliant offline `.zip` mini-tool packages and validate artifacts.
+- `turnstile-spin` — Cloudflare Turnstile skill: set up, repair, or migrate
+  Turnstile bot verification (widget embed + server-side siteverify). The login
+  page uses this integration.
 
 These are project-local (not tied to a single agent). The same source lives in
 `.skills/`, and agent-specific discovery dirs (`.codex/skills`, `.claude/skills`)
