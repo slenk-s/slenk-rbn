@@ -450,6 +450,15 @@ async function deleteXhsAccount(userId, id) {
   return rows[0] ? mapXhsAccount(rows[0]) : null;
 }
 
+// 改名：仅当前用户，返回更新后行；不存在或跨用户返回 null。空字符串表示清除昵称。
+async function updateXhsAccountNickname(userId, id, nickname) {
+  const { rows } = await query(
+    'update slenk_notes_xhs_accounts set nickname = $3, updated_at = now() where user_id = $1 and id = $2 returning *',
+    [userId, id, nickname]
+  );
+  return rows[0] ? mapXhsAccount(rows[0]) : null;
+}
+
 // 管理员只读：按 user 分组返回 [{ userId, accounts }]。
 async function listAllXhsAccounts() {
   const { rows } = await query(
@@ -503,5 +512,6 @@ export {
   bindXhsAccountOpenId,
   findXhsAccountByOpenId,
   deleteXhsAccount,
+  updateXhsAccountNickname,
   listAllXhsAccounts
 };

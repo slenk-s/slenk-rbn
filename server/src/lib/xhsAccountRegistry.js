@@ -27,6 +27,7 @@ export function createXhsAccountRegistry({
   bindOpenIdForUser,
   findByOpenIdForUser,
   deleteForUser,
+  renameForUser,
   resolveCredentialDir,
   generateAccountId = defaultGenerateAccountId,
   generateCredentialDir = defaultGenerateCredentialDir,
@@ -63,6 +64,7 @@ export function createXhsAccountRegistry({
     bindOpenIdForUser,
     findByOpenIdForUser,
     deleteForUser: remove,
+    renameForUser,
     resolveCredentialDir: resolveDir
   };
 }

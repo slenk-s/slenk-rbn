@@ -2789,6 +2789,9 @@ button:hover { transform: translateY(-1px); }
 .xhs-account-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .xhs-account-actions button { min-height: 34px; }
 .xhs-account-delete { color: #b91c1c; }
+.xhs-account-rename { flex: 0 0 auto; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 8px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
+.xhs-account-rename:hover { color: var(--text-h); border-color: var(--text); }
+.xhs-account-name-input { flex: 0 1 auto; min-width: 0; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-h); background: #fff; }
 
 /* ---- 多账号：删除确认 ---- */
 .xhs-delete-modal { width: min(480px, 100%); }

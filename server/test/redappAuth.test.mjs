@@ -2122,6 +2122,11 @@ function createFakeAccountStore(initial = []) {
     deleteForUser: async (userId, id) => {
       const idx = rows.findIndex(r => r.userId === userId && r.id === id);
       return idx < 0 ? null : rows.splice(idx, 1)[0];
+    },
+    renameForUser: async (userId, id, nickname) => {
+      const row = rows.find(r => r.userId === userId && r.id === id);
+      if (row) row.nickname = nickname;
+      return row || null;
     }
   };
 }
@@ -2271,6 +2276,49 @@ test('DELETE /accounts/:id returns 404 for an unowned account and removes nothin
   assert.equal(response.statusCode, 404);
   assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
   assert.deepEqual(removed, []);
+});
+
+test('PATCH /accounts/:id renames an owned account and returns the masked DTO', async () => {
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1', { openId: 'ob5cfa901234' })]);
+  const router = buildAccountsRouter({ store });
+  const handler = routeHandler(router, 'patch', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, body: { nickname: '  我的大号 ' } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.nickname, '我的大号');
+  assert.equal(store.rows[0].nickname, '我的大号');
+  // 返回脱敏 DTO，不泄露完整 openId / 路径。
+  assert.equal(response.body.openIdMasked, 'ob5c…1234');
+  assert.equal(JSON.stringify(response.body).includes('ob5cfa901234'), false);
+});
+
+test('PATCH /accounts/:id clears the nickname with an empty string', async () => {
+  const store = createFakeAccountStore([{ ...routeAccount('acct-1', 'u1'), nickname: '旧名' }]);
+  const router = buildAccountsRouter({ store });
+  const handler = routeHandler(router, 'patch', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, body: { nickname: '   ' } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.nickname, '');
+});
+
+test('PATCH /accounts/:id rejects a non-string or over-long nickname with 400', async () => {
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1')]);
+  const router = buildAccountsRouter({ store });
+  const handler = routeHandler(router, 'patch', '/accounts/:id');
+  const nonString = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, body: { nickname: 123 } });
+  assert.equal(nonString.statusCode, 400);
+  assert.equal(nonString.body.code, 'XHS_NICKNAME_INVALID');
+  const tooLong = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, body: { nickname: 'x'.repeat(41) } });
+  assert.equal(tooLong.statusCode, 400);
+});
+
+test('PATCH /accounts/:id returns 404 for an unowned account and changes nothing', async () => {
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u2', { openId: 'ob5cfa901234' })]);
+  const router = buildAccountsRouter({ store });
+  const handler = routeHandler(router, 'patch', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, body: { nickname: 'x' } });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  assert.equal(store.rows[0].nickname, '');
 });
 
 test('GET /admin/accounts returns grouped masked lists for an admin', async () => {

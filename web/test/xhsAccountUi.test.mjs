@@ -97,6 +97,18 @@ test('client account methods hit the accounts endpoints', async () => {
   ]);
 });
 
+test('client renameAccount PATCHes the nickname to the account endpoint', async () => {
+  const calls = [];
+  const api = async (path, options) => {
+    calls.push({ path, method: options?.method || 'GET', body: options?.body, contentType: options?.headers?.['Content-Type'] });
+    return fakeResponse({ id: 'a1', nickname: '大号' });
+  };
+  const client = createRedappAuthClient({ api });
+  const updated = await client.renameAccount('a1', '大号');
+  assert.equal(updated.nickname, '大号');
+  assert.deepEqual(calls, [{ path: '/api/redapp/accounts/a1', method: 'PATCH', body: JSON.stringify({ nickname: '大号' }), contentType: 'application/json' }]);
+});
+
 test('client threads accountId through auth endpoints as a query param', async () => {
   const calls = [];
   const api = async path => {

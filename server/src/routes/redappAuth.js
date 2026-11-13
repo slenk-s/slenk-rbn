@@ -12,9 +12,20 @@ import {
   bindXhsAccountOpenId,
   findXhsAccountByOpenId,
   deleteXhsAccount,
+  updateXhsAccountNickname,
   findUserById as storeFindUserById,
   listAllXhsAccounts as storeListAllXhsAccounts
 } from '../store.js';
+
+const MAX_NICKNAME_LENGTH = 40;
+
+// 昵称必须是字符串、不超过 40 字；trim 后为空表示清除昵称。非法返回 null。
+function normalizeNickname(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_NICKNAME_LENGTH) return null;
+  return trimmed;
+}
 
 function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -129,6 +140,13 @@ export function createRedappAccountsRouter({
     if (!deleted) return res.status(404).json({ error: 'XHS 账号不存在', code: 'XHS_ACCOUNT_NOT_FOUND' });
     return res.json({ deleted: true });
   }));
+  router.patch('/accounts/:id', asyncRoute(async (req, res) => {
+    const nickname = normalizeNickname(req.body?.nickname);
+    if (nickname === null) return res.status(400).json({ error: '昵称需为不超过 40 字的字符串', code: 'XHS_NICKNAME_INVALID' });
+    const account = await accountRegistry.renameForUser(req.user.userId, req.params.id, nickname);
+    if (!account) return res.status(404).json({ error: 'XHS 账号不存在', code: 'XHS_ACCOUNT_NOT_FOUND' });
+    return res.json(toAccountDto(account));
+  }));
   router.get('/admin/accounts', asyncRoute(async (req, res) => {
     const user = await findUserById(req.user.userId);
     if (!user?.isAdmin) return res.status(403).json({ error: '需要管理员权限', code: 'XHS_ADMIN_REQUIRED' });
@@ -149,7 +167,8 @@ export const xhsAccountRegistry = createXhsAccountRegistry({
   createPendingForUser: createXhsAccountPending,
   bindOpenIdForUser: bindXhsAccountOpenId,
   findByOpenIdForUser: findXhsAccountByOpenId,
-  deleteForUser: deleteXhsAccount
+  deleteForUser: deleteXhsAccount,
+  renameForUser: updateXhsAccountNickname
 });
 
 export const authManager = createRedappAuthManager({

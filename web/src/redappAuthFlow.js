@@ -444,6 +444,9 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
   const createAccount = (options = {}) => request('/api/redapp/accounts', { method: 'POST', ...options });
   const deleteAccount = (id, { deleteCredentials = true, ...options } = {}) =>
     request(`/api/redapp/accounts/${encodeURIComponent(id)}?deleteCredentials=${deleteCredentials === false ? 'false' : 'true'}`, { method: 'DELETE', ...options });
+  // 账号改名：PATCH 昵称（空串表示清除）。
+  const renameAccount = (id, nickname, options = {}) =>
+    request(`/api/redapp/accounts/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nickname }), ...options });
 
   async function pollSession(id, { accountId, signal, timeoutMs = 10 * 60 * 1000, onUpdate = () => {} } = {}) {
     if (!isNonemptyString(id)) throw authFlowError('not-found');
@@ -489,7 +492,7 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
     }
   }
 
-  return { status, login, session, cancel, logout, pollSession, listAccounts, createAccount, deleteAccount };
+  return { status, login, session, cancel, logout, pollSession, listAccounts, createAccount, deleteAccount, renameAccount };
 }
 
 export async function publishWithAuth({

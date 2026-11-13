@@ -13,6 +13,14 @@ test('injects SKILLHUB_UPLOAD_HOME when credentialHome is set', () => {
   assert.equal(env.SKILLHUB_UPLOAD_HOME, 'C:/auth/u1/acct1');
 });
 
+test('registry passes renameForUser through to the injected store', async () => {
+  const registry = createXhsAccountRegistry({
+    renameForUser: async (userId, accountId, nickname) => ({ userId, accountId, nickname })
+  });
+  const out = await registry.renameForUser('u1', 'acct-1', '大号');
+  assert.deepEqual(out, { userId: 'u1', accountId: 'acct-1', nickname: '大号' });
+});
+
 test('omits SKILLHUB_UPLOAD_HOME when credentialHome is absent', () => {
   const env = createRedappNpmEnv('win32');
   assert.equal('SKILLHUB_UPLOAD_HOME' in env, false);

@@ -156,6 +156,8 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
   const [confirmLogoutId, setConfirmLogoutId] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteCredentials, setDeleteCredentials] = useState(true);
+  const [editingId, setEditingId] = useState('');
+  const [editingValue, setEditingValue] = useState('');
 
   const makeClient = useCallback(signal => createRedappAuthClient({
     api: createFetchAdapter(apiBase, token, signal), pollMs: 1500
@@ -366,6 +368,26 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
     }
   }
 
+  // 账号改名：保存当前编辑值（空串清除昵称），成功后刷新列表。
+  async function saveRename(account) {
+    if (!account?.id || busyAction) return;
+    const { controller, client } = beginOperation();
+    setBusyAction(`rename:${account.id}`);
+    setError('');
+    try {
+      await client.renameAccount(account.id, editingValue.trim(), { deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+      if (!mounted.current) return;
+      setEditingId('');
+      setEditingValue('');
+      await refreshAccounts({ quiet: true });
+      setMessage?.(editingValue.trim() ? '账号已改名。' : '已清除账号昵称。');
+    } catch (cause) {
+      if (mounted.current && !controller.signal.aborted && cause?.name !== 'AbortError') setError('改名失败，请稍后重试。');
+    } finally {
+      if (mounted.current) setBusyAction('');
+    }
+  }
+
   async function performDelete() {
     const target = deleteTarget;
     if (!target?.id || busyAction) return;
@@ -413,7 +435,26 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
               <li key={account.id} className={'xhs-account-row' + (account.status === 'pending_bind' ? ' pending' : '')}>
                 <div className="xhs-account-info">
                   <div className="xhs-account-title">
-                    <b>{accountDisplayName(account)}</b>
+                    {editingId === account.id ? (
+                      <>
+                        <input
+                          className="xhs-account-name-input"
+                          value={editingValue}
+                          maxLength={40}
+                          placeholder="账号昵称（留空清除）"
+                          autoFocus
+                          onChange={event => setEditingValue(event.target.value)}
+                          onKeyDown={event => { if (event.key === 'Enter') saveRename(account); if (event.key === 'Escape') { setEditingId(''); setEditingValue(''); } }}
+                        />
+                        <button type="button" className="btn-secondary" disabled={busyAction === `rename:${account.id}`} onClick={() => saveRename(account)}>{busyAction === `rename:${account.id}` ? '保存中…' : '保存'}</button>
+                        <button type="button" className="btn-secondary" disabled={busy} onClick={() => { setEditingId(''); setEditingValue(''); }}>取消</button>
+                      </>
+                    ) : (
+                      <>
+                        <b>{accountDisplayName(account)}</b>
+                        <button type="button" className="xhs-account-rename" aria-label="改名" title="自定义账号名" disabled={busy} onClick={() => { setEditingId(account.id); setEditingValue(account.nickname || ''); }}>改名</button>
+                      </>
+                    )}
                     <span className={'xhs-account-pill ' + (account.status === 'bound' ? 'bound' : 'pending')}>{accountStatusLabel(account.status)}</span>
                   </div>
                   <div className="xhs-account-meta">
