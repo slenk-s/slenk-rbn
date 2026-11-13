@@ -5,6 +5,7 @@ import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
+  createLeaveLoginCleanup,
   createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
   loadTurnstileScript,
@@ -1911,7 +1912,7 @@ function CredentialsLogin({ error, submitting, username, password, onUsername, o
     </div>
   );
 }
-function Auth({ flow, pathname, navigate }) {
+function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -1922,15 +1923,25 @@ function Auth({ flow, pathname, navigate }) {
   const resetWidget = useCallback(() => {
     if (window.turnstile && widgetIdRef.current !== null) window.turnstile.reset(widgetIdRef.current);
   }, []);
+  const scheduleWidgetReset = useCallback(() => setTimeout(resetWidget, 0), [resetWidget]);
+  const leaveLogin = useCallback(createLeaveLoginCleanup({
+    flow,
+    submittingRef,
+    setSubmitting,
+    setError,
+    scheduleReset: scheduleWidgetReset
+  }), [flow, scheduleWidgetReset]);
+
+  useEffect(() => registerLeaveLogin(leaveLogin), [leaveLogin, registerLeaveLogin]);
 
   const invalidate = useCallback((message, shouldResetWidget = false) => {
     flow.invalidate();
-    if (shouldResetWidget) setTimeout(resetWidget, 0);
+    if (shouldResetWidget) scheduleWidgetReset();
     submittingRef.current = false;
     setSubmitting(false);
     setError(message || '');
     navigate('/', { replace: true });
-  }, [flow, navigate, resetWidget]);
+  }, [flow, navigate, scheduleWidgetReset]);
 
   const completeChallenge = useCallback((token) => {
     if (!flow.completeChallenge(token)) return;
@@ -2019,6 +2030,7 @@ function AuthenticatedApp() {
   const flowRef = useRef(null);
   if (flowRef.current === null) flowRef.current = createTurnstileLoginFlow();
   const pathnameRef = useRef(window.location.pathname);
+  const leaveLoginRef = useRef(null);
   const [pathname, setPathnameState] = useState(pathnameRef.current);
   const setPathname = useCallback((path) => {
     pathnameRef.current = path;
@@ -2030,18 +2042,26 @@ function AuthenticatedApp() {
     setPathname(path);
   }, []);
 
+  const registerLeaveLogin = useCallback((handler) => {
+    leaveLoginRef.current = handler;
+    return () => {
+      if (leaveLoginRef.current === handler) leaveLoginRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     const onPopState = createLoginPopStateHandler({
       flow: flowRef.current,
       getCurrentPathname: () => pathnameRef.current,
       getNextPathname: () => window.location.pathname,
+      leaveLogin: () => leaveLoginRef.current?.(),
       setPathname
     });
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, [setPathname]);
 
-  if (!token) return <Auth flow={flowRef.current} pathname={pathname} navigate={navigate} />;
+  if (!token) return <Auth flow={flowRef.current} pathname={pathname} navigate={navigate} registerLeaveLogin={registerLeaveLogin} />;
   return <Workspace token={token} />;
 }
 

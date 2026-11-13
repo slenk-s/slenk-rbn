@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createTurnstileLoginFlow,
+  createLeaveLoginCleanup,
   createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
   loadTurnstileScript,
@@ -46,25 +47,61 @@ test('Turnstile two-stage login ignores repeated challenge callbacks before subm
   assert.equal(flow.token(), 'original-token', 'a fresh unsubmitted token is not replaced');
 });
 
-test('Turnstile popstate invalidates synchronously before leaving login state', () => {
+test('Turnstile popstate runs full login cleanup before changing pathname without history writes', () => {
   const events = [];
   const flow = {
     stage(pathname) {
       assert.equal(pathname, '/login');
       return 'login';
-    },
-    invalidate() { events.push('invalidate'); }
+    }
   };
   const onPopState = createLoginPopStateHandler({
     flow,
     getCurrentPathname: () => '/login',
     getNextPathname: () => '/',
+    leaveLogin() { events.push('fullCleanup'); },
+    setPathname(pathname) { events.push(`set:${pathname}`); }
+  });
+  const history = {
+    pushState() { events.push('push'); },
+    replaceState() { events.push('replace'); }
+  };
+
+  onPopState({ history });
+
+  assert.deepEqual(events, ['fullCleanup', 'set:/']);
+});
+
+test('Turnstile popstate leaves non-login navigation untouched', () => {
+  const events = [];
+  const onPopState = createLoginPopStateHandler({
+    flow: { stage: () => 'challenge' },
+    getCurrentPathname: () => '/',
+    getNextPathname: () => '/login',
+    leaveLogin() { events.push('fullCleanup'); },
     setPathname(pathname) { events.push(`set:${pathname}`); }
   });
 
   onPopState();
 
-  assert.deepEqual(events, ['invalidate', 'set:/']);
+  assert.deepEqual(events, ['set:/login']);
+});
+
+test('Turnstile full leave-login cleanup aborts submission, clears UI, and schedules one reset', () => {
+  const events = [];
+  const submittingRef = { current: true };
+  const cleanup = createLeaveLoginCleanup({
+    flow: { invalidate() { events.push('invalidate'); } },
+    submittingRef,
+    setSubmitting(value) { events.push(`submitting:${value}`); },
+    setError(value) { events.push(`error:${value}`); },
+    scheduleReset() { events.push('reset'); }
+  });
+
+  cleanup();
+
+  assert.equal(submittingRef.current, false);
+  assert.deepEqual(events, ['invalidate', 'submitting:false', 'error:', 'reset']);
 });
 
 test('Turnstile two-stage login invalidation aborts and supersedes a pending login', () => {

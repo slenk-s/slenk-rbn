@@ -1,10 +1,20 @@
 export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
 
-export function createLoginPopStateHandler({ flow, getCurrentPathname, getNextPathname, setPathname }) {
+export function createLeaveLoginCleanup({ flow, submittingRef, setSubmitting, setError, scheduleReset }) {
+  return () => {
+    flow.invalidate();
+    submittingRef.current = false;
+    setSubmitting(false);
+    setError('');
+    scheduleReset();
+  };
+}
+
+export function createLoginPopStateHandler({ flow, getCurrentPathname, getNextPathname, leaveLogin, setPathname }) {
   return () => {
     const currentPathname = getCurrentPathname();
     const nextPathname = getNextPathname();
-    if (flow.stage(currentPathname) === 'login' && nextPathname !== '/login') flow.invalidate();
+    if (flow.stage(currentPathname) === 'login' && nextPathname !== '/login') leaveLogin();
     setPathname(nextPathname);
   };
 }
