@@ -119,3 +119,123 @@ test('Turnstile classifies a thrown fetch as a redacted transport failure', asyn
   assert.deepEqual(result, { ok: false, reason: 'siteverify_transport' });
   assertRedacted(result);
 });
+
+test('Turnstile rejects a non-login expected action as invalid configuration', async () => {
+  for (const invalidAction of [undefined, '', 'signup']) {
+    let called = false;
+    const result = await verifyTurnstile({
+      token,
+      secret,
+      expectedAction: invalidAction,
+      expectedHostnames,
+      fetchImpl: async () => {
+        called = true;
+        return response({ success: true, action: invalidAction, hostname: 'notes.example.com' });
+      },
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'invalid_config' });
+    assert.equal(called, false);
+  }
+});
+
+test('Turnstile requires Siteverify to return the login action', async () => {
+  const result = await verifyWith(async () => response({
+    success: true,
+    action: undefined,
+    hostname: 'notes.example.com',
+  }));
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'action_mismatch',
+    details: { action: undefined },
+  });
+});
+
+test('Turnstile rejects hostname configuration containing non-strings or empty strings', async () => {
+  for (const invalidHostnames of [
+    new Set([undefined]),
+    new Set(['']),
+    new Set(['notes.example.com', 42]),
+  ]) {
+    let called = false;
+    const result = await verifyTurnstile({
+      token,
+      secret,
+      expectedAction,
+      expectedHostnames: invalidHostnames,
+      fetchImpl: async () => {
+        called = true;
+        return response({ success: true, action: expectedAction, hostname: undefined });
+      },
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'invalid_config' });
+    assert.equal(called, false);
+  }
+});
+
+test('Turnstile rejects a missing or empty Siteverify hostname', async () => {
+  for (const invalidHostname of [undefined, '']) {
+    const result = await verifyWith(async () => response({
+      success: true,
+      action: expectedAction,
+      hostname: invalidHostname,
+    }));
+
+    assert.deepEqual(result, {
+      ok: false,
+      reason: 'hostname_mismatch',
+      details: { hostname: invalidHostname },
+    });
+  }
+});
+
+test('Turnstile redacts credentials embedded in longer diagnostic strings', async () => {
+  const rejected = await verifyWith(async () => response({
+    success: false,
+    'error-codes': [`prefix-${token}-suffix`, `secret=${secret}`],
+  }));
+  const actionMismatch = await verifyWith(async () => response({
+    success: true,
+    action: `prefix-${token}-suffix`,
+    hostname: 'notes.example.com',
+  }));
+  const hostnameMismatch = await verifyWith(async () => response({
+    success: true,
+    action: expectedAction,
+    hostname: `secret=${secret}`,
+  }));
+
+  assertRedacted(rejected);
+  assertRedacted(actionMismatch);
+  assertRedacted(hostnameMismatch);
+});
+
+test('Turnstile classifies a non-2xx response with status-only diagnostics', async () => {
+  const result = await verifyWith(async () => response(
+    { leaked: `${token}:${secret}` },
+    { ok: false, status: 503 },
+  ));
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'siteverify_transport',
+    details: { status: 503 },
+  });
+  assertRedacted(result);
+});
+
+test('Turnstile classifies invalid JSON as a redacted transport failure', async () => {
+  const result = await verifyWith(async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      throw new SyntaxError(`invalid JSON ${token} ${secret}`);
+    },
+  }));
+
+  assert.deepEqual(result, { ok: false, reason: 'siteverify_transport' });
+  assertRedacted(result);
+});

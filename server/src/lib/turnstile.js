@@ -3,7 +3,9 @@ const TOKEN_MAX_LENGTH = 2048;
 const SITEVERIFY_TIMEOUT_MS = 10_000;
 
 function redact(value, token, secret) {
-  return typeof value === 'string' && value !== token && value !== secret ? value : undefined;
+  return typeof value === 'string' && !value.includes(token) && !value.includes(secret)
+    ? value
+    : undefined;
 }
 
 export async function verifyTurnstile({
@@ -20,9 +22,12 @@ export async function verifyTurnstile({
     token.length > TOKEN_MAX_LENGTH ||
     typeof secret !== 'string' ||
     secret.length === 0 ||
-    !expectedHostnames ||
-    typeof expectedHostnames.has !== 'function' ||
-    expectedHostnames.size === 0
+    expectedAction !== 'login' ||
+    !(expectedHostnames instanceof Set) ||
+    expectedHostnames.size === 0 ||
+    [...expectedHostnames].some(
+      (hostname) => typeof hostname !== 'string' || hostname.length === 0,
+    )
   ) {
     return { ok: false, reason: 'invalid_config' };
   }
@@ -65,14 +70,18 @@ export async function verifyTurnstile({
       details: { errorCodes },
     };
   }
-  if (result.action !== expectedAction) {
+  if (result.action !== 'login') {
     return {
       ok: false,
       reason: 'action_mismatch',
       details: { action: redact(result.action, token, secret) },
     };
   }
-  if (!expectedHostnames.has(result.hostname)) {
+  if (
+    typeof result.hostname !== 'string' ||
+    result.hostname.length === 0 ||
+    !expectedHostnames.has(result.hostname)
+  ) {
     return {
       ok: false,
       reason: 'hostname_mismatch',
