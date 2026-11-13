@@ -1,4 +1,13 @@
-export const LOGIN_REQUEST_TIMEOUT_MS = 15_000;
+export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
+
+export function createLoginPopStateHandler({ flow, getCurrentPathname, getNextPathname, setPathname }) {
+  return () => {
+    const currentPathname = getCurrentPathname();
+    const nextPathname = getNextPathname();
+    if (flow.stage(currentPathname) === 'login' && nextPathname !== '/login') flow.invalidate();
+    setPathname(nextPathname);
+  };
+}
 
 export function createTurnstileLoginFlow() {
   let challengeToken = null;
@@ -13,7 +22,7 @@ export function createTurnstileLoginFlow() {
 
   return {
     completeChallenge(token) {
-      if (activeLogin !== null) return false;
+      if (activeLogin !== null || challengeToken !== null) return false;
       supersedeLogin();
       challengeToken = typeof token === 'string' && token.trim() ? token : null;
       return challengeToken !== null;

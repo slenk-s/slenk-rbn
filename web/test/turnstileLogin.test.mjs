@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createTurnstileLoginFlow,
+  createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
   loadTurnstileScript,
   persistCurrentLogin,
@@ -35,6 +36,35 @@ test('Turnstile two-stage login rejects non-string and whitespace challenge valu
     assert.equal(flow.token(), null);
     assert.equal(flow.stage('/login'), 'challenge');
   }
+});
+
+test('Turnstile two-stage login ignores repeated challenge callbacks before submission', () => {
+  const flow = createTurnstileLoginFlow();
+
+  assert.equal(flow.completeChallenge('original-token'), true);
+  assert.equal(flow.completeChallenge('replacement-token'), false);
+  assert.equal(flow.token(), 'original-token', 'a fresh unsubmitted token is not replaced');
+});
+
+test('Turnstile popstate invalidates synchronously before leaving login state', () => {
+  const events = [];
+  const flow = {
+    stage(pathname) {
+      assert.equal(pathname, '/login');
+      return 'login';
+    },
+    invalidate() { events.push('invalidate'); }
+  };
+  const onPopState = createLoginPopStateHandler({
+    flow,
+    getCurrentPathname: () => '/login',
+    getNextPathname: () => '/',
+    setPathname(pathname) { events.push(`set:${pathname}`); }
+  });
+
+  onPopState();
+
+  assert.deepEqual(events, ['invalidate', 'set:/']);
 });
 
 test('Turnstile two-stage login invalidation aborts and supersedes a pending login', () => {
@@ -294,8 +324,8 @@ test('Turnstile script late events cannot settle twice or remove a newer node', 
   assert.equal(currentScript, newerScript, 'timeout does not remove a newer script node');
 });
 
-test('Turnstile login request timeout is explicit and allows backend siteverify budget', () => {
-  assert.equal(LOGIN_REQUEST_TIMEOUT_MS, 15_000);
+test('Turnstile login request timeout covers the complete backend chain with margin', () => {
+  assert.equal(LOGIN_REQUEST_TIMEOUT_MS, 30_000);
 });
 
 test('Turnstile script errors are marked failed and listeners are detached by cleanup', () => {

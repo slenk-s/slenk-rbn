@@ -5,6 +5,7 @@ import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
+  createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
   loadTurnstileScript,
   persistCurrentLogin,
@@ -2017,7 +2018,12 @@ function AuthenticatedApp() {
   const token = localStorage.getItem('token');
   const flowRef = useRef(null);
   if (flowRef.current === null) flowRef.current = createTurnstileLoginFlow();
-  const [pathname, setPathname] = useState(window.location.pathname);
+  const pathnameRef = useRef(window.location.pathname);
+  const [pathname, setPathnameState] = useState(pathnameRef.current);
+  const setPathname = useCallback((path) => {
+    pathnameRef.current = path;
+    setPathnameState(path);
+  }, []);
 
   const navigate = useCallback((path, { replace = false } = {}) => {
     window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
@@ -2025,10 +2031,15 @@ function AuthenticatedApp() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => setPathname(window.location.pathname);
+    const onPopState = createLoginPopStateHandler({
+      flow: flowRef.current,
+      getCurrentPathname: () => pathnameRef.current,
+      getNextPathname: () => window.location.pathname,
+      setPathname
+    });
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  }, [setPathname]);
 
   if (!token) return <Auth flow={flowRef.current} pathname={pathname} navigate={navigate} />;
   return <Workspace token={token} />;
