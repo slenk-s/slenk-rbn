@@ -216,3 +216,95 @@ test('does not mark login failed when the child closes while onLoginDone is stil
   assert.deepEqual(settled.auth.match, { matched: true, accountId: 'acct-1' });
 });
 
+// whoami 子进程成本高（账号列表为每账号各 spawn 一次），结果按账号短 TTL 缓存。
+test('getStatus caches whoami per account within the TTL', async () => {
+  let calls = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: async () => { calls += 1; return { credentials: { loggedIn: true, openId: 'OPENID-1' } }; },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(calls, 1);
+  // 另一账号独立缓存键。
+  await manager.getStatus('u1', 'acct-2', '/cred/u1/acct-2');
+  assert.equal(calls, 2);
+  manager.dispose();
+});
+
+test('login completion invalidates the cached status', async () => {
+  let calls = 0;
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => { calls += 1; return { credentials: { loggedIn: true, openId: 'OPENID-1' } }; },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1',
+    onLoginDone: async () => ({ matched: true, accountId: 'acct-1' })
+  });
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(calls, 1);
+  manager.startLogin('u1', 'acct-1', '/cred/u1/acct-1');
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"OPENID-1"}}\n');
+  await tick(); await tick();
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(calls, 2);
+  manager.dispose();
+});
+
+test('logout invalidates the cached status', async () => {
+  let whoamiCalls = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: async args => {
+      if (args[0] === 'whoami') whoamiCalls += 1;
+      return { credentials: { loggedIn: true, openId: 'OPENID-1' } };
+    },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  await manager.logout('u1', 'acct-1', '/cred/u1/acct-1');
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(whoamiCalls, 2);
+  manager.dispose();
+});
+
+test('cached status expires after the TTL', async () => {
+  let currentTime = 1000;
+  let calls = 0;
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: async () => { calls += 1; return { credentials: { loggedIn: true, openId: 'OPENID-1' } }; },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1',
+    now: () => currentTime,
+    statusCacheTtlMs: 100
+  });
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  currentTime += 200;
+  await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(calls, 2);
+  manager.dispose();
+});
+
+test('failed whoami is not cached so the next call retries', async () => {
+  let calls = 0;
+  let fail = true;
+  const manager = createRedappAuthManager({
+    spawnCli: () => createFakeChild(),
+    runCli: async () => { calls += 1; if (fail) throw new Error('network down'); return { credentials: { available: true, loggedIn: true, openId: 'OPENID-1' } }; },
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-1'
+  });
+  const first = await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(first.available, false);
+  fail = false;
+  const second = await manager.getStatus('u1', 'acct-1', '/cred/u1/acct-1');
+  assert.equal(second.available, true);
+  assert.equal(calls, 2);
+  manager.dispose();
+});
+

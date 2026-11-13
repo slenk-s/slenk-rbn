@@ -103,12 +103,20 @@ export function createRedappAuthManager({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   loginDoneTimeoutMs = LOGIN_DONE_TIMEOUT_MS,
+  statusCacheTtlMs = 30_000,
   onLoginDone
 }) {
   let disposed = false;
   // 外层 Map<userId, UserAuthState>；每个用户独立持有自己的 active 会话、
   // 按 accountId 索引的会话表与登录锁。不同用户之间完全隔离、可并行。
   const users = new Map(); // userId -> { active: Session|null, sessions: Map<accountId, Session>, lock: boolean }
+  // whoami 结果按账号短 TTL 缓存：账号列表会为每个账号各 spawn 一次 CLI，成本高。
+  // 登录完成/退出登录时失效；CLI 失败不缓存（下次重试）；TTL 兜底 token 过期等变化。
+  const statusCache = new Map(); // `${userId}${accountId}` -> { at, value }
+
+  function invalidateStatus(userId, accountId) {
+    statusCache.delete(`${userId}${accountId}`);
+  }
 
   function userState(userId) {
     let state = users.get(userId);
@@ -181,6 +189,7 @@ export function createRedappAuthManager({
     if (disposed || !ACTIVE_STATUSES.has(session.status)) return;
     session.status = status;
     session.loginDonePending = false;
+    if (status === 'done') invalidateStatus(session.userId, session.accountId);
     Object.assign(session, values);
     if (session.expiryTimer) {
       clearTimer(session.expiryTimer);
@@ -423,14 +432,21 @@ export function createRedappAuthManager({
   // credentialDir 可省略：有活动会话时沿用该账号记录的凭证目录；否则该账号尚未登记凭证目录。
   async function getStatus(userId, accountId, credentialDir) {
     assertOpen();
+    const key = `${userId}${accountId}`;
+    const cached = statusCache.get(key);
+    if (cached && now() - cached.at < statusCacheTtlMs) return { ...cached.value };
     const dir = credentialDir ?? users.get(userId)?.sessions.get(accountId)?.credentialDir;
+    let value;
     try {
       const result = await runCli(['whoami'], { credentialHome: dir });
-      if (result?.status === 'error' && result.code === 'AUTH_REQUIRED') return loggedOutAuthStatus();
-      return projectAuthStatus(result?.credentials, now);
+      if (result?.status === 'error' && result.code === 'AUTH_REQUIRED') value = loggedOutAuthStatus();
+      else value = projectAuthStatus(result?.credentials, now);
     } catch {
+      // CLI 失败不缓存，下次请求重试。
       return unavailableAuthStatus();
     }
+    statusCache.set(key, { at: now(), value });
+    return { ...value };
   }
 
   async function cancelLogin(userId, accountId, sessionId) {
@@ -474,6 +490,7 @@ export function createRedappAuthManager({
     invalidateAccount(userId, accountId);
     try {
       const result = await runCli(['logout'], { credentialHome: credentialDir });
+      invalidateStatus(userId, accountId);
       return projectAuthStatus(result?.credentials, now);
     } catch {
       throw new Error('redapp 退出登录失败');
@@ -483,6 +500,7 @@ export function createRedappAuthManager({
   function dispose() {
     disposed = true;
     invalidateAll();
+    statusCache.clear();
   }
 
   return { getStatus, startLogin, getSession, cancelLogin, logout, dispose };
