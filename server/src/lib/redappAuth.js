@@ -180,6 +180,7 @@ export function createRedappAuthManager({
   function finish(session, status, values = {}, options = {}) {
     if (disposed || !ACTIVE_STATUSES.has(session.status)) return;
     session.status = status;
+    session.loginDonePending = false;
     Object.assign(session, values);
     if (session.expiryTimer) {
       clearTimer(session.expiryTimer);
@@ -236,6 +237,9 @@ export function createRedappAuthManager({
   }
 
   function settleLoginDone(session, info, auth) {
+    // 标记登录结果在途：CLI 打印成功 RESULT 后立刻退出，close 事件会先于 matcher 完成到达，
+    // 若 closeHandler 此时把会话标为 failed 会覆盖真正的 done。有此标记时 close 不判失败。
+    session.loginDonePending = true;
     let pending;
     try {
       pending = onLoginDone?.(info);
@@ -340,7 +344,7 @@ export function createRedappAuthManager({
         }
         if (stream.buffer) handleLine(session, stream.buffer);
       }
-      if (ACTIVE_STATUSES.has(session.status)) finish(session, 'failed', { error: '登录进程异常退出' }, { kill: false });
+      if (ACTIVE_STATUSES.has(session.status) && !session.loginDonePending) finish(session, 'failed', { error: '登录进程异常退出' }, { kill: false });
     };
     session.child.stdout.on('data', session.stdoutHandler);
     session.child.stderr?.on?.('data', session.stderrHandler);

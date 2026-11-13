@@ -184,3 +184,35 @@ test('bounds a hanging onLoginDone with a timeout before reaching done', async (
   assert.equal(session.status, 'done');
   assert.deepEqual(session.auth.match, { matched: false, error: '扫码匹配超时' });
 });
+
+// 回归：CLI 打印成功 RESULT 后立即退出（close 先于 matcher 完成到达），
+// closeHandler 不得把会话标成「登录进程异常退出」覆盖真正的 done。
+test('does not mark login failed when the child closes while onLoginDone is still settling', async () => {
+  const fake = createFakeChild();
+  let resolveMatch;
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-race',
+    onLoginDone: () => new Promise(resolve => { resolveMatch = resolve; })
+  });
+
+  manager.startLogin('u1', 'acct-1', '/cred/u1/acct-1');
+  // RESULT 后立刻 close（模拟 CLI 写凭证后正常退出），此时 matcher 仍未 resolve。
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"OPENID-1"}}\n');
+  fake.emit('close');
+  await tick();
+
+  // 会话必须仍处于在途（未被标失败），matcher 完成后落到 done 而非 failed。
+  const inFlight = manager.getSession('u1', 'acct-1', 'session-race');
+  assert.notEqual(inFlight.status, 'failed', 'close during settle must not mark login failed');
+
+  resolveMatch({ matched: true, accountId: 'acct-1' });
+  await tick(); await tick();
+
+  const settled = manager.getSession('u1', 'acct-1', 'session-race');
+  assert.equal(settled.status, 'done');
+  assert.deepEqual(settled.auth.match, { matched: true, accountId: 'acct-1' });
+});
+
