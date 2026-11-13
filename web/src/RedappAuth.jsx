@@ -117,7 +117,6 @@ export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, o
             <p>{mode === 'resume-publish' && session.status === 'done'
               ? '授权成功，正在继续发布…'
               : SESSION_GUIDANCE[session.status]}</p>
-            {session.refreshError ? <p className="auth-card-error" role="alert">{session.refreshError}</p> : null}
             {sessionError ? <p className="auth-card-error" role="alert">{sessionError}</p> : null}
           </div>
         ) : (
@@ -459,6 +458,7 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
                   </div>
                   <div className="xhs-account-meta">
                     <span>{accountLoginHint(account)}</span>
+                    {account.nickname && account.openIdMasked ? <span className="xhs-account-dir">{account.openIdMasked}</span> : null}
                     {account.status === 'bound' && Number.isFinite(account.expireTimeMs) ? <span>授权到期 {formatAuthExpiry(account.expireTimeMs)}</span> : null}
                     {account.credentialDirHint ? <span className="xhs-account-dir">{account.credentialDirHint}</span> : null}
                   </div>

@@ -60,10 +60,12 @@ function toAccountDto(account, authStatus = {}) {
 }
 
 // 合并该账号的授权状态（whoami）；状态机内部已把失败投影为不可用状态，此处再兜底一次。
+// 预期外的异常（如装配缺 authManager）打日志便于排查，而不是静默渲染成未登录。
 async function mergeAuthStatus(authManager, userId, account) {
   try {
     return await authManager.getStatus(userId, account.id, account.credentialDir);
-  } catch {
+  } catch (err) {
+    console.warn('[redapp] mergeAuthStatus failed for account', account.id, err?.message || err);
     return {};
   }
 }

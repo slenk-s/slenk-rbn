@@ -23,8 +23,8 @@ function cacheName(url, ext) {
   return crypto.createHash('sha256').update(url).digest('hex').slice(0, 32) + ext;
 }
 
-// 8 字节纯签名会被判成 unknown，补一个字节才是"看起来像 PNG"的内容。
-const PNG_HEAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+// sniffImageFormat 需要至少 12 字节（PNG 签名 8 + IHDR 长度 4），8/9 字节的纯签名会被判 unknown。
+const PNG_HEAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
 
 test('saveNote records the owner and round-trips tags and images', async (t) => {
   const userId = await createTestUser();
