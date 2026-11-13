@@ -8,16 +8,53 @@ function redact(value, token, secret) {
     : undefined;
 }
 
-const DIAGNOSTIC_DETAIL_KEYS = ['status', 'errorCodes', 'action', 'hostname'];
+const DIAGNOSTIC_REASONS = new Set([
+  'invalid_config',
+  'siteverify_transport',
+  'siteverify_rejected',
+  'action_mismatch',
+  'hostname_mismatch',
+]);
+const DIAGNOSTIC_ERROR_CODES = new Set([
+  'missing-input-secret',
+  'invalid-input-secret',
+  'missing-input-response',
+  'invalid-input-response',
+  'bad-request',
+  'timeout-or-duplicate',
+  'internal-error',
+]);
+const DIAGNOSTIC_ACTION_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+const DIAGNOSTIC_HOSTNAME_PATTERN = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+const SUSPICIOUS_DIAGNOSTIC_VALUE = /token|secret|password|credential/i;
+
+function isSafeDiagnosticString(value, pattern) {
+  return typeof value === 'string' &&
+    pattern.test(value) &&
+    !SUSPICIOUS_DIAGNOSTIC_VALUE.test(value);
+}
 
 export function formatTurnstileDiagnostic(result) {
-  const diagnostic = { reason: result?.reason };
-  if (!result?.details || typeof result.details !== 'object') return diagnostic;
+  const diagnostic = {};
+  if (DIAGNOSTIC_REASONS.has(result?.reason)) diagnostic.reason = result.reason;
+  if (!result?.details || typeof result.details !== 'object' || Array.isArray(result.details)) {
+    return diagnostic;
+  }
 
   const details = {};
-  for (const key of DIAGNOSTIC_DETAIL_KEYS) {
-    if (Object.hasOwn(result.details, key)) details[key] = result.details[key];
+  const { status, errorCodes, action, hostname } = result.details;
+  if (Number.isInteger(status) && status >= 100 && status <= 599) {
+    details.status = status;
   }
+  if (Array.isArray(errorCodes)) {
+    const safeErrorCodes = errorCodes.filter(
+      (code) => typeof code === 'string' && DIAGNOSTIC_ERROR_CODES.has(code),
+    );
+    if (safeErrorCodes.length > 0) details.errorCodes = safeErrorCodes;
+  }
+  if (isSafeDiagnosticString(action, DIAGNOSTIC_ACTION_PATTERN)) details.action = action;
+  if (isSafeDiagnosticString(hostname, DIAGNOSTIC_HOSTNAME_PATTERN)) details.hostname = hostname;
+
   if (Object.keys(details).length > 0) diagnostic.details = details;
   return diagnostic;
 }

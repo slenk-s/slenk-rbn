@@ -61,6 +61,59 @@ test('Turnstile diagnostic formatter keeps only allowed redacted fields', () => 
   assertRedacted(diagnostic);
 });
 
+test('Turnstile diagnostic formatter rejects nested credentials and invalid field shapes', () => {
+  const diagnostic = formatTurnstileDiagnostic({
+    reason: { token, secret },
+    details: {
+      status: '503',
+      errorCodes: [
+        'invalid-input-response',
+        { token, secret },
+        ['timeout-or-duplicate', token],
+        token,
+        secret,
+      ],
+      action: { value: 'login', token },
+      hostname: ['notes.example.com', secret],
+    },
+  });
+
+  assert.deepEqual(diagnostic, {
+    details: { errorCodes: ['invalid-input-response'] },
+  });
+  assertRedacted(diagnostic);
+});
+
+test('Turnstile diagnostic formatter accepts only safe primitive diagnostic values', () => {
+  assert.deepEqual(formatTurnstileDiagnostic({
+    reason: 'siteverify_transport',
+    details: {
+      status: 503,
+      errorCodes: ['timeout-or-duplicate', 42, null, 'secret=value'],
+      action: 'login',
+      hostname: 'notes.example.com',
+    },
+  }), {
+    reason: 'siteverify_transport',
+    details: {
+      status: 503,
+      errorCodes: ['timeout-or-duplicate'],
+      action: 'login',
+      hostname: 'notes.example.com',
+    },
+  });
+
+  assert.deepEqual(formatTurnstileDiagnostic({
+    reason: 'attacker-controlled',
+    details: {
+      status: 99,
+      errorCodes: 'invalid-input-response',
+      action: 'secret=value',
+      hostname: 'https://notes.example.com/path',
+    },
+  }), {});
+});
+
 test('Turnstile accepts a valid strict Siteverify response and sends the token', async () => {
   let request;
   const result = await verifyWith(async (url, options) => {
