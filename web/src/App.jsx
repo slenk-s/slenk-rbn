@@ -1507,10 +1507,14 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
               </div>
             ) : (
               <div className="publish-account-row">
-                <label className="publish-account-label" htmlFor="publish-account-select">发布到小红书账号</label>
-                <select id="publish-account-select" className="publish-account-select" value={publishAccountId} onChange={e => setPublishAccountId(e.target.value)}>
-                  {publishAccountOptions.map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
-                </select>
+                <span className="publish-account-label">发布到小红书账号</span>
+                <ThemedSelect
+                  className="publish-account-select"
+                  ariaLabel="发布到小红书账号"
+                  value={publishAccountId}
+                  onChange={setPublishAccountId}
+                  options={publishAccountOptions}
+                />
               </div>
             )) : null}
             <div className="prompt-config-actions">

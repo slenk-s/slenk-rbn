@@ -2779,7 +2779,8 @@ button:hover { transform: translateY(-1px); }
 .xhs-account-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: #fff; }
 .xhs-account-row.pending { border-style: dashed; background: rgba(234, 179, 8, .05); }
 .xhs-account-info { min-width: 0; display: grid; gap: 5px; }
-.xhs-account-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.xhs-account-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: nowrap; }
+.xhs-account-title button { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 0; height: auto; padding: 3px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap; }
 .xhs-account-title b { color: var(--text-h); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xhs-account-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
 .xhs-account-pill.bound { color: #15803d; background: rgba(22, 163, 74, .09); }
@@ -2956,8 +2957,10 @@ button:hover { transform: translateY(-1px); }
 /* ---- 发布账号选择器 ---- */
 .publish-account-row { display: grid; gap: 6px; margin: 10px 0 2px; }
 .publish-account-label { color: var(--text); font-size: 12px; font-weight: 700; }
-.publish-account-select { width: 100%; padding: 9px 11px; border: 1.5px solid #e5e7eb; border-radius: 10px; background: #fff; color: var(--text-h); font-family: inherit; font-size: 13px; }
-.publish-account-select:focus { outline: none; border-color: var(--accent); }
+/* 发布账号下拉改用 ThemedSelect 自绘组件，根元素撑满行宽，触发器填满；外观由 .themed-select* 承担。 */
+.publish-account-select { width: 100%; flex: 1 1 auto; }
+.publish-account-select .themed-select-trigger { width: 100%; min-height: 40px; font-size: 13px; }
+.publish-account-select .themed-select-value { max-width: none; flex: 1 1 auto; text-align: left; }
 .publish-account-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 2px; padding: 11px 13px; border: 1px solid rgba(234, 179, 8, .26); border-radius: 12px; background: rgba(254, 249, 195, .42); }
 .publish-account-empty span { color: #713f12; font-size: 12px; line-height: 1.55; }
 .publish-account-empty button { flex: 0 0 auto; }
