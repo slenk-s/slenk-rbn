@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { diffLines } from './diffText.js';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
+import { createTurnstileLoginFlow } from './lib/turnstileLogin.js';
 import {
   MINITOOL_PUBLISH_DEADLINE_MS,
   MINITOOL_PUBLISH_REQUEST_DEADLINE_MS,
@@ -1831,23 +1832,22 @@ function Workspace({ token }) {
   );
 }
 const TURNSTILE_SITEKEY = '0x4AAAAAAF-KfPS4yQCRHsCg';
-function Auth() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+function AuthBrand() {
+  return <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
+}
+function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdRef }) {
   const turnstileRef = useRef(null);
-  const turnstileIdRef = useRef(null);
-  // Explicit render so we keep the widget id: tokens are single-use, and the
-  // page stays active after a failed login, so each retry needs a reset.
+
   useEffect(() => {
     let cancelled = false;
     function render() {
-      if (cancelled || !window.turnstile || !turnstileRef.current || turnstileIdRef.current !== null) return;
-      turnstileIdRef.current = window.turnstile.render(turnstileRef.current, {
+      if (cancelled || !window.turnstile || !turnstileRef.current || widgetIdRef.current !== null) return;
+      widgetIdRef.current = window.turnstile.render(turnstileRef.current, {
         sitekey: TURNSTILE_SITEKEY,
         action: 'login',
-        'error-callback': (code) => setError('人机验证失败（错误码 ' + code + '），请刷新重试'),
-        'expired-callback': () => { if (turnstileIdRef.current !== null) window.turnstile.reset(turnstileIdRef.current); },
+        callback: onComplete,
+        'error-callback': (code) => onInvalidate('人机验证失败（错误码 ' + code + '），请重试', true),
+        'expired-callback': () => onInvalidate('人机验证已过期，请重新验证', true),
       });
     }
     if (window.turnstile) render();
@@ -1856,39 +1856,100 @@ function Auth() {
       s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
       s.async = true; s.defer = true; s.dataset.turnstile = '';
       s.onload = render;
-      s.onerror = () => setError('人机验证加载失败，请检查网络后刷新');
+      s.onerror = () => onInvalidate('人机验证加载失败，请检查网络后刷新');
       document.head.appendChild(s);
     } else {
       document.querySelector('script[data-turnstile]').addEventListener('load', render, { once: true });
     }
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (window.turnstile && widgetIdRef.current !== null) window.turnstile.remove(widgetIdRef.current);
+      widgetIdRef.current = null;
+    };
+  }, [onComplete, onInvalidate, widgetIdRef]);
+
+  return (
+    <div className="auth-screen" hidden={hidden}>
+      <div className="auth-card">
+        <AuthBrand />
+        <div ref={turnstileRef}></div>
+        {error && <p className="auth-error">{error}</p>}
+      </div>
+    </div>
+  );
+}
+function CredentialsLogin({ error, submitting, username, password, onUsername, onPassword, onSubmit }) {
+  return (
+    <div className="auth-screen">
+      <form className="auth-card" onSubmit={onSubmit}>
+        <AuthBrand />
+        <label>用户名<input value={username} onChange={e => onUsername(e.target.value)} placeholder="请输入用户名" required /></label>
+        <label>密码<input type="password" value={password} onChange={e => onPassword(e.target.value)} placeholder="请输入密码" required /></label>
+        {error && <p className="auth-error">{error}</p>}
+        <button className="btn-primary" type="submit" disabled={submitting}>{submitting ? '登录中...' : '登录'}</button>
+      </form>
+    </div>
+  );
+}
+function Auth({ flow, pathname, navigate }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const widgetIdRef = useRef(null);
+  const stage = flow.stage(pathname);
+  const resetWidget = useCallback(() => {
+    if (window.turnstile && widgetIdRef.current !== null) window.turnstile.reset(widgetIdRef.current);
   }, []);
+
+  const invalidate = useCallback((message, shouldResetWidget = false) => {
+    flow.invalidate();
+    if (shouldResetWidget) setTimeout(resetWidget, 0);
+    submittingRef.current = false;
+    setSubmitting(false);
+    setError(message || '');
+    navigate('/', { replace: true });
+  }, [flow, navigate, resetWidget]);
+
+  const completeChallenge = useCallback((token) => {
+    flow.completeChallenge(token);
+    if (flow.stage('/login') !== 'login') {
+      invalidate('人机验证未完成，请稍后重试', true);
+      return;
+    }
+    setError('');
+    navigate('/login');
+  }, [flow, invalidate, navigate]);
+
+  useEffect(() => {
+    if (stage === 'challenge' && flow.token() !== null) flow.invalidate();
+    if (stage === 'challenge' && pathname !== '/') navigate('/', { replace: true });
+  }, [flow, navigate, pathname, stage]);
+
   async function login(e) {
-    e.preventDefault(); setError('');
+    e.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true); setError('');
     try {
-      const token = window.turnstile?.getResponse(turnstileIdRef.current ?? undefined);
-      if (!token) { setError('人机验证未完成，请稍后重试'); return; }
-      const r = await fetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, 'cf-turnstile-response': token }) });
+      const challengeToken = flow.token();
+      if (!challengeToken) throw new Error('人机验证已失效，请重新验证');
+      const r = await fetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, 'cf-turnstile-response': challengeToken }) });
       const data = await readJsonResponse(r);
       if (!r.ok) throw new Error(data.error === 'forbidden' ? '人机验证失败，请重试' : data.error === 'invalid_credentials' ? '用户名或密码错误' : (data.error || '登录失败'));
       localStorage.setItem('token', data.token);
       location.reload();
     } catch (err) {
-      setError(err.message);
-      if (window.turnstile && turnstileIdRef.current !== null) window.turnstile.reset(turnstileIdRef.current);
+      invalidate(err.message, true);
     }
   }
+
   return (
-    <div className="auth-screen">
-      <form className="auth-card" onSubmit={login}>
-        <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>
-        <label>用户名<input value={username} onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" required /></label>
-        <label>密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" required /></label>
-        <div ref={turnstileRef}></div>
-        {error && <p className="auth-error">{error}</p>}
-        <button className="btn-primary" type="submit">登录</button>
-      </form>
-    </div>
+    <>
+      <TurnstileChallenge error={stage === 'challenge' ? error : ''} hidden={stage !== 'challenge'} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} />
+      {stage === 'login' && <CredentialsLogin error={error} submitting={submitting} username={username} password={password} onUsername={setUsername} onPassword={setPassword} onSubmit={login} />}
+    </>
   );
 }
 function NotePreviewPage({ noteId }) {
@@ -1915,10 +1976,29 @@ function NotePreviewPage({ noteId }) {
   );
 }
 
+function AuthenticatedApp() {
+  const token = localStorage.getItem('token');
+  const flowRef = useRef(null);
+  if (flowRef.current === null) flowRef.current = createTurnstileLoginFlow();
+  const [pathname, setPathname] = useState(window.location.pathname);
+
+  const navigate = useCallback((path, { replace = false } = {}) => {
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+    setPathname(path);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  if (!token) return <Auth flow={flowRef.current} pathname={pathname} navigate={navigate} />;
+  return <Workspace token={token} />;
+}
+
 export default function App() {
   const previewMatch = window.location.pathname.match(/^\/p\/([A-Za-z0-9_-]+)/);
   if (previewMatch) return <NotePreviewPage noteId={previewMatch[1]} />;
-  const token = localStorage.getItem('token');
-  if (!token) return <Auth />;
-  return <Workspace token={token} />;
+  return <AuthenticatedApp />;
 }
