@@ -5,6 +5,7 @@ import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
+  LOGIN_REQUEST_TIMEOUT_MS,
   loadTurnstileScript,
   persistCurrentLogin,
   renderTurnstileWidget
@@ -1868,7 +1869,8 @@ function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdR
       const loading = loadTurnstileScript(
         document,
         render,
-        () => onInvalidate('人机验证加载失败，请检查网络后刷新')
+        () => onInvalidate('人机验证加载失败，请检查网络后重试'),
+        { isReady: () => Boolean(window.turnstile) }
       );
       cleanupScript = loading.cleanup;
     }
@@ -1958,12 +1960,12 @@ function Auth({ flow, pathname, navigate }) {
     submittingRef.current = true;
     setSubmitting(true); setError('');
     try {
-      const r = await fetch(API + '/api/auth/login', {
+      const r = await fetchWithTimeout(API + '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: request.signal,
         body: JSON.stringify({ username, password, 'cf-turnstile-response': request.token })
-      });
+      }, LOGIN_REQUEST_TIMEOUT_MS);
       const data = await readJsonResponse(r);
       if (!flow.isCurrentLogin(request)) return;
       if (!r.ok) throw new Error(data.error === 'forbidden' ? '人机验证失败，请重试' : data.error === 'invalid_credentials' ? '用户名或密码错误' : (data.error || '登录失败'));

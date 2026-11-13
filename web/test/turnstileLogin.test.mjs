@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createTurnstileLoginFlow,
+  LOGIN_REQUEST_TIMEOUT_MS,
   loadTurnstileScript,
   persistCurrentLogin,
   renderTurnstileWidget,
@@ -201,6 +202,100 @@ test('Turnstile script retry replaces a failed node but reuses a healthy loading
   assert.equal(appended.length, 0, 'an in-flight healthy request is not duplicated');
   replacementLoad.cleanup();
   healthyLoad.cleanup();
+});
+
+test('Turnstile script pending load times out, marks failed, and exposes retry', () => {
+  const listeners = new Map();
+  const timers = [];
+  const script = {
+    dataset: {},
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    }
+  };
+  const document = {
+    head: { appendChild() {} },
+    querySelector() { return null; },
+    createElement() { return script; }
+  };
+  let errors = 0;
+
+  const loading = loadTurnstileScript(document, () => assert.fail('pending script must not load'), () => { errors += 1; }, {
+    timeoutMs: 250,
+    setTimeout(callback, ms) { timers.push({ callback, ms, cleared: false }); return timers.length - 1; },
+    clearTimeout(id) { timers[id].cleared = true; }
+  });
+
+  assert.equal(timers[0].ms, 250);
+  timers[0].callback();
+  assert.equal(script.dataset.turnstileState, 'failed');
+  assert.equal(errors, 1);
+  assert.equal(listeners.size, 0, 'timeout settles and detaches both event listeners');
+  loading.cleanup();
+});
+
+test('Turnstile script loaded without API fails immediately so retry can replace it', () => {
+  const script = {
+    dataset: { turnstileState: 'loaded' },
+    addEventListener() { assert.fail('a settled loaded node must not wait for another event'); },
+    removeEventListener() {}
+  };
+  const document = {
+    head: { appendChild() { assert.fail('known loaded state is settled before retry'); } },
+    querySelector() { return script; },
+    createElement() { assert.fail('known loaded state is settled before retry'); }
+  };
+  let errors = 0;
+
+  const loading = loadTurnstileScript(document, () => assert.fail('API is absent'), () => { errors += 1; });
+
+  assert.equal(script.dataset.turnstileState, 'failed');
+  assert.equal(errors, 1);
+  loading.cleanup();
+});
+
+test('Turnstile script late events cannot settle twice or remove a newer node', () => {
+  const listeners = new Map();
+  const timers = [];
+  let currentScript;
+  const oldScript = {
+    dataset: {},
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    },
+    remove() {
+      if (currentScript === this) currentScript = null;
+    }
+  };
+  const document = {
+    head: { appendChild(node) { currentScript = node; } },
+    querySelector() { return currentScript; },
+    createElement() { return oldScript; }
+  };
+  let loads = 0;
+  let errors = 0;
+
+  loadTurnstileScript(document, () => { loads += 1; }, () => { errors += 1; }, {
+    timeoutMs: 250,
+    setTimeout(callback) { timers.push(callback); return timers.length - 1; },
+    clearTimeout() {}
+  });
+  const lateLoad = listeners.get('load');
+  const newerScript = { dataset: { turnstileState: 'loading' } };
+  currentScript = newerScript;
+
+  timers[0]();
+  lateLoad();
+
+  assert.equal(errors, 1);
+  assert.equal(loads, 0, 'late load is ignored after timeout');
+  assert.equal(currentScript, newerScript, 'timeout does not remove a newer script node');
+});
+
+test('Turnstile login request timeout is explicit and allows backend siteverify budget', () => {
+  assert.equal(LOGIN_REQUEST_TIMEOUT_MS, 15_000);
 });
 
 test('Turnstile script errors are marked failed and listeners are detached by cleanup', () => {

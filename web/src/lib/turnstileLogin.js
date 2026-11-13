@@ -1,3 +1,5 @@
+export const LOGIN_REQUEST_TIMEOUT_MS = 15_000;
+
 export function createTurnstileLoginFlow() {
   let challengeToken = null;
   let loginGeneration = 0;
@@ -74,7 +76,12 @@ export function subscribeTurnstileScriptLoad(script, listener) {
   return () => script.removeEventListener('load', listener);
 }
 
-export function loadTurnstileScript(document, onLoad, onError) {
+export function loadTurnstileScript(document, onLoad, onError, {
+  timeoutMs = 12_000,
+  setTimeout: scheduleTimeout = globalThis.setTimeout,
+  clearTimeout: cancelTimeout = globalThis.clearTimeout,
+  isReady = null
+} = {}) {
   let script = document.querySelector('script[data-turnstile]');
   if (script?.dataset.turnstileState === 'failed') {
     script.remove();
@@ -89,21 +96,40 @@ export function loadTurnstileScript(document, onLoad, onError) {
     script.dataset.turnstileState = 'loading';
     document.head.appendChild(script);
   }
-  const loaded = () => {
-    script.dataset.turnstileState = 'loaded';
-    onLoad();
-  };
-  const failed = () => {
-    script.dataset.turnstileState = 'failed';
-    onError();
-  };
-  script.addEventListener('load', loaded, { once: true });
-  script.addEventListener('error', failed, { once: true });
-  return {
-    script,
-    cleanup() {
-      script.removeEventListener('load', loaded);
-      script.removeEventListener('error', failed);
+
+  let settled = false;
+  let timer = null;
+  const cleanup = () => {
+    script.removeEventListener('load', loaded);
+    script.removeEventListener('error', failed);
+    if (timer !== null) {
+      cancelTimeout(timer);
+      timer = null;
     }
   };
+  const settle = (state, callback) => {
+    if (settled) return;
+    settled = true;
+    script.dataset.turnstileState = state;
+    cleanup();
+    callback();
+  };
+  const loaded = () => {
+    if (isReady && !isReady()) {
+      settle('failed', onError);
+      return;
+    }
+    settle('loaded', onLoad);
+  };
+  const failed = () => settle('failed', onError);
+
+  if (script.dataset.turnstileState === 'loaded') {
+    failed();
+  } else {
+    script.addEventListener('load', loaded, { once: true });
+    script.addEventListener('error', failed, { once: true });
+    timer = scheduleTimeout(failed, timeoutMs);
+  }
+
+  return { script, cleanup };
 }
