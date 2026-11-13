@@ -69,7 +69,7 @@ function createFetchAdapter(apiBase, token, getSignal) {
   };
 }
 
-export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, onRetry, onRefreshStatus, cancelling, refreshing }) {
+export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, onRetry, cancelling }) {
   const dialogRef = useRef(null);
   const openerRef = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -132,7 +132,6 @@ export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, o
           </div>
         )}
         <div className="prompt-config-actions auth-modal-actions">
-          {mode !== 'resume-publish' && session.status === 'done' && session.refreshError ? <button type="button" className="btn-primary" disabled={refreshing} onClick={onRefreshStatus}>{refreshing ? '刷新中…' : '刷新授权状态'}</button> : null}
           {terminal && session.status !== 'done' && onRetry ? <button type="button" className="btn-primary" onClick={onRetry}>{mode === 'resume-publish' && session.status === 'publish-uncertain' ? '查询发布结果' : mode === 'resume-publish' && ['publish-restart-unknown', 'publish-outcome-unknown'].includes(session.status) ? '我已核对，允许重新发布' : '重新授权'}</button> : null}
           {active ? <button type="button" className="btn-danger" disabled={cancelling} onClick={onCancel}>{cancelling ? '取消中…' : '取消本次授权'}</button> : null}
           <button type="button" className="btn-secondary" onClick={onClose}>关闭窗口</button>

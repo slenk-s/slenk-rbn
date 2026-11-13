@@ -337,6 +337,20 @@ test('matches only within the current user: another user binding the same openId
   assert.equal(registry.calls.bind, 1);
 });
 
+test('rejects a missing or non-string openId without querying or binding', async () => {
+  const registry = createFakeMatcherRegistry();
+  for (const openId of [undefined, null, '', '   ']) {
+    const result = await matchLoginToAccount({
+      userId: 'u1', accountId: 'acct-new', credentialDir: '/cred/new', openId, registry
+    });
+    assert.equal(result.matched, false);
+    assert.equal(typeof result.error, 'string');
+  }
+  assert.equal(registry.calls.find, 0);
+  assert.equal(registry.calls.bind, 0);
+  assert.equal(registry.calls.delete.length, 0);
+});
+
 test('maps a concurrent unique collision to XHS_ACCOUNT_DUPLICATE', async () => {
   const registry = createFakeMatcherRegistry({ duplicateOnBind: true });
   await assert.rejects(

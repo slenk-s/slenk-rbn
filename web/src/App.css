@@ -2720,8 +2720,6 @@ button:hover { transform: translateY(-1px); }
 .auth-status-pill.warning .auth-status-dot { background: #eab308; box-shadow: 0 0 0 3px rgba(234, 179, 8, .16); }
 .auth-status-pill.unavailable { color: #b91c1c; background: rgba(239, 68, 68, .08); }
 .auth-status-pill.unavailable .auth-status-dot { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .14); }
-.auth-shared-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 12px 14px; border: 1px solid rgba(234, 179, 8, .24); border-radius: 14px; background: rgba(254, 249, 195, .42); color: #713f12; font-size: 12px; line-height: 1.55; }
-.auth-shared-warning b { white-space: nowrap; }
 .auth-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--border); }
 .auth-status-grid div { min-width: 0; padding: 11px 13px; background: #fff; }
 .auth-status-grid dt { color: var(--text); font-size: 11px; }
@@ -2803,7 +2801,7 @@ button:hover { transform: translateY(-1px); }
 @media (max-width: 640px) {
   .redapp-auth-card { padding: 16px; }
   .auth-card-head, .auth-modal-heading, .auth-logout-confirm { align-items: stretch; flex-direction: column; }
-  .auth-shared-warning, .auth-status-grid, .auth-modal-content { grid-template-columns: 1fr; }
+  .auth-status-grid, .auth-modal-content { grid-template-columns: 1fr; }
   .auth-status-pill { align-self: flex-start; }
   .auth-logout-confirm div, .auth-card-actions { display: grid; grid-template-columns: 1fr; }
   .auth-logout-confirm button, .auth-card-actions button { width: 100%; }

@@ -11,6 +11,7 @@ const MAX_MASKED_OPEN_ID_LENGTH = 512;
 const LOGIN_DONE_TIMEOUT_MS = 5000;
 const MATCH_FAILURE_ERROR = '扫码匹配失败';
 const MATCH_TIMEOUT_ERROR = '扫码匹配超时';
+const MATCH_DUPLICATE_ERROR = 'XHS 账号已绑定';
 
 function finiteNumberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -229,8 +230,7 @@ export function createRedappAuthManager({
   // onLoginDone 的失败必须上浮到会话（auth.match），不得被吞掉后仍显示登录成功。
   function matchFailure(err) {
     if (err?.code === 'XHS_ACCOUNT_DUPLICATE') {
-      const message = typeof err?.message === 'string' ? err.message : 'XHS 账号已绑定';
-      return { matched: false, conflict: true, error: message.slice(0, 256) };
+      return { matched: false, conflict: true, error: MATCH_DUPLICATE_ERROR };
     }
     return { matched: false, error: MATCH_FAILURE_ERROR };
   }

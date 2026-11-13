@@ -977,8 +977,8 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       const bound = buildPublishAccountOptions(accounts);
       setPublishAccountId(prev => (prev && bound.some(o => o.id === prev)) ? prev : (bound[0]?.id || ''));
     } catch {
-      setXhsAccounts([]);
-      setPublishAccountId('');
+      // 拉取失败保留上一次的账号列表，避免把“暂无账号”空态误报给用户；仅提示刷新失败。
+      setStatus('账号列表刷新失败，请稍后重试；当前展示的是上一次的结果。');
     }
   }
   async function submitPublish() {

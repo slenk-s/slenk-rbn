@@ -6,7 +6,13 @@
 // - 该 openId 已属当前用户的另一账号 → 清理本次待绑定行与新凭证目录，返回 { matched: false, conflict: true, existingId }。
 // - 同一账号重新扫码（已是属主）→ 不改库，返回 { matched: true, accountId }。
 // - 并发撞 unique(user_id, open_id) 直接抛出 XHS_ACCOUNT_DUPLICATE（由上层映射到会话）。
+// - 回执里没有可用的 openId（缺失/非字符串/空串）→ 拒绝绑定，返回 { matched: false, error }。
+const OPEN_ID_MISSING_ERROR = '回执缺少 openId，无法自动匹配';
+
 export async function matchLoginToAccount({ userId, accountId, credentialDir, openId, registry }) {
+  if (typeof openId !== 'string' || openId.trim() === '') {
+    return { matched: false, error: OPEN_ID_MISSING_ERROR };
+  }
   const existing = await registry.findByOpenIdForUser(userId, openId);
   if (existing) {
     if (existing.id === accountId) {

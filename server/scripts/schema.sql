@@ -104,6 +104,3 @@ create index if not exists slenk_notes_xhs_accounts_user_idx
 alter table slenk_notes_xhs_accounts enable row level security;
 revoke all on slenk_notes_xhs_accounts from anon, authenticated;
 revoke all on slenk_notes_xhs_accounts from public;
-
--- 管理员只读接口的角色前提
-alter table slenk_notes_users add column if not exists role text not null default 'user';

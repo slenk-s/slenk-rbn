@@ -2155,6 +2155,29 @@ function buildAccountsRouter({ store, registry, authManager, findUserById = asyn
   });
 }
 
+test('accounts router applies JWT middleware before route handlers', async () => {
+  let handlerCalls = 0;
+  const router = createRedappAccountsRouter({
+    accountRegistry: {
+      listForUser: async () => { handlerCalls += 1; return []; },
+      createPendingForUser: async () => { handlerCalls += 1; return {}; },
+      deleteForUser: async () => { handlerCalls += 1; return null; }
+    },
+    findUserById: async () => { handlerCalls += 1; return null; },
+    listAllAccounts: async () => { handlerCalls += 1; return []; },
+    verify: (req, res) => res.status(401).json({ error: 'unauthorized' })
+  });
+  const response = createResponse();
+  const request = { method: 'GET', url: '/accounts', originalUrl: '/accounts', path: '/accounts' };
+  await new Promise((resolve, reject) => {
+    router.handle(request, response, error => error ? reject(error) : resolve());
+    setImmediate(resolve);
+  });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.body, { error: 'unauthorized' });
+  assert.equal(handlerCalls, 0);
+});
+
 test('GET /accounts returns only the current user masked accounts without secrets', async () => {
   const statusCalls = [];
   const store = createFakeAccountStore([
@@ -2346,7 +2369,6 @@ test('minitool publish returns AUTH_REQUIRED with accountId before building', as
       getStatus: async () => fakeAuthStatus({ loggedIn: false, needsReauth: true }),
       startLogin: async () => ({ sessionId: 's1', status: 'waiting_scan' })
     },
-    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
@@ -2365,7 +2387,6 @@ test('minitool publish rejects an accountId not owned by the user with 404', asy
   const handler = createMiniToolPublishHandler({
     accountRegistry,
     authManager: { getStatus: async () => fakeAuthStatus({ loggedIn: true }) },
-    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
