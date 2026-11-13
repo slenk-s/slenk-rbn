@@ -5,8 +5,9 @@ import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
-  renderTurnstileWidget,
-  subscribeTurnstileScriptLoad
+  loadTurnstileScript,
+  persistCurrentLogin,
+  renderTurnstileWidget
 } from './lib/turnstileLogin.js';
 import {
   MINITOOL_PUBLISH_DEADLINE_MS,
@@ -1845,7 +1846,7 @@ function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdR
 
   useEffect(() => {
     let cancelled = false;
-    let removeLoadListener = null;
+    let cleanupScript = null;
     function render() {
       if (cancelled) return;
       renderTurnstileWidget({
@@ -1863,19 +1864,17 @@ function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdR
       });
     }
     if (window.turnstile) render();
-    else if (!document.querySelector('script[data-turnstile]')) {
-      const s = document.createElement('script');
-      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
-      s.async = true; s.defer = true; s.dataset.turnstile = '';
-      s.onload = render;
-      s.onerror = () => onInvalidate('人机验证加载失败，请检查网络后刷新');
-      document.head.appendChild(s);
-    } else {
-      removeLoadListener = subscribeTurnstileScriptLoad(document.querySelector('script[data-turnstile]'), render);
+    else {
+      const loading = loadTurnstileScript(
+        document,
+        render,
+        () => onInvalidate('人机验证加载失败，请检查网络后刷新')
+      );
+      cleanupScript = loading.cleanup;
     }
     return () => {
       cancelled = true;
-      removeLoadListener?.();
+      cleanupScript?.();
       if (window.turnstile && widgetIdRef.current !== null) window.turnstile.remove(widgetIdRef.current);
       widgetIdRef.current = null;
     };
@@ -1931,7 +1930,7 @@ function Auth({ flow, pathname, navigate }) {
   }, [flow, navigate, resetWidget]);
 
   const completeChallenge = useCallback((token) => {
-    flow.completeChallenge(token);
+    if (!flow.completeChallenge(token)) return;
     if (flow.stage('/login') !== 'login') {
       invalidate('人机验证未完成，请稍后重试', true);
       return;
@@ -1968,8 +1967,12 @@ function Auth({ flow, pathname, navigate }) {
       const data = await readJsonResponse(r);
       if (!flow.isCurrentLogin(request)) return;
       if (!r.ok) throw new Error(data.error === 'forbidden' ? '人机验证失败，请重试' : data.error === 'invalid_credentials' ? '用户名或密码错误' : (data.error || '登录失败'));
-      flow.finishLogin(request);
-      localStorage.setItem('token', data.token);
+      persistCurrentLogin({
+        flow,
+        request,
+        token: data.token,
+        persist: token => localStorage.setItem('token', token)
+      });
       location.reload();
     } catch (err) {
       if (!flow.isCurrentLogin(request)) return;
