@@ -3,7 +3,11 @@ import QRCode from 'qrcode';
 import { diffLines } from './diffText.js';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
-import { createTurnstileLoginFlow } from './lib/turnstileLogin.js';
+import {
+  createTurnstileLoginFlow,
+  renderTurnstileWidget,
+  subscribeTurnstileScriptLoad
+} from './lib/turnstileLogin.js';
 import {
   MINITOOL_PUBLISH_DEADLINE_MS,
   MINITOOL_PUBLISH_REQUEST_DEADLINE_MS,
@@ -1837,17 +1841,25 @@ function AuthBrand() {
 }
 function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdRef }) {
   const turnstileRef = useRef(null);
+  const [renderAttempt, setRenderAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    let removeLoadListener = null;
     function render() {
-      if (cancelled || !window.turnstile || !turnstileRef.current || widgetIdRef.current !== null) return;
-      widgetIdRef.current = window.turnstile.render(turnstileRef.current, {
-        sitekey: TURNSTILE_SITEKEY,
-        action: 'login',
-        callback: onComplete,
-        'error-callback': (code) => onInvalidate('人机验证失败（错误码 ' + code + '），请重试', true),
-        'expired-callback': () => onInvalidate('人机验证已过期，请重新验证', true),
+      if (cancelled) return;
+      renderTurnstileWidget({
+        turnstile: window.turnstile,
+        container: turnstileRef.current,
+        widgetIdRef,
+        options: {
+          sitekey: TURNSTILE_SITEKEY,
+          action: 'login',
+          callback: onComplete,
+          'error-callback': (code) => onInvalidate('人机验证失败（错误码 ' + code + '），请重试', true),
+          'expired-callback': () => onInvalidate('人机验证已过期，请重新验证', true),
+        },
+        onRenderError: () => onInvalidate('人机验证初始化失败，请重试')
       });
     }
     if (window.turnstile) render();
@@ -1859,21 +1871,27 @@ function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdR
       s.onerror = () => onInvalidate('人机验证加载失败，请检查网络后刷新');
       document.head.appendChild(s);
     } else {
-      document.querySelector('script[data-turnstile]').addEventListener('load', render, { once: true });
+      removeLoadListener = subscribeTurnstileScriptLoad(document.querySelector('script[data-turnstile]'), render);
     }
     return () => {
       cancelled = true;
+      removeLoadListener?.();
       if (window.turnstile && widgetIdRef.current !== null) window.turnstile.remove(widgetIdRef.current);
       widgetIdRef.current = null;
     };
-  }, [onComplete, onInvalidate, widgetIdRef]);
+  }, [onComplete, onInvalidate, renderAttempt, widgetIdRef]);
+
+  const retryWidget = () => {
+    if (window.turnstile && widgetIdRef.current !== null) window.turnstile.reset(widgetIdRef.current);
+    else setRenderAttempt(attempt => attempt + 1);
+  };
 
   return (
     <div className="auth-screen" hidden={hidden}>
       <div className="auth-card">
         <AuthBrand />
         <div ref={turnstileRef}></div>
-        {error && <p className="auth-error">{error}</p>}
+        {error && <><p className="auth-error">{error}</p><button className="btn-secondary" type="button" onClick={retryWidget}>重新加载验证</button></>}
       </div>
     </div>
   );
@@ -1923,24 +1941,38 @@ function Auth({ flow, pathname, navigate }) {
   }, [flow, invalidate, navigate]);
 
   useEffect(() => {
-    if (stage === 'challenge' && flow.token() !== null) flow.invalidate();
+    if (stage === 'challenge' && flow.token() !== null) {
+      invalidate('', true);
+      return;
+    }
     if (stage === 'challenge' && pathname !== '/') navigate('/', { replace: true });
-  }, [flow, navigate, pathname, stage]);
+  }, [flow, invalidate, navigate, pathname, stage]);
 
   async function login(e) {
     e.preventDefault();
     if (submittingRef.current) return;
+    const request = flow.beginLogin();
+    if (!request) {
+      invalidate('人机验证已失效，请重新验证', true);
+      return;
+    }
     submittingRef.current = true;
     setSubmitting(true); setError('');
     try {
-      const challengeToken = flow.token();
-      if (!challengeToken) throw new Error('人机验证已失效，请重新验证');
-      const r = await fetch(API + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, 'cf-turnstile-response': challengeToken }) });
+      const r = await fetch(API + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: request.signal,
+        body: JSON.stringify({ username, password, 'cf-turnstile-response': request.token })
+      });
       const data = await readJsonResponse(r);
+      if (!flow.isCurrentLogin(request)) return;
       if (!r.ok) throw new Error(data.error === 'forbidden' ? '人机验证失败，请重试' : data.error === 'invalid_credentials' ? '用户名或密码错误' : (data.error || '登录失败'));
+      flow.finishLogin(request);
       localStorage.setItem('token', data.token);
       location.reload();
     } catch (err) {
+      if (!flow.isCurrentLogin(request)) return;
       invalidate(err.message, true);
     }
   }
