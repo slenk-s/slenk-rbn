@@ -15,8 +15,9 @@ function defaultGenerateAccountId() {
 }
 
 // force 使目录不存在时静默成功，避免重复解绑报错。
+// 必须用 promises.rm（返回 Promise）——fs.rm 不带回调会以 undefined 回调抛 TypeError 崩溃进程。
 function defaultRemoveCredentialDir(dir) {
-  return fs.rm(dir, { recursive: true, force: true });
+  return fs.promises.rm(dir, { recursive: true, force: true });
 }
 
 export function createXhsAccountRegistry({
