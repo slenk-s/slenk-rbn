@@ -70,6 +70,7 @@ node server/scripts/migrate-app-json.mjs
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage`
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/uploads`
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/videos`
+- `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/auth`（每用户每小红书账号一个凭证子目录，可用 `SLENK_XHS_AUTH_ROOT` 覆盖）
 
 视频生成通过本地 FFmpeg 处理，默认优先使用 `E:/FFmpeg/ffmpeg.exe`；如果不存在，则回退到项目内置 `ffmpeg-static`。
 
@@ -90,13 +91,15 @@ node server/scripts/migrate-app-json.mjs
 
 详见 `AGENTS.md`。
 
-## 小红书授权（redapp 共享凭证）
+## 小红书授权（每用户多账号，互相隔离）
 
-扫码直达发布使用的 redapp 登录凭证由 redapp CLI 保存在 **Windows 用户目录**（`~/.skillhub-upload/`），**不随项目分发**：安装包、git 仓库和 `storage/` 中都不含任何小红书 token，换机器或重新克隆不会携带凭证。
+每个 Slenk 用户可绑定**多个**小红书账号，用户之间完全隔离：各自只能看到、使用和删除自己的账号；不同用户可以各自绑定同一个小红书账号（分别扫码、互不影响）。
 
-- **共享授权**：本机所有 Slenk 用户（admin 及各子账号）共用同一份凭证。工作区顶部的「小红书授权」卡片对所有人可见，任何登录用户都可以发起扫码、重新授权或退出；这些操作影响本机全部用户。
-- **凭证目录**：默认在 `~/.skillhub-upload/`（beta 环境在其 `beta/` 子目录；可用环境变量 `SKILLHUB_UPLOAD_HOME` 覆盖）。
-- **首次发布**：新机器第一次使用「扫码直达」时会自动弹出小红书授权二维码，用小红书 App 扫码授权后，原发布会自动继续（只重放一次，不会重复上传）。
-- **凭证管理**：access/refresh token 的续期完全由 CLI 负责，前端只显示脱敏状态（掩码 openId、授权范围、到期时间），任何 API 响应都不会包含 token 或完整 openId。
-- **退出授权**：在授权卡片点击「退出」会让 CLI 注销共享凭证，本机所有用户的下次发布都需要重新扫码。
-- **卸载**：删除项目目录默认**保留** `~/.skillhub-upload/` 中的凭证（避免误伤其他使用同一 CLI 的工具）；需要彻底清除时手动删除该目录即可。
+- **添加账号**：在「小红书授权」卡片点击添加，系统先创建一条「待扫码」记录并自动弹出授权二维码；用小红书 App 扫码后 openId 自动匹配回填到该记录（无需手动填账号）。若扫出的 openId 已属于该用户的另一个账号，本次待绑定记录与新目录会被自动清理。
+- **凭证目录**：每个账号一个独立目录，默认 `storage/auth/<userId>/<accountId>/`，可用环境变量 `SLENK_XHS_AUTH_ROOT` 覆盖根目录（安装包场景）。凭证不进 git，不随项目分发。
+- **按账号发布**：发布时在「扫码直达」里选择目标账号（只有已绑定账号可选，待扫码的不出现在选择器）；whoami / 上传 / 预览都按所选账号的凭证目录执行。
+- **删除账号**：默认同时删除磁盘上的凭证文件；勾选「同时删除凭证文件」可取消以仅解绑、保留凭证。删除操作只影响自己的账号。
+- **管理员只读**：管理员可在后端查询全量账号（脱敏：掩码 openId、目录尾段），只读，无任何管理操作接口；非管理员返回 403。
+- **凭证安全**：access/refresh token 的续期完全由 CLI 负责，前端只显示脱敏状态（掩码 openId、授权范围、到期时间、目录尾段提示），任何 API 响应都不会包含 token、完整 openId 或凭证绝对路径。
+- **旧共享凭证**：本机旧的单份共享凭证（`~/.skillhub-upload/`）**不会自动迁移**到新模型，也不受影响；继续使用需在新模型下重新扫码绑定各账号。
+- **卸载**：删除项目目录会一并删除 `storage/auth/` 下的凭证；`~/.skillhub-upload/` 默认保留（避免误伤其他使用同一 CLI 的工具），需要彻底清除时手动删除该目录。
