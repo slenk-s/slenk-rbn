@@ -122,3 +122,65 @@ test('allows a fresh login for the same account after the prior session finishes
   assert.equal(spawnCount, 2);
   manager.dispose();
 });
+
+// Task 4 MUST-FIX：onLoginDone 的失败必须上浮到会话，不得被吞掉后仍显示登录成功。
+test('surfaces a rejecting onLoginDone on the session instead of swallowing it', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-reject',
+    onLoginDone: async () => { throw new Error('SECRET_BOOM'); }
+  });
+
+  manager.startLogin('u1', 'acct-1', '/cred/u1/acct-1');
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"OPENID-1"}}\n');
+  await tick();
+
+  const session = manager.getSession('u1', 'acct-1', 'session-reject');
+  assert.equal(session.status, 'done');
+  assert.equal(session.auth.loggedIn, true);
+  // 匹配失败在会话上可见，且不泄漏原始错误文本。
+  assert.deepEqual(session.auth.match, { matched: false, error: '扫码匹配失败' });
+  assert.equal(JSON.stringify(session).includes('SECRET_BOOM'), false);
+});
+
+test('writes a resolved onLoginDone match result onto the session auth', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-match',
+    onLoginDone: async () => ({ matched: true, accountId: 'acct-1' })
+  });
+
+  manager.startLogin('u1', 'acct-1', '/cred/u1/acct-1');
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"OPENID-1"}}\n');
+  await tick();
+
+  const session = manager.getSession('u1', 'acct-1', 'session-match');
+  assert.equal(session.status, 'done');
+  assert.deepEqual(session.auth.match, { matched: true, accountId: 'acct-1' });
+});
+
+test('bounds a hanging onLoginDone with a timeout before reaching done', async () => {
+  const fake = createFakeChild();
+  const manager = createRedappAuthManager({
+    spawnCli: () => fake,
+    runCli: async () => ({ credentials: { loggedIn: false } }),
+    readFile: () => Buffer.from('png'),
+    randomId: () => 'session-hang',
+    loginDoneTimeoutMs: 10,
+    onLoginDone: () => new Promise(() => {})
+  });
+
+  manager.startLogin('u1', 'acct-1', '/cred/u1/acct-1');
+  fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"OPENID-1"}}\n');
+  await new Promise(resolve => setTimeout(resolve, 30));
+
+  const session = manager.getSession('u1', 'acct-1', 'session-hang');
+  assert.equal(session.status, 'done');
+  assert.deepEqual(session.auth.match, { matched: false, error: '扫码匹配超时' });
+});

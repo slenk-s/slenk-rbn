@@ -8,9 +8,24 @@ const MAX_LOGIN_SECONDS = 600;
 const MAX_LOGIN_OUTPUT_LINE_LENGTH = 64 * 1024;
 const CLOSED_ERROR_MESSAGE = '授权管理器已关闭';
 const MAX_MASKED_OPEN_ID_LENGTH = 512;
+const LOGIN_DONE_TIMEOUT_MS = 5000;
+const MATCH_FAILURE_ERROR = '扫码匹配失败';
+const MATCH_TIMEOUT_ERROR = '扫码匹配超时';
 
 function finiteNumberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// 匹配结果投影：只保留允许的字段并做类型约束，避免内部对象/异常文本泄漏到公开 DTO。
+function projectMatch(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const match = {};
+  if (typeof value.matched === 'boolean') match.matched = value.matched;
+  if (value.conflict === true) match.conflict = true;
+  if (typeof value.existingId === 'string') match.existingId = value.existingId.slice(0, 256);
+  if (typeof value.accountId === 'string') match.accountId = value.accountId.slice(0, 256);
+  if (typeof value.error === 'string') match.error = value.error.slice(0, 256);
+  return Object.keys(match).length ? match : undefined;
 }
 
 // needsReauth 永远在投影时刻按 loggedIn/expireTimeMs 重算，不信任上游存入的布尔值：
@@ -19,7 +34,7 @@ function projectAuthStatus(value, now = Date.now) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const loggedIn = source.loggedIn === true;
   const expireTimeMs = finiteNumberOrNull(source.expireTimeMs);
-  return {
+  const projected = {
     available: source.available === true,
     loggedIn,
     openIdMasked: typeof source.openIdMasked === 'string'
@@ -32,6 +47,9 @@ function projectAuthStatus(value, now = Date.now) {
     refreshExpireTimeMs: finiteNumberOrNull(source.refreshExpireTimeMs),
     needsReauth: !loggedIn || (expireTimeMs !== null && expireTimeMs <= now())
   };
+  const match = projectMatch(source.match);
+  if (match) projected.match = match;
+  return projected;
 }
 
 function unavailableAuthStatus() {
@@ -83,6 +101,7 @@ export function createRedappAuthManager({
   randomId = () => crypto.randomUUID(),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
+  loginDoneTimeoutMs = LOGIN_DONE_TIMEOUT_MS,
   onLoginDone
 }) {
   let disposed = false;
@@ -206,23 +225,65 @@ export function createRedappAuthManager({
     }
   }
 
+  // 登录成功：协调 onLoginDone（扫码自动匹配 / 落库）与进入 done 终态。
+  // onLoginDone 的失败必须上浮到会话（auth.match），不得被吞掉后仍显示登录成功。
+  function matchFailure(err) {
+    if (err?.code === 'XHS_ACCOUNT_DUPLICATE') {
+      const message = typeof err?.message === 'string' ? err.message : 'XHS 账号已绑定';
+      return { matched: false, conflict: true, error: message.slice(0, 256) };
+    }
+    return { matched: false, error: MATCH_FAILURE_ERROR };
+  }
+
+  function settleLoginDone(session, info, auth) {
+    let pending;
+    try {
+      pending = onLoginDone?.(info);
+    } catch (err) {
+      auth.match = matchFailure(err);
+      finish(session, 'done', { auth });
+      return;
+    }
+    if (!pending || typeof pending.then !== 'function') {
+      finish(session, 'done', { auth });
+      return;
+    }
+    // 有界等待：matcher 在途时不会提前进入 done；超时/失败都以 auth.match 上浮结果。
+    const TIMEOUT = Symbol('loginDoneTimeout');
+    let timer = null;
+    const timeout = new Promise(resolve => {
+      timer = armTimer(() => resolve(TIMEOUT), loginDoneTimeoutMs);
+    });
+    Promise.race([
+      Promise.resolve(pending).then(result => result),
+      timeout
+    ]).then(result => {
+      if (result === TIMEOUT) {
+        auth.match = { matched: false, error: MATCH_TIMEOUT_ERROR };
+      } else if (result !== undefined) {
+        auth.match = result;
+      }
+      finish(session, 'done', { auth });
+    }).catch(err => {
+      auth.match = matchFailure(err);
+      finish(session, 'done', { auth });
+    }).finally(() => {
+      if (timer) clearTimer(timer);
+    });
+  }
+
   function handleLine(session, line) {
     if (expirePastDeadline(session)) return;
     const parsed = parseTaggedOutput(line);
     for (const prompt of parsed.prompts) handlePrompt(session, prompt);
     for (const result of parsed.results) {
       if (result.status === 'ok' && result.credentials?.loggedIn === true) {
-        // 登录成功：先向上层回调（扫码自动匹配 / 落库），再进入 done 终态。
-        try {
-          const pending = onLoginDone?.({
-            userId: session.userId,
-            accountId: session.accountId,
-            credentialDir: session.credentialDir,
-            openId: rawLoginOpenId(line)
-          });
-          if (pending && typeof pending.then === 'function') pending.catch(() => {});
-        } catch {}
-        finish(session, 'done', { auth: projectAuthStatus(result.credentials, now) });
+        settleLoginDone(session, {
+          userId: session.userId,
+          accountId: session.accountId,
+          credentialDir: session.credentialDir,
+          openId: rawLoginOpenId(line)
+        }, projectAuthStatus(result.credentials, now));
       }
     }
   }

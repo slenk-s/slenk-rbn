@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createRedappNpmEnv, createAsyncProcessRunner, createRedappOperationsAsync } from '../src/lib/redappCli.js';
 import { createXhsAccountRegistry } from '../src/lib/xhsAccountRegistry.js';
+import { matchLoginToAccount } from '../src/lib/xhsAccountMatcher.js';
 import { paths } from '../src/paths.js';
 
 test('injects SKILLHUB_UPLOAD_HOME when credentialHome is set', () => {
@@ -270,4 +271,78 @@ test('SLENK_XHS_AUTH_ROOT overrides the default credential dir root', async () =
     if (saved === undefined) delete process.env.SLENK_XHS_AUTH_ROOT;
     else process.env.SLENK_XHS_AUTH_ROOT = saved;
   }
+});
+
+// ---- 扫码自动匹配（Task 4）：首次回填 / 冲突清理 / 同账号重扫 / 仅用户内匹配 ----
+
+// 记录调用的最小匹配器注册表：matcher 只依赖 findByOpenIdForUser / bindOpenIdForUser / deleteForUser。
+function createFakeMatcherRegistry({ existing = null, duplicateOnBind = false } = {}) {
+  const calls = { find: 0, bind: 0, delete: [] };
+  return {
+    calls,
+    findByOpenIdForUser: async () => { calls.find += 1; return existing; },
+    bindOpenIdForUser: async (userId, id, options) => {
+      calls.bind += 1;
+      calls.lastBind = { userId, id, options };
+      if (duplicateOnBind) {
+        const error = new Error('XHS 账号已绑定');
+        error.code = 'XHS_ACCOUNT_DUPLICATE';
+        throw error;
+      }
+      return { id, userId, openId: options.openId };
+    },
+    deleteForUser: async (userId, id, options) => { calls.delete.push({ userId, id, options }); return { id, userId }; }
+  };
+}
+
+test('binds openId on first scan and returns a matched account', async () => {
+  const registry = createFakeMatcherRegistry();
+  const result = await matchLoginToAccount({
+    userId: 'u1', accountId: 'acct-new', credentialDir: '/cred/new', openId: 'ob1', registry
+  });
+  assert.deepEqual(result, { matched: true, accountId: 'acct-new' });
+  assert.equal(registry.calls.find, 1);
+  assert.equal(registry.calls.bind, 1);
+  assert.deepEqual(registry.calls.lastBind, { userId: 'u1', id: 'acct-new', options: { openId: 'ob1' } });
+  assert.equal(registry.calls.delete.length, 0);
+});
+
+test('cleans the pending row and credential dir when the openId belongs to a different account', async () => {
+  const registry = createFakeMatcherRegistry({ existing: { id: 'acct-old', userId: 'u1', openId: 'ob1' } });
+  const result = await matchLoginToAccount({
+    userId: 'u1', accountId: 'acct-new', credentialDir: '/cred/new', openId: 'ob1', registry
+  });
+  assert.deepEqual(result, { matched: false, conflict: true, existingId: 'acct-old' });
+  assert.deepEqual(registry.calls.delete, [{ userId: 'u1', id: 'acct-new', options: { deleteCredentials: true } }]);
+  assert.equal(registry.calls.bind, 0);
+});
+
+test('rebinding the same account is a no-op match', async () => {
+  const registry = createFakeMatcherRegistry({ existing: { id: 'acct-1', userId: 'u1', openId: 'ob1' } });
+  const result = await matchLoginToAccount({
+    userId: 'u1', accountId: 'acct-1', credentialDir: '/cred/1', openId: 'ob1', registry
+  });
+  assert.deepEqual(result, { matched: true, accountId: 'acct-1' });
+  assert.equal(registry.calls.bind, 0);
+  assert.equal(registry.calls.delete.length, 0);
+});
+
+test('matches only within the current user: another user binding the same openId is untouched', async () => {
+  // 用户 a 已绑定 ob1；用户 b 扫同一 openId 视为首次绑定，不受 a 影响。
+  const registry = createFakeMatcherRegistry();
+  const result = await matchLoginToAccount({
+    userId: 'b', accountId: 'b-acct', credentialDir: '/cred/b', openId: 'ob1', registry
+  });
+  assert.deepEqual(result, { matched: true, accountId: 'b-acct' });
+  assert.equal(registry.calls.bind, 1);
+});
+
+test('maps a concurrent unique collision to XHS_ACCOUNT_DUPLICATE', async () => {
+  const registry = createFakeMatcherRegistry({ duplicateOnBind: true });
+  await assert.rejects(
+    () => matchLoginToAccount({
+      userId: 'u1', accountId: 'acct-new', credentialDir: '/cred/new', openId: 'ob1', registry
+    }),
+    { code: 'XHS_ACCOUNT_DUPLICATE' }
+  );
 });
