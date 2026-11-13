@@ -114,8 +114,8 @@ if (isSupabase) {
 await client.end();
 
 console.table(rows);
-if (rows.length !== 5) {
-  console.error(`expected 5 tables, found ${rows.length}`);
+if (rows.length !== 6) {
+  console.error(`expected 6 tables, found ${rows.length}`);
   process.exit(1);
 }
 if (isSupabase) {
@@ -130,8 +130,8 @@ if (isSupabase) {
     console.table(effectiveGrants);
     process.exit(1);
   }
-  console.log('schema applied, RLS enabled on all 5 tables');
+  console.log('schema applied, RLS enabled on all 6 tables');
   console.log('no anon/authenticated/PUBLIC table or column privileges: tables off the Data API surface');
 } else {
-  console.log('schema applied (5 tables); Supabase hardening skipped: no anon/authenticated roles on this database');
+  console.log('schema applied (6 tables); Supabase hardening skipped: no anon/authenticated roles on this database');
 }
