@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import path from 'node:path';
 import { createRedappAuthManager } from '../src/lib/redappAuth.js';
+import { createXhsAccountRegistry } from '../src/lib/xhsAccountRegistry.js';
 import { paths } from '../src/paths.js';
 import {
   createAsyncProcessRunner,
@@ -21,6 +22,7 @@ import {
 } from '../src/lib/redappCli.js';
 
 let createRedappAuthRouter;
+let createRedappAccountsRouter;
 let createMiniToolPublishHandler;
 let createMiniToolPublishJobRegistry;
 let createMiniToolPublishRouter;
@@ -28,7 +30,7 @@ let publishQueue;
 
 test.before(async () => {
   process.env.TEST_DATABASE_URL ||= 'postgres://test:test@127.0.0.1:1/test?sslmode=disable';
-  ({ createRedappAuthRouter } = await import('../src/routes/redappAuth.js'));
+  ({ createRedappAuthRouter, createRedappAccountsRouter } = await import('../src/routes/redappAuth.js'));
   ({ createMiniToolPublishHandler, createMiniToolPublishJobRegistry, createMiniToolPublishRouter, publishQueue } = await import('../src/routes/publish.js'));
 });
 
@@ -68,6 +70,9 @@ async function invokeHandler(handler, body = {}, userId = 'user-1') {
   await handler({ body, user: { userId }, params: { attemptId: body.attemptId } }, response, error => { throw error; });
   return response;
 }
+
+// 路由级 fake 账号注册表：仅用于发布 handler 的账号归属/凭证目录解析。
+const testAccountRegistry = { resolveCredentialDir: async (userId, accountId) => accountId === 'acct-1' ? '/cred/u1/acct-1' : null };
 
 test('maps only CLI AUTH_REQUIRED to safe available logged-out status', async () => {
   const parsed = parseTaggedOutput('RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED","message":"TEST_AUTH_SECRET"}');
@@ -206,13 +211,14 @@ test('null process status publish returns unavailable before all work', async ()
   });
   const handler = createMiniToolPublishHandler({
     authManager: manager,
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { calls.push('build'); },
     runAudit: () => { calls.push('audit'); return { output: '' }; },
     uploadPackage: async () => { calls.push('upload'); },
     createPreview: async () => { calls.push('preview'); }
   });
 
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 503);
   assert.deepEqual(response.body, { error: 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
   assert.deepEqual(calls, []);
@@ -232,12 +238,13 @@ test('nonzero AUTH_REQUIRED publish starts login before build audit upload or pr
   });
   const handler = createMiniToolPublishHandler({
     authManager: manager,
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { calls.push('build'); },
     runAudit: () => { calls.push('audit'); return { output: '' }; },
     uploadPackage: async () => { calls.push('upload'); },
     createPreview: async () => { calls.push('preview'); }
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 401);
   assert.equal(response.body.code, 'AUTH_REQUIRED');
   assert.equal(response.body.auth.status, 'waiting_prompt');
@@ -377,15 +384,16 @@ test('minitool publish returns AUTH_REQUIRED before building files', async () =>
       getStatus: () => ({ available: true, loggedIn: false }),
       startLogin: () => ({ sessionId: 's1', status: 'waiting_scan' })
     },
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
     createPreview: async () => ({})
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 401);
   assert.equal(response.body.code, 'AUTH_REQUIRED');
-  assert.deepEqual(response.body.auth, { sessionId: 's1', status: 'waiting_scan' });
+  assert.deepEqual(response.body.auth, { sessionId: 's1', status: 'waiting_scan', accountId: 'acct-1' });
   assert.equal(built, false);
 });
 
@@ -396,12 +404,13 @@ test('minitool publish treats expired credentials as AUTH_REQUIRED before buildi
       getStatus: () => ({ available: true, loggedIn: true, needsReauth: true }),
       startLogin: () => ({ sessionId: 'expired', status: 'waiting_prompt' })
     },
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
     createPreview: async () => ({})
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 401);
   assert.equal(response.body.code, 'AUTH_REQUIRED');
   assert.equal(response.body.auth.sessionId, 'expired');
@@ -412,12 +421,13 @@ test('minitool publish returns safe unavailable response before building files',
   let built = false;
   const handler = createMiniToolPublishHandler({
     authManager: { getStatus: () => ({ available: false, loggedIn: false, error: 'safe unavailable' }) },
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
     createPreview: async () => ({})
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 503);
   assert.deepEqual(response.body, { error: 'safe unavailable', code: 'REDAPP_UNAVAILABLE' });
   assert.equal(built, false);
@@ -432,6 +442,7 @@ test('minitool publish job returns immediately and concurrent duplicates execute
   const handler = createMiniToolPublishHandler({
     authManager: { getStatus: () => ({ available: true, loggedIn: true, needsReauth: false }) },
     registry,
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => {
       builds += 1;
       await new Promise(resolve => { resolveBuild = resolve; });
@@ -442,7 +453,7 @@ test('minitool publish job returns immediately and concurrent duplicates execute
     createPreview: async () => { previews += 1; return { previewUrl: 'https://safe.test/preview' }; },
     readQrImage: () => null
   });
-  const body = { attemptId: 'attempt-1234', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] };
+  const body = { attemptId: 'attempt-1234', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' };
   const [first, duplicate] = await Promise.all([invokeHandler(handler, body), invokeHandler(handler, body)]);
   assert.equal(first.statusCode, 202);
   assert.deepEqual(first.body, { attemptId: body.attemptId, status: 'running' });
@@ -554,18 +565,20 @@ test('authorization router protects every endpoint and delegates safe manager DT
   const manager = {
     getStatus: () => ({ available: true, loggedIn: false }),
     startLogin: () => ({ sessionId: 's1', status: 'waiting_prompt' }),
-    getSession: id => id === 's1' ? ({ sessionId: id, status: 'waiting_scan', qrImage: 'data:image/png;base64,cXI=' }) : null,
-    cancelLogin: id => { calls.push(['cancel', id]); return { sessionId: id, status: 'cancelled' }; },
+    getSession: (userId, accountId, sessionId) => sessionId === 's1' ? ({ sessionId, status: 'waiting_scan', qrImage: 'data:image/png;base64,cXI=' }) : null,
+    cancelLogin: (userId, accountId, sessionId) => { calls.push(['cancel', sessionId]); return { sessionId, status: 'cancelled' }; },
     logout: () => { calls.push(['logout']); return { available: true, loggedIn: false }; }
   };
   const verified = [];
   const router = createRedappAuthRouter({
     authManager: manager,
+    accountRegistry: { getForUser: async () => ({ id: 'acct-1', credentialDir: '/cred/u1/acct-1' }) },
     verify: (req, res, next) => { verified.push(req.path); next(); }
   });
   const stack = router.stack;
   assert.equal(stack[0].handle, router.stack[0].handle);
   const route = (method, path) => stack.find(layer => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
+  const base = { user: { userId: 'user-1' }, query: { accountId: 'acct-1' } };
   const requests = [
     ['get', '/', {}, { available: true, loggedIn: false }],
     ['post', '/login', {}, { sessionId: 's1', status: 'waiting_prompt' }],
@@ -575,7 +588,7 @@ test('authorization router protects every endpoint and delegates safe manager DT
   ];
   for (const [method, path, request, expected] of requests) {
     const response = createResponse();
-    await route(method, path)(request, response, error => { throw error; });
+    await route(method, path)({ ...base, ...request }, response, error => { throw error; });
     assert.deepEqual(response.body, expected);
   }
   assert.deepEqual(calls, [['cancel', 's1'], ['logout']]);
@@ -584,11 +597,12 @@ test('authorization router protects every endpoint and delegates safe manager DT
 test('authorization router returns 404 when a session is not found', async () => {
   const router = createRedappAuthRouter({
     authManager: { getSession: () => null },
+    accountRegistry: { getForUser: async () => ({ id: 'acct-1', credentialDir: '/cred/u1/acct-1' }) },
     verify: (req, res, next) => next()
   });
   const handler = router.stack.find(layer => layer.route?.path === '/session/:id' && layer.route.methods.get).route.stack[0].handle;
   const response = createResponse();
-  await handler({ params: { id: 'missing' } }, response, error => { throw error; });
+  await handler({ params: { id: 'missing' }, query: { accountId: 'acct-1' }, user: { userId: 'user-1' } }, response, error => { throw error; });
   assert.equal(response.statusCode, 404);
   assert.deepEqual(response.body, { error: 'session_not_found' });
 });
@@ -1170,12 +1184,13 @@ test('logout invalidates sessions first and rejects with a fixed safe error on C
 test('logout router passes failure to middleware without writing a success DTO', async () => {
   const router = createRedappAuthRouter({
     authManager: { logout: async () => { throw new Error('redapp 退出登录失败'); } },
+    accountRegistry: { getForUser: async () => ({ id: 'acct-1', credentialDir: '/cred/u1/acct-1' }) },
     verify: (req, res, next) => next()
   });
   const handler = router.stack.find(layer => layer.route?.path === '/logout').route.stack[0].handle;
   const response = createResponse();
   let routedError;
-  await handler({}, response, error => { routedError = error; });
+  await handler({ query: { accountId: 'acct-1' }, user: { userId: 'user-1' } }, response, error => { routedError = error; });
   await tick();
   assert.equal(routedError?.message, 'redapp 退出登录失败');
   assert.equal(response.body, undefined);
@@ -2082,4 +2097,296 @@ test('operation validation errors never reflect CLI-controlled results', () => {
     assert.equal(error.message.includes('TEST_SECRET'), false);
     return true;
   });
+});
+
+// ===== Task 5: 账号 CRUD 路由、管理员只读与发布按账号 =====
+
+// 路由级 fake store：内存行集合，按 user_id 过滤；供真实 createXhsAccountRegistry 包装。
+function createFakeAccountStore(initial = []) {
+  const rows = initial.map(r => ({ ...r }));
+  return {
+    rows,
+    listForUser: async userId => rows.filter(r => r.userId === userId),
+    getForUser: async (userId, id) => rows.find(r => r.userId === userId && r.id === id) || null,
+    createPendingForUser: async (userId, { id, credentialDir }) => {
+      const row = { id, userId, credentialDir, openId: null, nickname: '', createdAt: Date.now(), updatedAt: Date.now() };
+      rows.push(row);
+      return row;
+    },
+    bindOpenIdForUser: async (userId, id, { openId }) => {
+      const row = rows.find(r => r.userId === userId && r.id === id);
+      if (row) row.openId = openId;
+      return row;
+    },
+    findByOpenIdForUser: async (userId, openId) => rows.find(r => r.userId === userId && r.openId === openId) || null,
+    deleteForUser: async (userId, id) => {
+      const idx = rows.findIndex(r => r.userId === userId && r.id === id);
+      return idx < 0 ? null : rows.splice(idx, 1)[0];
+    }
+  };
+}
+
+function fakeAuthStatus(overrides = {}) {
+  return { available: true, loggedIn: false, openIdMasked: null, scope: [], expireTimeMs: null, refreshExpireTimeMs: null, needsReauth: true, ...overrides };
+}
+
+function routeAccount(id, userId, { openId = null, dir } = {}) {
+  return { id, userId, credentialDir: dir || `C:\\storage\\auth\\${userId}\\${id}`, openId, nickname: '', createdAt: 1000, updatedAt: 1000 };
+}
+
+function routeHandler(router, method, path) {
+  return router.stack.find(layer => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
+}
+
+async function invokeRoute(handler, { params = {}, query = {}, body = {}, userId = 'u1' } = {}) {
+  const response = createResponse();
+  await handler({ params, query, body, user: { userId } }, response, error => { throw error; });
+  return response;
+}
+
+function buildAccountsRouter({ store, registry, authManager, findUserById = async () => ({ isAdmin: true }), listAllAccounts = async () => [] }) {
+  const accountRegistry = registry || createXhsAccountRegistry({ ...store, removeCredentialDir: async () => {} });
+  return createRedappAccountsRouter({
+    accountRegistry,
+    authManager: authManager || { getStatus: async () => fakeAuthStatus() },
+    findUserById,
+    listAllAccounts,
+    verify: (req, res, next) => next()
+  });
+}
+
+test('GET /accounts returns only the current user masked accounts without secrets', async () => {
+  const statusCalls = [];
+  const store = createFakeAccountStore([
+    routeAccount('acct-1', 'u1', { openId: 'ob5cfa901234' }),
+    routeAccount('acct-2', 'u1'),
+    routeAccount('acct-3', 'u2', { openId: 'other12345678' })
+  ]);
+  const router = buildAccountsRouter({
+    store,
+    authManager: {
+      getStatus: async (userId, accountId, credentialDir) => {
+        statusCalls.push({ userId, accountId, credentialDir });
+        return fakeAuthStatus({ loggedIn: true, scope: ['base_info', 'skill_publish'], expireTimeMs: 12345, needsReauth: false });
+      }
+    }
+  });
+  const handler = routeHandler(router, 'get', '/accounts');
+  const response = await invokeRoute(handler, { userId: 'u1' });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.length, 2);
+  const [bound, pending] = response.body;
+  assert.equal(bound.id, 'acct-1');
+  assert.equal(bound.status, 'bound');
+  assert.equal(bound.openIdMasked, 'ob5c…1234');
+  assert.equal(bound.credentialDirHint, '…/acct-1');
+  assert.equal(bound.loggedIn, true);
+  assert.deepEqual(bound.scope, ['base_info', 'skill_publish']);
+  assert.equal(bound.expireTimeMs, 12345);
+  assert.equal(bound.needsReauth, false);
+  assert.equal(pending.status, 'pending_bind');
+  assert.equal(pending.openIdMasked, null);
+  const serialized = JSON.stringify(response.body);
+  assert.equal(serialized.includes('ob5cfa901234'), false);
+  assert.equal(serialized.toLowerCase().includes('storage\\auth'), false);
+  assert.equal(serialized.includes('accessToken'), false);
+  assert.equal(serialized.includes('"credentialDir":'), false);
+  // 状态机按账号调用：每个账号带自己的 userId/accountId/credentialDir。
+  assert.deepEqual(statusCalls, [
+    { userId: 'u1', accountId: 'acct-1', credentialDir: 'C:\\storage\\auth\\u1\\acct-1' },
+    { userId: 'u1', accountId: 'acct-2', credentialDir: 'C:\\storage\\auth\\u1\\acct-2' }
+  ]);
+});
+
+test('POST /accounts creates a pending account and returns pending_bind hint', async () => {
+  const store = createFakeAccountStore([]);
+  const registry = createXhsAccountRegistry({
+    ...store,
+    generateAccountId: () => 'acct-new',
+    generateCredentialDir: (userId, accountId) => `/auth/${userId}/${accountId}`,
+    removeCredentialDir: async () => {}
+  });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'post', '/accounts');
+  const response = await invokeRoute(handler, { userId: 'u1' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { id: 'acct-new', status: 'pending_bind', credentialDirHint: '…/acct-new' });
+  assert.equal(store.rows[0].openId, null);
+});
+
+test('DELETE /accounts/:id removes the disk dir when deleteCredentials is true', async () => {
+  const removed = [];
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1', { dir: 'C:\\storage\\auth\\u1\\acct-1' })]);
+  const registry = createXhsAccountRegistry({ ...store, removeCredentialDir: async dir => { removed.push(dir); } });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'delete', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, query: { deleteCredentials: 'true' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(removed, ['C:\\storage\\auth\\u1\\acct-1']);
+  assert.equal(store.rows.length, 0);
+});
+
+test('DELETE /accounts/:id keeps the disk dir when deleteCredentials is false', async () => {
+  const removed = [];
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1')]);
+  const registry = createXhsAccountRegistry({ ...store, removeCredentialDir: async dir => { removed.push(dir); } });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'delete', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, query: { deleteCredentials: 'false' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(removed, []);
+  assert.equal(store.rows.length, 0);
+});
+
+test('DELETE /accounts/:id returns 404 for an unowned account and removes nothing', async () => {
+  const removed = [];
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1')]);
+  const registry = createXhsAccountRegistry({ ...store, removeCredentialDir: async dir => { removed.push(dir); } });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'delete', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-other' } });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  assert.deepEqual(removed, []);
+});
+
+test('GET /admin/accounts returns grouped masked lists for an admin', async () => {
+  const store = createFakeAccountStore([
+    routeAccount('acct-1', 'u1', { openId: 'ob5cfa901234' }),
+    routeAccount('acct-3', 'u2', { openId: 'other12345678' })
+  ]);
+  const listAll = async () => [
+    { userId: 'u1', accounts: [store.rows[0]] },
+    { userId: 'u2', accounts: [store.rows[1]] }
+  ];
+  const router = buildAccountsRouter({ store, listAllAccounts: listAll });
+  const handler = routeHandler(router, 'get', '/admin/accounts');
+  const response = await invokeRoute(handler, { userId: 'admin-user' });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.length, 2);
+  assert.equal(response.body[0].userId, 'u1');
+  assert.equal(response.body[0].accounts[0].openIdMasked, 'ob5c…1234');
+  assert.equal(response.body[0].accounts[0].credentialDirHint, '…/acct-1');
+  assert.equal(response.body[1].userId, 'u2');
+  const serialized = JSON.stringify(response.body);
+  assert.equal(serialized.includes('ob5cfa901234'), false);
+  assert.equal(serialized.toLowerCase().includes('storage\\auth'), false);
+});
+
+test('GET /admin/accounts returns 403 XHS_ADMIN_REQUIRED for a non-admin and never lists', async () => {
+  let listed = 0;
+  const router = buildAccountsRouter({
+    store: createFakeAccountStore([]),
+    findUserById: async () => ({ isAdmin: false }),
+    listAllAccounts: async () => { listed += 1; return []; }
+  });
+  const handler = routeHandler(router, 'get', '/admin/accounts');
+  const response = await invokeRoute(handler, { userId: 'u1' });
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.body.code, 'XHS_ADMIN_REQUIRED');
+  assert.equal(listed, 0);
+});
+
+test('auth status routes return 404 XHS_ACCOUNT_NOT_FOUND for an unowned accountId', async () => {
+  const router = createRedappAuthRouter({
+    authManager: { getStatus: async () => fakeAuthStatus() },
+    accountRegistry: { getForUser: async () => null },
+    verify: (req, res, next) => next()
+  });
+  for (const [method, path] of [['get', '/'], ['post', '/login'], ['post', '/logout']]) {
+    const handler = routeHandler(router, method, path);
+    const response = await invokeRoute(handler, { userId: 'u1', query: { accountId: 'nope' } });
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  }
+});
+
+test('auth status routes forward the owned accountId and credentialDir to the manager', async () => {
+  const calls = [];
+  const router = createRedappAuthRouter({
+    authManager: {
+      getStatus: async (userId, accountId, credentialDir) => { calls.push(['status', userId, accountId, credentialDir]); return fakeAuthStatus({ loggedIn: true }); },
+      startLogin: async (userId, accountId, credentialDir) => { calls.push(['login', userId, accountId, credentialDir]); return { sessionId: 's1', status: 'waiting_prompt' }; },
+      getSession: async (userId, accountId, sessionId) => { calls.push(['session', userId, accountId, sessionId]); return { sessionId, status: 'done' }; },
+      cancelLogin: async (userId, accountId, sessionId) => { calls.push(['cancel', userId, accountId, sessionId]); return { sessionId, status: 'cancelled' }; },
+      logout: async (userId, accountId, credentialDir) => { calls.push(['logout', userId, accountId, credentialDir]); return fakeAuthStatus(); }
+    },
+    accountRegistry: { getForUser: async (userId, accountId) => accountId === 'acct-1' ? { id: 'acct-1', credentialDir: '/cred/u1/acct-1' } : null },
+    verify: (req, res, next) => next()
+  });
+  const requests = [
+    ['get', '/', {}],
+    ['post', '/login', {}],
+    ['get', '/session/:id', { id: 's1' }],
+    ['post', '/session/:id/cancel', { id: 's1' }],
+    ['post', '/logout', {}]
+  ];
+  for (const [method, path, params] of requests) {
+    const handler = routeHandler(router, method, path);
+    const response = await invokeRoute(handler, { userId: 'u1', query: { accountId: 'acct-1' }, params });
+    assert.equal(response.statusCode, 200);
+  }
+  assert.deepEqual(calls, [
+    ['status', 'u1', 'acct-1', '/cred/u1/acct-1'],
+    ['login', 'u1', 'acct-1', '/cred/u1/acct-1'],
+    ['session', 'u1', 'acct-1', 's1'],
+    ['cancel', 'u1', 'acct-1', 's1'],
+    ['logout', 'u1', 'acct-1', '/cred/u1/acct-1']
+  ]);
+});
+
+test('minitool publish returns AUTH_REQUIRED with accountId before building', async () => {
+  let built = false;
+  const accountRegistry = {
+    resolveCredentialDir: async (userId, accountId) => accountId === 'acct-1' ? '/cred/u1/acct-1' : null
+  };
+  const handler = createMiniToolPublishHandler({
+    accountRegistry,
+    authManager: {
+      getStatus: async () => fakeAuthStatus({ loggedIn: false, needsReauth: true }),
+      startLogin: async () => ({ sessionId: 's1', status: 'waiting_scan' })
+    },
+    accountRegistry: testAccountRegistry,
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-acct-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.code, 'AUTH_REQUIRED');
+  assert.equal(response.body.auth.accountId, 'acct-1');
+  assert.equal(built, false);
+});
+
+test('minitool publish rejects an accountId not owned by the user with 404', async () => {
+  let built = false;
+  const accountRegistry = { resolveCredentialDir: async () => null };
+  const handler = createMiniToolPublishHandler({
+    accountRegistry,
+    authManager: { getStatus: async () => fakeAuthStatus({ loggedIn: true }) },
+    accountRegistry: testAccountRegistry,
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-acct-miss', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'not-owned' });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  assert.equal(built, false);
+});
+
+test('minitool publish requires an accountId in the request body', async () => {
+  const handler = createMiniToolPublishHandler({
+    accountRegistry: { resolveCredentialDir: async () => null },
+    authManager: { getStatus: async () => fakeAuthStatus({ loggedIn: true }) },
+    buildMiniToolZip: async () => ({}),
+    runAudit: () => ({}),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-no-acct', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, 'PUBLISH_VALIDATION');
 });

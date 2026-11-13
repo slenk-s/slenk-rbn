@@ -16,6 +16,7 @@ const auth = { getStatus: async () => ({ available: true, loggedIn: true, needsR
 function operationDeps(overrides = {}) {
   return {
     authManager: auth,
+    accountRegistry: { resolveCredentialDir: async (userId, accountId) => accountId === 'acct-1' ? '/cred/u1/acct-1' : null },
     buildMiniToolZip: async () => ({ dir: '/safe/dir', zipPath: '/safe/a.zip', size: 1, imageCount: 1 }),
     runAudit: async () => ({ status: 'passed' }),
     uploadPackage: async () => ({ fileId: 'f', md5: 'm' }),
@@ -25,7 +26,7 @@ function operationDeps(overrides = {}) {
   };
 }
 
-const valid = { attemptId: 'attempt-1234', title: ' title ', content: ' body ', tags: [' #tag '], images: ['/uploads/a.png'] };
+const valid = { attemptId: 'attempt-1234', title: ' title ', content: ' body ', tags: [' #tag '], images: ['/uploads/a.png'], accountId: 'acct-1' };
 
 test('canonical validation rejects wrong types and bounds before auth', async () => {
   let authCalls = 0;
