@@ -138,27 +138,25 @@ test('cancel transfer reserves its generation before releasing the UI lock', () 
   assert.equal(nextOperation.generation, 10);
 });
 
-test('failed cancel wiring reserves transferred generation before unlock and rejects its poll after a retry', () => {
+test('account-scoped cancel keeps polling on failure and applies terminal state on success', () => {
   const source = readFileSync(new URL('../src/RedappAuth.jsx', import.meta.url), 'utf8');
-  const catchBranch = source.match(/    \} catch \{([\s\S]*?)\n    \} finally \{/u)?.[1] || '';
-  const guardedCommit = catchBranch.match(
-    /if \(transition\.commit && !controller\.signal\.aborted\) \{([\s\S]*?)\n      \}/u
-  )?.[1] || '';
-  const reservationMatch = guardedCommit.match(
-    /operationGeneration\.current = reserveTransferredGeneration\(\r?\n\s*operationGeneration\.current,\r?\n\s*transition\.pollGeneration\r?\n\s*\);/u
-  );
-  const reserveIndex = reservationMatch?.index ?? -1;
-  const unlockIndex = guardedCommit.indexOf('setBusy(transition.busy);');
-  const lifecycleIndex = guardedCommit.indexOf('lifecycle.current = transition.lifecycle;');
-  const sessionIndex = guardedCommit.indexOf('pollGeneration: transition.pollGeneration');
-
-  assert.ok(guardedCommit, 'failed cancel catch must preserve current transition and controller guards');
-  assert.equal(catchBranch.slice(0, catchBranch.indexOf(guardedCommit)).includes('reserveTransferredGeneration('), false,
-    'stale failed cancel must not reserve outside the current-completion guard');
-  assert.ok(reserveIndex >= 0, 'failed cancel catch must reserve its exact transferred generation');
-  assert.ok(reserveIndex < unlockIndex, 'reservation must happen before busy unlock');
-  assert.ok(unlockIndex < lifecycleIndex && lifecycleIndex < sessionIndex,
-    'unlock must precede lifecycle and exact-session poll publication');
+  const cancelBody = source.match(/async function cancelSession\(\) \{([\s\S]*?)\n  \}/u)?.[1] || '';
+  assert.ok(cancelBody, 'cancelSession wiring must exist');
+  // 取消必须带账号上下文：服务端按 ?accountId= 校验归属。
+  assert.match(cancelBody, /client\.cancel\(cancelling\.sessionId, \{ accountId: cancelling\.accountId/u);
+  const tryBranch = cancelBody.match(/try \{([\s\S]*?)\} catch \{/u)?.[1] || '';
+  const catchBranch = cancelBody.match(/\} catch \{([\s\S]*?)\} finally \{/u)?.[1] || '';
+  assert.ok(tryBranch && catchBranch, 'cancel wiring must have try/catch branches');
+  // 成功路径：先停轮询，再写入服务端返回的终态会话。
+  const abortIndex = tryBranch.indexOf('pollController.current?.abort();');
+  const applyIndex = tryBranch.indexOf('setSession(');
+  assert.ok(abortIndex >= 0 && applyIndex > abortIndex, 'successful cancel must stop polling before publishing the terminal session');
+  // 授权已完成的竞态：cancel 返回 done 时按完成处理并刷新账号列表。
+  assert.match(tryBranch, /cancelled\.status === 'done'/u);
+  assert.match(tryBranch, /refreshAccounts/u);
+  // 失败路径：只提示，绝不停轮询——授权可能仍在进行。
+  assert.match(catchBranch, /取消授权失败/u);
+  assert.equal(catchBranch.includes('pollController'), false, 'failed cancel must not abort the in-flight poll');
 
   const transition = cancelOperationCompletion({
     lifecycle: { generation: 8, sessionId: 'session-a' },
