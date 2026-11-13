@@ -86,3 +86,24 @@ revoke all on slenk_notes_tasks from anon, authenticated;
 revoke all on slenk_notes_tasks from public;
 revoke all on slenk_notes_notes from anon, authenticated;
 revoke all on slenk_notes_notes from public;
+
+-- 小红书账号绑定：open_id 扫码成功后回填，NULL 表示待绑定。credential_dir 全局唯一，
+-- 一个凭证目录只属于一个账号；unique(user_id, open_id) 中 NULL 互不冲突，允许同用户多个待绑定。
+create table if not exists slenk_notes_xhs_accounts (
+  id text primary key,
+  user_id text not null references slenk_notes_users(id) on delete cascade,
+  credential_dir text not null unique,
+  open_id text,                          -- 扫码回填；NULL 表示待绑定
+  nickname text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, open_id)              -- NULL 互不冲突，允许同用户多个待绑定
+);
+create index if not exists slenk_notes_xhs_accounts_user_idx
+  on slenk_notes_xhs_accounts (user_id, created_at desc);
+alter table slenk_notes_xhs_accounts enable row level security;
+revoke all on slenk_notes_xhs_accounts from anon, authenticated;
+revoke all on slenk_notes_xhs_accounts from public;
+
+-- 管理员只读接口的角色前提
+alter table slenk_notes_users add column if not exists role text not null default 'user';

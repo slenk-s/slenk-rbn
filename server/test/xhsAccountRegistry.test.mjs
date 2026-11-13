@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createRedappNpmEnv, createAsyncProcessRunner, createRedappOperationsAsync } from '../src/lib/redappCli.js';
+import { createXhsAccountRegistry } from '../src/lib/xhsAccountRegistry.js';
+import { paths } from '../src/paths.js';
 
 test('injects SKILLHUB_UPLOAD_HOME when credentialHome is set', () => {
   const env = createRedappNpmEnv('win32', { credentialHome: 'C:/auth/u1/acct1' });
@@ -105,5 +108,166 @@ test('createPreviewAsync forwards credentialHome to every runCommand invocation'
   assert.equal(seen.length, 2);
   for (const { options } of seen) {
     assert.equal(options.credentialHome, 'C:/auth/u1/acct1');
+  }
+});
+
+// ---- 账号绑定注册表（Task 2）：隔离、待绑定、冲突与凭证目录生命周期 ----
+
+const a1 = { id: 'a-acct-1', userId: 'a', credentialDir: '/auth/a/a-acct-1', openId: 'ob1', nickname: 'A1', createdAt: 1, updatedAt: 1 };
+const a2 = { id: 'a-acct-2', userId: 'a', credentialDir: '/auth/a/a-acct-2', openId: null, nickname: '', createdAt: 2, updatedAt: 2 };
+const b1 = { id: 'b-acct', userId: 'b', credentialDir: '/auth/b/b-acct', openId: null, nickname: '', createdAt: 3, updatedAt: 3 };
+
+// 模拟 store：内存行集合，按 user_id 过滤；bind 时模拟 unique(user_id, open_id) 冲突。
+function createFakeXhsStore(initial = []) {
+  const rows = initial.map(r => ({ ...r }));
+  return {
+    listForUser: async userId => rows.filter(r => r.userId === userId),
+    getForUser: async (userId, id) => rows.find(r => r.userId === userId && r.id === id) || null,
+    createPendingForUser: async (userId, { id, credentialDir }) => {
+      const row = { id, userId, credentialDir, openId: null, nickname: '', createdAt: Date.now(), updatedAt: Date.now() };
+      rows.push(row);
+      return row;
+    },
+    bindOpenIdForUser: async (userId, id, { openId, nickname } = {}) => {
+      const row = rows.find(r => r.userId === userId && r.id === id);
+      if (!row) return null;
+      if (rows.some(r => r.userId === userId && r.id !== id && r.openId === openId)) {
+        const e = new Error('duplicate openId');
+        e.code = 'XHS_ACCOUNT_DUPLICATE';
+        throw e;
+      }
+      row.openId = openId;
+      if (nickname !== undefined) row.nickname = nickname;
+      return row;
+    },
+    findByOpenIdForUser: async (userId, openId) => rows.find(r => r.userId === userId && r.openId === openId) || null,
+    deleteForUser: async (userId, id) => {
+      const idx = rows.findIndex(r => r.userId === userId && r.id === id);
+      return idx < 0 ? null : rows.splice(idx, 1)[0];
+    }
+  };
+}
+
+test('lists only own accounts and rejects cross-user access', async () => {
+  // 注入 fake store：A 用户两个账号，B 用户一个账号。
+  const registry = createXhsAccountRegistry(createFakeXhsStore([a1, a2, b1]));
+  assert.deepEqual(await registry.listForUser('a'), [a1, a2]);
+  assert.equal(await registry.getForUser('a', 'b-acct'), null);
+});
+
+test('creates pending account with null openId, then binds openId', async () => {
+  const registry = createXhsAccountRegistry(createFakeXhsStore([a2, b1]));
+  const pending = await registry.createPendingForUser('a', { credentialDir: 'd1' });
+  assert.equal(pending.openId, null);
+  const bound = await registry.bindOpenIdForUser('a', pending.id, { openId: 'ob1' });
+  assert.equal(bound.openId, 'ob1');
+});
+
+test('rejects duplicate openId for same user but allows it across users', async () => {
+  const registry = createXhsAccountRegistry(createFakeXhsStore([a1, a2, b1]));
+  await assert.rejects(
+    () => registry.bindOpenIdForUser('a', 'a-acct-2', { openId: 'ob1' }),
+    { code: 'XHS_ACCOUNT_DUPLICATE' }
+  );
+  // 用户 b 绑定同一 openId 不冲突
+  const b = await registry.bindOpenIdForUser('b', 'b-acct', { openId: 'ob1' });
+  assert.equal(b.openId, 'ob1');
+});
+
+test('bindOpenIdForUser stores nickname and returns null for cross-user account', async () => {
+  const registry = createXhsAccountRegistry(createFakeXhsStore([a1, a2, b1]));
+  const bound = await registry.bindOpenIdForUser('a', 'a-acct-2', { openId: 'ob2', nickname: '昵称' });
+  assert.equal(bound.openId, 'ob2');
+  assert.equal(bound.nickname, '昵称');
+  assert.equal(await registry.bindOpenIdForUser('a', 'b-acct', { openId: 'obX' }), null);
+});
+
+test('finds account by openId scoped to user', async () => {
+  const registry = createXhsAccountRegistry(createFakeXhsStore([a1, a2, b1]));
+  assert.equal((await registry.findByOpenIdForUser('a', 'ob1')).id, 'a-acct-1');
+  assert.equal(await registry.findByOpenIdForUser('a', 'ob-unknown'), null);
+});
+
+test('resolveCredentialDir returns dir for bound and pending accounts, null otherwise', async () => {
+  const registry = createXhsAccountRegistry(createFakeXhsStore([a1, a2, b1]));
+  assert.equal(await registry.resolveCredentialDir('a', 'a-acct-1'), '/auth/a/a-acct-1');
+  assert.equal(await registry.resolveCredentialDir('a', 'a-acct-2'), '/auth/a/a-acct-2');
+  assert.equal(await registry.resolveCredentialDir('a', 'b-acct'), null);
+});
+
+test('deleteForUser removes credential dir when deleteCredentials is true', async () => {
+  const removed = [];
+  const registry = createXhsAccountRegistry({
+    ...createFakeXhsStore([a1, a2, b1]),
+    removeCredentialDir: async dir => { removed.push(dir); }
+  });
+  const ok = await registry.deleteForUser('a', 'a-acct-2', { deleteCredentials: true });
+  assert.equal(ok, true);
+  assert.deepEqual(removed, ['/auth/a/a-acct-2']);
+});
+
+test('deleteForUser keeps credential dir when deleteCredentials is false', async () => {
+  const removed = [];
+  const registry = createXhsAccountRegistry({
+    ...createFakeXhsStore([a1, a2, b1]),
+    removeCredentialDir: async dir => { removed.push(dir); }
+  });
+  const ok = await registry.deleteForUser('a', 'a-acct-2', { deleteCredentials: false });
+  assert.equal(ok, true);
+  assert.deepEqual(removed, []);
+});
+
+test('deleteForUser returns false for cross-user account and removes nothing', async () => {
+  const removed = [];
+  const registry = createXhsAccountRegistry({
+    ...createFakeXhsStore([a1, a2, b1]),
+    removeCredentialDir: async dir => { removed.push(dir); }
+  });
+  const ok = await registry.deleteForUser('a', 'b-acct', { deleteCredentials: true });
+  assert.equal(ok, false);
+  assert.deepEqual(removed, []);
+});
+
+test('createPendingForUser uses injected id/dir generators when dir omitted', async () => {
+  const registry = createXhsAccountRegistry({
+    ...createFakeXhsStore([]),
+    generateAccountId: () => 'acct-gen-1',
+    generateCredentialDir: (userId, accountId) => `/custom/${userId}/${accountId}`
+  });
+  const pending = await registry.createPendingForUser('a', {});
+  assert.equal(pending.id, 'acct-gen-1');
+  assert.equal(pending.credentialDir, '/custom/a/acct-gen-1');
+  assert.equal(pending.openId, null);
+});
+
+test('default credential dir resolves to storage/auth/<userId>/<accountId> under app root', async () => {
+  const saved = process.env.SLENK_XHS_AUTH_ROOT;
+  try {
+    delete process.env.SLENK_XHS_AUTH_ROOT;
+    const registry = createXhsAccountRegistry({
+      ...createFakeXhsStore([]),
+      generateAccountId: () => 'acct-7'
+    });
+    const pending = await registry.createPendingForUser('u1', {});
+    assert.equal(pending.credentialDir, path.join(paths.root, 'storage', 'auth', 'u1', 'acct-7'));
+  } finally {
+    if (saved === undefined) delete process.env.SLENK_XHS_AUTH_ROOT;
+    else process.env.SLENK_XHS_AUTH_ROOT = saved;
+  }
+});
+
+test('SLENK_XHS_AUTH_ROOT overrides the default credential dir root', async () => {
+  const saved = process.env.SLENK_XHS_AUTH_ROOT;
+  try {
+    process.env.SLENK_XHS_AUTH_ROOT = '/custom/auth-root';
+    const registry = createXhsAccountRegistry({
+      ...createFakeXhsStore([]),
+      generateAccountId: () => 'acct-7'
+    });
+    const pending = await registry.createPendingForUser('u1', {});
+    assert.equal(pending.credentialDir, path.join('/custom/auth-root', 'u1', 'acct-7'));
+  } finally {
+    if (saved === undefined) delete process.env.SLENK_XHS_AUTH_ROOT;
+    else process.env.SLENK_XHS_AUTH_ROOT = saved;
   }
 });
