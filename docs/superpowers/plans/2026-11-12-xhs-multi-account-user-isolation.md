@@ -12,6 +12,14 @@
 
 **设计文档:** `docs/superpowers/specs/2026-11-12-xhs-multi-account-user-isolation-design.md`
 
+## 执行环境（2026-11-13 补充）
+
+- 开发在桌面应用 worktree `.claude/worktrees/xhs-multi-iso`（分支 `worktree-xhs-multi-iso`）进行，不占用主仓库工作树（主仓库当时另有一批未提交的 ECS 部署改动，与本计划在 schema.sql/App.jsx/AGENTS.md 上重叠，不能同树开发）。
+- `server/node_modules` 与 `web/node_modules` 是指向主仓库的**目录联接（junction）**：磁盘只占一份。禁止在 worktree 内执行 `npm install` / `npm ci`（会写进主仓库的 node_modules）；依赖变更先在主仓库装好后同步 package-lock.json 进 git。
+- `.env` 在项目根目录（`server/src/loadEnv.js` 向上查找），已复制进 worktree 根；含数据库连接串等机密，不进 git。
+- 基线（2026-11-13）：web 99/99；server redappAuth 89/89，全量 server 套件含共享远程 DB 用例、耗时较长，可后台执行。
+- 合并回 master 前需确认主仓库那批 ECS 改动已提交/落位，避免合并冲突；按 finishing-a-development-branch 流程收尾。
+
 ## Global Constraints
 
 - 凭证目录是唯一隔离单位：`credential_dir` 由服务端生成，每账号一个目录，绝不共享。
