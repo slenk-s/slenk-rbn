@@ -89,7 +89,7 @@ test('maps only CLI AUTH_REQUIRED to safe available logged-out status', async ()
     runCli,
     readFile: () => Buffer.from('qr')
   });
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: true,
     loggedIn: false,
     openIdMasked: null,
@@ -116,7 +116,7 @@ test('nonzero exact AUTH_REQUIRED remains a safe available logged-out status', a
     readFile: () => Buffer.from('qr')
   });
 
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: true,
     loggedIn: false,
     openIdMasked: null,
@@ -176,7 +176,7 @@ test('null process status projects manager status as unavailable', async () => {
     readFile: () => Buffer.from('qr')
   });
 
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: false,
     loggedIn: false,
     openIdMasked: null,
@@ -358,7 +358,7 @@ test('projects CLI failures as a safe unavailable auth status', async () => {
     runCli: () => { throw new Error('secret credential path C:/private/token.json'); },
     readFile: () => Buffer.from('qr')
   });
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: false,
     loggedIn: false,
     openIdMasked: null,
@@ -604,11 +604,11 @@ test('accepts URL and code only prompts without reading a QR file', async () => 
     randomId: () => 'link-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"authorizeUrl":"https://auth.example/device","userCode":"ABCD-EFGH","expiresInSeconds":30}\n');
   await tick();
 
-  assert.deepEqual(manager.getSession('link-session'), {
+  assert.deepEqual(manager.getSession('user-1', 'account-1', 'link-session'), {
     sessionId: 'link-session',
     status: 'waiting_scan',
     qrImage: null,
@@ -631,12 +631,12 @@ test('accepts URL and code only prompts from stderr without exposing raw output'
     randomId: () => 'stderr-link-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stderr.write('raw secret TEST_STDERR_SECRET\n');
   fake.stderr.write('PROMPT:{"authorizeUrl":"https://auth.example/device","userCode":"STDERR-CODE","expiresInSeconds":30}\n');
   await tick();
 
-  const session = manager.getSession('stderr-link-session');
+  const session = manager.getSession('user-1', 'account-1', 'stderr-link-session');
   assert.equal(session.status, 'waiting_scan');
   assert.equal(session.authorizeUrl, 'https://auth.example/device');
   assert.equal(session.userCode, 'STDERR-CODE');
@@ -652,11 +652,11 @@ test('accepts successful RESULT_JSON entirely from stderr and releases both stre
     randomId: () => 'stderr-result-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stderr.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openIdMasked":"ob12…7890"}}\n');
   await tick();
 
-  const session = manager.getSession('stderr-result-session');
+  const session = manager.getSession('user-1', 'account-1', 'stderr-result-session');
   assert.equal(session.status, 'done');
   assert.equal(session.auth.loggedIn, true);
   assert.equal(fake.stdout.listenerCount('data'), 0);
@@ -673,7 +673,7 @@ test('decodes split multibyte stderr without mixing stdout fragments', async () 
     randomId: () => 'stderr-utf8-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"authorizeUrl":"https://must-not-combine/');
   const line = Buffer.from('PROMPT:{"authorizeUrl":"https://auth.example/登录","userCode":"中文"}\n');
   const splitAt = line.indexOf(Buffer.from('登')) + 1;
@@ -681,7 +681,7 @@ test('decodes split multibyte stderr without mixing stdout fragments', async () 
   fake.stderr.write(line.subarray(splitAt));
   await tick();
 
-  const session = manager.getSession('stderr-utf8-session');
+  const session = manager.getSession('user-1', 'account-1', 'stderr-utf8-session');
   assert.equal(session.status, 'waiting_scan');
   assert.equal(session.authorizeUrl, 'https://auth.example/登录');
   assert.equal(session.userCode, '中文');
@@ -697,11 +697,11 @@ test('fails safely on overlong complete or unterminated stderr lines', async () 
       randomId: () => id
     });
 
-    manager.startLogin();
+    manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
     fake.stderr.write('x'.repeat(64 * 1024 + 1) + suffix);
     await tick();
 
-    const session = manager.getSession(id);
+    const session = manager.getSession('user-1', 'account-1', id);
     assert.equal(session.status, 'failed');
     assert.equal(session.error, '登录进程输出异常');
     assert.equal(JSON.stringify(session).includes('x'.repeat(100)), false);
@@ -719,14 +719,14 @@ test('reuses one active login session and sanitizes completion', async () => {
     randomId: () => 'session-1'
   });
 
-  const first = manager.startLogin();
-  const second = manager.startLogin();
+  const first = manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  const second = manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.equal(first.sessionId, second.sessionId);
   assert.equal(spawnCount, 1);
 
   fake.stdout.write('PROMPT:{"type":"auth_device_code","qrCodePath":"x.png","authorizeH5Url":"https://auth","userCode":"ABCD","expiresInSeconds":600}\n');
   await tick();
-  const waiting = manager.getSession('session-1');
+  const waiting = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(waiting.status, 'waiting_scan');
   assert.match(waiting.qrImage, /^data:image\/png;base64,/);
   assert.equal(waiting.authorizeUrl, 'https://auth');
@@ -737,7 +737,7 @@ test('reuses one active login session and sanitizes completion', async () => {
   fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"ob1234567890","accessToken":"hidden","scope":"base_info,skill_publish"}}\n');
   fake.emit('close', 0);
   await tick();
-  const done = manager.getSession('session-1');
+  const done = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(done.status, 'done');
   assert.equal(done.auth.loggedIn, true);
   assert.equal(JSON.stringify(done).includes('hidden'), false);
@@ -751,7 +751,7 @@ test('cancels locally before invoking the exact remote cancel command', async ()
     spawnCli: () => fake,
     runCli: args => {
       calls.push(args);
-      assert.equal(manager.getSession('session-1').status, 'cancelled');
+      assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'cancelled');
       assert.equal(fake.killed, true);
       throw new Error('TEST_CANCEL_SECRET');
     },
@@ -760,14 +760,14 @@ test('cancels locally before invoking the exact remote cancel command', async ()
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
-  const cancelled = await manager.cancelLogin('session-1');
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  const cancelled = await manager.cancelLogin('user-1', 'account-1', 'session-1');
   assert.equal(cancelled.status, 'cancelled');
   assert.deepEqual(calls, [['login', '--cancel']]);
   assert.equal(fake.killed, true);
   assert.equal(JSON.stringify(cancelled).includes('TEST_CANCEL_SECRET'), false);
-  assert.equal(manager.getSession('session-1').status, 'cancelled');
-  assert.equal(manager.getSession('missing'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'cancelled');
+  assert.equal(manager.getSession('user-1', 'account-1', 'missing'), null);
 });
 
 test('keeps the original ten-minute deadline when a prompt arrives after nine minutes', async () => {
@@ -788,13 +788,13 @@ test('keeps the original ten-minute deadline when a prompt arrives after nine mi
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.equal(timers[0].delay, 600000);
   currentTime += 9 * 60 * 1000;
   fake.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":600}\n');
   await tick();
 
-  assert.equal(manager.getSession('session-1').expiresAt, 601000);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').expiresAt, 601000);
   assert.equal(timers.at(-1).delay, 60000);
 });
 
@@ -815,12 +815,12 @@ test('rejects prompts and results that arrive after the absolute deadline', asyn
       clearTimer() {}
     });
 
-    manager.startLogin();
+    manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
     currentTime = 601001;
     fake.stdout.write(lateLine);
     await tick();
 
-    const expired = manager.getSession('session-1');
+    const expired = manager.getSession('user-1', 'account-1', 'session-1');
     assert.equal(expired.status, 'expired');
     assert.equal(expired.auth, null);
     assert.equal(expired.qrImage, null);
@@ -845,16 +845,16 @@ test('expires a login using injected timers and caps prompt expiry at ten minute
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":9999}\n');
   await tick();
-  assert.equal(manager.getSession('session-1').expiresAt, 602000);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').expiresAt, 602000);
   assert.equal(timers[0].delay, 600000);
 
   const expiryTimer = timers.find(timer => timer.delay === 600000 && !timer.cleared);
   expiryTimer.callback();
   assert.equal(fake.killed, true);
-  assert.equal(manager.getSession('session-1').status, 'expired');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'expired');
   assert.equal(timers.at(-1).delay, 300000);
 });
 
@@ -866,10 +866,10 @@ test('marks premature process close and spawn errors as failed without leaking o
     readFile: () => Buffer.from('png'),
     randomId: () => 'closed-session'
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stderr.write('accessToken=TEST_PROCESS_SECRET');
   fake.emit('close', 1);
-  const failed = manager.getSession('closed-session');
+  const failed = manager.getSession('user-1', 'account-1', 'closed-session');
   assert.equal(failed.status, 'failed');
   assert.equal(JSON.stringify(failed).includes('TEST_PROCESS_SECRET'), false);
 
@@ -879,8 +879,8 @@ test('marks premature process close and spawn errors as failed without leaking o
     readFile: () => Buffer.from('png'),
     randomId: () => 'spawn-session'
   });
-  assert.equal(throwing.startLogin().status, 'failed');
-  assert.equal(JSON.stringify(throwing.getSession('spawn-session')).includes('TEST_SPAWN_SECRET'), false);
+  assert.equal(throwing.startLogin('user-1', 'account-1', '/cred/user-1/account-1').status, 'failed');
+  assert.equal(JSON.stringify(throwing.getSession('user-1', 'account-1', 'spawn-session')).includes('TEST_SPAWN_SECRET'), false);
 });
 
 test('clears temporary session state when spawn throws or returns an unusable child', () => {
@@ -896,8 +896,8 @@ test('clears temporary session state when spawn throws or returns an unusable ch
       randomId: () => id
     });
 
-    assert.equal(manager.startLogin().status, 'failed');
-    const retained = manager.getSession(id);
+    assert.equal(manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1').status, 'failed');
+    const retained = manager.getSession('user-1', 'account-1', id);
     assert.equal(retained.status, 'failed');
     assert.equal(JSON.stringify(retained).includes('TEST_SPAWN_SECRET'), false);
   }
@@ -919,11 +919,11 @@ test('removes terminal sessions after five minutes', async () => {
     clearTimer() {}
   });
 
-  manager.startLogin();
-  await manager.cancelLogin('session-1');
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  await manager.cancelLogin('user-1', 'account-1', 'session-1');
   assert.equal(timers.at(-1).delay, 300000);
   timers.at(-1).callback();
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('dispose kills active children, clears timers, and removes every session', async () => {
@@ -945,16 +945,16 @@ test('dispose kills active children, clears timers, and removes every session', 
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   terminalChild.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":10}\n');
   await tick();
-  await manager.cancelLogin('session-1');
-  manager.startLogin();
+  await manager.cancelLogin('user-1', 'account-1', 'session-1');
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   manager.dispose();
 
   assert.equal(activeChild.killed, true);
-  assert.equal(manager.getSession('session-1'), null);
-  assert.equal(manager.getSession('session-2'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-2'), null);
   assert.equal(timers.every(timer => timer.cleared), true);
 });
 
@@ -981,7 +981,7 @@ test('projects credential status and logout results through safe DTOs', async ()
     readFile: () => Buffer.from('png')
   });
 
-  for (const result of [await manager.getStatus(), await manager.logout()]) {
+  for (const result of [await manager.getStatus('user-1', 'account-1'), await manager.logout('user-1', 'account-1', '/cred/user-1/account-1')]) {
     assert.equal(result.loggedIn, true);
     assert.equal(result.openIdMasked, 'ob12…7890');
     assert.equal(JSON.stringify(result).includes('TEST_AUTH_SECRET'), false);
@@ -1019,14 +1019,14 @@ test('preserves already-sanitized auth DTOs and drops raw or unknown fields', as
     refreshExpireTimeMs: 4102448400000,
     needsReauth: false
   };
-  assert.deepEqual(await manager.getStatus(), expected);
-  assert.deepEqual(await manager.logout(), expected);
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), expected);
+  assert.deepEqual(await manager.logout('user-1', 'account-1', '/cred/user-1/account-1'), expected);
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: safeCredentials })}\n`);
   await tick();
-  assert.deepEqual(manager.getSession('session-1').auth, expected);
-  const exposed = JSON.stringify(manager.getSession('session-1'));
+  assert.deepEqual(manager.getSession('user-1', 'account-1', 'session-1').auth, expected);
+  const exposed = JSON.stringify(manager.getSession('user-1', 'account-1', 'session-1'));
   assert.equal(exposed.includes('ob1234567890'), false);
   assert.equal(exposed.includes('TEST_AUTH_SECRET'), false);
   assert.equal(exposed.includes('TEST_UNKNOWN_SECRET'), false);
@@ -1049,7 +1049,7 @@ test('ignores late prompts and replaces prompt expiry timers safely', async () =
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"first.png","expiresInSeconds":10}\n');
   await tick();
   fake.stdout.write('PROMPT:{"qrCodePath":"second.png","expiresInSeconds":20}\n');
@@ -1058,10 +1058,10 @@ test('ignores late prompts and replaces prompt expiry timers safely', async () =
   assert.equal(timers[1].cleared, true);
   assert.equal(timers[2].delay, 20000);
 
-  await manager.cancelLogin('session-1');
+  await manager.cancelLogin('user-1', 'account-1', 'session-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":30}\n');
   await tick();
-  assert.equal(manager.getSession('session-1').status, 'cancelled');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'cancelled');
 });
 
 test('expires a session that never emits a prompt', () => {
@@ -1079,11 +1079,11 @@ test('expires a session that never emits a prompt', () => {
     clearTimer() {}
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.equal(timers[0].delay, 600000);
   timers[0].callback();
   assert.equal(fake.killed, true);
-  assert.equal(manager.getSession('session-1').status, 'expired');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'expired');
 });
 
 test('drains stderr and does not schedule cleanup after disposal close', () => {
@@ -1101,13 +1101,13 @@ test('drains stderr and does not schedule cleanup after disposal close', () => {
     clearTimer() {}
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.ok(fake.stderr.listenerCount('data') > 0);
   manager.dispose();
   const timerCount = timers.length;
   fake.emit('close', 0);
   assert.equal(timers.length, timerCount);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('cleans up child streams and listeners on done and process error', async () => {
@@ -1120,7 +1120,7 @@ test('cleans up child streams and listeners on done and process error', async ()
       randomId: () => `${terminalEvent}-session`
     });
 
-    manager.startLogin();
+    manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
     if (terminalEvent === 'done') {
       fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
       await tick();
@@ -1128,7 +1128,7 @@ test('cleans up child streams and listeners on done and process error', async ()
       fake.emit('error', new Error('TEST_CHILD_SECRET'));
     }
 
-    const terminal = manager.getSession(`${terminalEvent}-session`);
+    const terminal = manager.getSession('user-1', 'account-1', `${terminalEvent}-session`);
     assert.equal(terminal.status, terminalEvent === 'done' ? 'done' : 'failed');
     assert.equal(fake.killed, true);
     assert.equal(fake.stdout.listenerCount('data'), 0);
@@ -1139,7 +1139,7 @@ test('cleans up child streams and listeners on done and process error', async ()
     fake.stdout.write('PROMPT:{"qrCodePath":"late.png"}\n');
     fake.emit('close', 1);
     await tick();
-    assert.equal(manager.getSession(`${terminalEvent}-session`).status, terminal.status);
+    assert.equal(manager.getSession('user-1', 'account-1', `${terminalEvent}-session`).status, terminal.status);
     assert.equal(fake.killCount, 1);
   }
 });
@@ -1150,21 +1150,21 @@ test('logout invalidates sessions first and rejects with a fixed safe error on C
     spawnCli: () => fake,
     runCli: async args => {
       assert.deepEqual(args, ['logout']);
-      assert.equal(manager.getSession('session-1'), null);
+      assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
       assert.equal(fake.killed, true);
       throw new Error('TEST_LOGOUT_SECRET');
     },
     readFile: () => Buffer.from('png'),
     randomId: () => 'session-1'
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
 
-  await assert.rejects(manager.logout(), error => {
+  await assert.rejects(manager.logout('user-1', 'account-1', '/cred/user-1/account-1'), error => {
     assert.equal(error.message, 'redapp 退出登录失败');
     assert.equal(error.message.includes('TEST_LOGOUT_SECRET'), false);
     return true;
   });
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('logout router passes failure to middleware without writing a success DTO', async () => {
@@ -1188,7 +1188,7 @@ test('logout atomically invalidates sessions and ignores all late child events',
     spawnCli: () => fake,
     runCli: args => {
       calls.push(args);
-      assert.equal(manager.getSession('session-1'), null);
+      assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
       assert.equal(fake.killed, true);
       return { credentials: { loggedIn: false } };
     },
@@ -1196,18 +1196,18 @@ test('logout atomically invalidates sessions and ignores all late child events',
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
-  assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
-  const result = await manager.logout();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'waiting_prompt');
+  const result = await manager.logout('user-1', 'account-1', '/cred/user-1/account-1');
   assert.deepEqual(calls, [['logout']]);
   assert.equal(result.loggedIn, false);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 
   fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":10}\n');
   fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
   fake.emit('close', 0);
   await tick();
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('logout during the pending spawn window kills the late child without throwing', async () => {
@@ -1219,8 +1219,8 @@ test('logout during the pending spawn window kills the late child without throwi
     readFile: () => Buffer.from('png'),
     randomId: () => 'session-1'
   });
-  manager.startLogin();
-  await manager.logout();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  await manager.logout('user-1', 'account-1', '/cred/user-1/account-1');
   resolveSpawn(late);
   await tick();
   assert.equal(late.killed, true);
@@ -1230,7 +1230,7 @@ test('logout during the pending spawn window kills the late child without throwi
     late.emit('close', 0);
   });
   await tick();
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('release during the pending spawn window keeps late stream events inert', async () => {
@@ -1242,7 +1242,7 @@ test('release during the pending spawn window keeps late stream events inert', a
     readFile: () => Buffer.from('png'),
     randomId: () => 'session-1'
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   manager.dispose();
   resolveSpawn(late);
   await tick();
@@ -1302,7 +1302,7 @@ test('default randomId produces a valid session id without injection', () => {
     runCli: () => ({ credentials: { loggedIn: false } }),
     readFile: () => Buffer.from('png')
   });
-  const session = manager.startLogin();
+  const session = manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.match(session.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   manager.dispose();
 });
@@ -1320,7 +1320,7 @@ test('projection recomputes needsReauth from expiry instead of trusting the stor
     }),
     readFile: () => Buffer.from('png')
   });
-  const status = await manager.getStatus();
+  const status = await manager.getStatus('user-1', 'account-1');
   assert.equal(status.loggedIn, true);
   assert.equal(status.needsReauth, true);
 });
@@ -1335,12 +1335,12 @@ test('retained session auth recomputes needsReauth as expiry passes within reten
     randomId: () => 'session-1',
     now: () => current
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: { loggedIn: true, expireTimeMs: current + 1000 } })}\n`);
   await tick();
-  assert.equal(manager.getSession('session-1').auth.needsReauth, false);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').auth.needsReauth, false);
   current += 2000;
-  const retained = manager.getSession('session-1');
+  const retained = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(retained.status, 'done');
   assert.equal(retained.auth.loggedIn, true);
   assert.equal(retained.auth.needsReauth, true);
@@ -1356,9 +1356,9 @@ test('accepts a chunk over 64 KiB when every complete line is short', () => {
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(Buffer.from('noise\n'.repeat(11000)));
-  assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'waiting_prompt');
   assert.equal(fake.killed, false);
 });
 
@@ -1371,9 +1371,9 @@ test('fails safely when an individual complete stdout line exceeds 64 KiB', () =
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(Buffer.from(`TEST_OUTPUT_SECRET${'x'.repeat(64 * 1024)}\n`));
-  const failed = manager.getSession('session-1');
+  const failed = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error, '登录进程输出异常');
   assert.equal(fake.killed, true);
@@ -1389,9 +1389,9 @@ test('fails generically and kills the child when an unterminated stdout line exc
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(Buffer.from(`TEST_OUTPUT_SECRET${'x'.repeat(64 * 1024)}`));
-  const failed = manager.getSession('session-1');
+  const failed = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error, '登录进程输出异常');
   assert.equal(fake.killed, true);
@@ -1409,13 +1409,13 @@ test('keeps every work-creating method closed after disposal', async () => {
   });
 
   manager.dispose();
-  assert.throws(() => manager.startLogin(), { message: '授权管理器已关闭' });
-  await assert.rejects(manager.getStatus(), { message: '授权管理器已关闭' });
-  await assert.rejects(manager.cancelLogin('session-1'), { message: '授权管理器已关闭' });
-  await assert.rejects(manager.logout(), { message: '授权管理器已关闭' });
+  assert.throws(() => manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.getStatus('user-1', 'account-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.cancelLogin('user-1', 'account-1', 'session-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.logout('user-1', 'account-1', '/cred/user-1/account-1'), { message: '授权管理器已关闭' });
   assert.equal(spawnCount, 0);
   assert.equal(runCount, 0);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('rejects login starts permanently after disposal', () => {
@@ -1428,9 +1428,9 @@ test('rejects login starts permanently after disposal', () => {
   });
 
   manager.dispose();
-  assert.throws(() => manager.startLogin(), { message: '授权管理器已关闭' });
+  assert.throws(() => manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1'), { message: '授权管理器已关闭' });
   assert.equal(spawnCount, 0);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('decodes split UTF-8 characters in prompt and result lines', async () => {
@@ -1442,21 +1442,21 @@ test('decodes split UTF-8 characters in prompt and result lines', async () => {
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   const prompt = Buffer.from('PROMPT:{"qrCodePath":"x.png","userCode":"授权码"}\n');
   const promptSplit = prompt.indexOf(Buffer.from('授')) + 1;
   fake.stdout.write(prompt.subarray(0, promptSplit));
   fake.stdout.write(prompt.subarray(promptSplit));
   await tick();
-  assert.equal(manager.getSession('session-1').status, 'waiting_scan');
-  assert.equal(manager.getSession('session-1').userCode, '授权码');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'waiting_scan');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').userCode, '授权码');
 
   const result = Buffer.from('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"scope":"基础信息"}}\n');
   const resultSplit = result.indexOf(Buffer.from('基')) + 1;
   fake.stdout.write(result.subarray(0, resultSplit));
   fake.stdout.write(result.subarray(resultSplit));
   await tick();
-  const done = manager.getSession('session-1');
+  const done = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(done.status, 'done');
   assert.deepEqual(done.auth.scope, ['基础信息']);
 });
