@@ -8,6 +8,20 @@ function redact(value, token, secret) {
     : undefined;
 }
 
+const DIAGNOSTIC_DETAIL_KEYS = ['status', 'errorCodes', 'action', 'hostname'];
+
+export function formatTurnstileDiagnostic(result) {
+  const diagnostic = { reason: result?.reason };
+  if (!result?.details || typeof result.details !== 'object') return diagnostic;
+
+  const details = {};
+  for (const key of DIAGNOSTIC_DETAIL_KEYS) {
+    if (Object.hasOwn(result.details, key)) details[key] = result.details[key];
+  }
+  if (Object.keys(details).length > 0) diagnostic.details = details;
+  return diagnostic;
+}
+
 export async function verifyTurnstile({
   token,
   secret,

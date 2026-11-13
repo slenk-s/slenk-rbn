@@ -2,6 +2,10 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { ensureAdmin, findUserByUsername, findUserById } from '../store.js';
 import { sign, verify } from '../auth.js';
+import {
+  formatTurnstileDiagnostic,
+  verifyTurnstile,
+} from '../lib/turnstile.js';
 
 export const router = Router();
 
@@ -15,37 +19,16 @@ const turnstileHostnames = new Set(
     .filter(Boolean),
 );
 
-async function verifyTurnstile(req, res) {
-  const token = req.body?.['cf-turnstile-response'];
-  if (
-    typeof token !== 'string' ||
-    token.length === 0 ||
-    token.length > 2048 ||
-    !process.env.TURNSTILE_SECRET ||
-    turnstileHostnames.size === 0
-  ) {
-    res.status(403).json({ error: 'forbidden' });
-    return false;
-  }
-  let result;
-  try {
-    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      signal: AbortSignal.timeout(10_000),
-      body: new URLSearchParams({
-        secret: process.env.TURNSTILE_SECRET,
-        response: token,
-        remoteip: req.ip,
-      }),
-    });
-    if (!r.ok) throw new Error(`siteverify ${r.status}`);
-    result = await r.json();
-  } catch {
-    res.status(403).json({ error: 'forbidden' });
-    return false;
-  }
-  if (!result.success || result.action !== TURNSTILE_ACTION || !turnstileHostnames.has(result.hostname)) {
+async function verifyLoginTurnstile(req, res) {
+  const result = await verifyTurnstile({
+    token: req.body?.['cf-turnstile-response'],
+    secret: process.env.TURNSTILE_SECRET,
+    expectedAction: TURNSTILE_ACTION,
+    expectedHostnames: turnstileHostnames,
+    remoteIp: req.ip,
+  });
+  if (!result.ok) {
+    console.warn('Turnstile verification rejected', formatTurnstileDiagnostic(result));
     res.status(403).json({ error: 'forbidden' });
     return false;
   }
@@ -54,7 +37,7 @@ async function verifyTurnstile(req, res) {
 
 router.post('/login', async (req, res, next) => {
   try {
-    if (!(await verifyTurnstile(req, res))) return;
+    if (!(await verifyLoginTurnstile(req, res))) return;
     await ensureAdmin();
     const { username, password } = req.body;
     const user = await findUserByUsername(username);

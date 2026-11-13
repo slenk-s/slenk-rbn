@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { verifyTurnstile } from '../src/lib/turnstile.js';
+import {
+  formatTurnstileDiagnostic,
+  verifyTurnstile,
+} from '../src/lib/turnstile.js';
 
 const token = 'turnstile-token';
 const secret = 'turnstile-secret';
@@ -34,6 +37,29 @@ async function verifyWith(fetchImpl) {
     fetchImpl,
   });
 }
+
+test('Turnstile diagnostic formatter keeps only allowed redacted fields', () => {
+  const result = {
+    ok: false,
+    reason: 'siteverify_rejected',
+    details: {
+      errorCodes: ['invalid-input-response'],
+      token,
+      secret,
+      requestBody: { response: token, secret },
+    },
+    token,
+    secret,
+  };
+
+  const diagnostic = formatTurnstileDiagnostic(result);
+
+  assert.deepEqual(diagnostic, {
+    reason: 'siteverify_rejected',
+    details: { errorCodes: ['invalid-input-response'] },
+  });
+  assertRedacted(diagnostic);
+});
 
 test('Turnstile accepts a valid strict Siteverify response and sends the token', async () => {
   let request;
