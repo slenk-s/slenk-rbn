@@ -11,7 +11,7 @@ import { verify } from '../auth.js';
 import { paths } from '../paths.js';
 import { buildMiniToolZip, cleanupMiniToolArtifacts, effectiveMiniToolTitle, MINITOOL_CONTENT_MAX } from '../lib/minitoolBuild.js';
 import { createAsyncProcessRunner, createPreviewAsync, readRedappQrFile, uploadPackageAsync } from '../lib/redappCli.js';
-import { authManager } from './redappAuth.js';
+import { authManager, xhsAccountRegistry } from './redappAuth.js';
 
 const conn = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 export const publishQueue = new Queue('xhs-publish', { connection: conn });
@@ -54,6 +54,7 @@ function allowedImage(value) { return /^https?:\/\//i.test(value) || /^\/(upload
 export function canonicalizeMiniToolPublishRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid();
   if (typeof body.attemptId !== 'string' || !ATTEMPT_ID_PATTERN.test(body.attemptId)) invalid('无效的发布尝试标识');
+  if (typeof body.accountId !== 'string' || !body.accountId) invalid('无效的发布账号');
   if (typeof body.title !== 'string' || body.title.length > 100) invalid();
   if (typeof body.content !== 'string' || body.content.length > MINITOOL_CONTENT_MAX) invalid();
   if (!Array.isArray(body.tags) || body.tags.length > 20 || body.tags.some(t => typeof t !== 'string' || t.length > 40)) invalid();
@@ -65,8 +66,9 @@ export function canonicalizeMiniToolPublishRequest(body) {
     images: [...body.images]
   };
   if (!request.title && !request.content) invalid('标题和正文至少填一项');
-  const fingerprint = crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
-  return { attemptId: body.attemptId, request, fingerprint };
+  // accountId 参与指纹：同一内容发布到不同账号是不同任务，不得复用/串号。
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({ ...request, accountId: body.accountId })).digest('hex');
+  return { attemptId: body.attemptId, accountId: body.accountId, request, fingerprint };
 }
 
 export function createArtifactAuditor({ scriptPath = AUDIT_SCRIPT, scriptExists = fs.existsSync, runProcess = runNodeAsync } = {}) {
@@ -257,7 +259,7 @@ function qrData(readQrImage, candidates) {
 }
 
 export function createMiniToolPublishHandler({
-  authManager, registry = miniToolPublishJobs, buildMiniToolZip, runAudit, uploadPackage, createPreview,
+  authManager, accountRegistry = xhsAccountRegistry, registry = miniToolPublishJobs, buildMiniToolZip, runAudit, uploadPackage, createPreview,
   readQrImage = readRedappQrFile, cleanupArtifacts = cleanupMiniToolArtifacts
 }) {
   return async (req, res, next) => {
@@ -265,7 +267,7 @@ export function createMiniToolPublishHandler({
     try { validated = canonicalizeMiniToolPublishRequest(req.body); }
     catch { return res.status(400).json({ error: '发布参数无效', code: 'PUBLISH_VALIDATION' }); }
     try {
-      const { attemptId, request, fingerprint } = validated;
+      const { attemptId, request, fingerprint, accountId } = validated;
       const existing = registry.get(req.user?.userId, attemptId);
       if (existing) {
         if (existing.fingerprint !== fingerprint) throw Object.assign(new Error('publish_attempt_conflict'), { code: 'PUBLISH_ATTEMPT_CONFLICT' });
@@ -283,19 +285,25 @@ export function createMiniToolPublishHandler({
         const dto = registry.toDto(reused, attemptId);
         return res.status(dto.status === 'queued' || dto.status === 'running' ? 202 : 200).json(dto);
       }
-      const auth = await authManager.getStatus();
+      // 发布按账号：校验归属并解析该账号凭证目录；不属于当前用户 → 404。
+      const credentialDir = await accountRegistry.resolveCredentialDir(req.user?.userId, accountId);
+      if (!credentialDir) return res.status(404).json({ error: 'XHS 账号不存在', code: 'XHS_ACCOUNT_NOT_FOUND' });
+      const auth = await authManager.getStatus(req.user?.userId, accountId, credentialDir);
       if (!auth.available) return res.status(503).json({ error: auth.error || 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
-      if (!auth.loggedIn || auth.needsReauth) return res.status(401).json({ error: '需要连接小红书后继续', code: 'AUTH_REQUIRED', auth: await authManager.startLogin() });
+      if (!auth.loggedIn || auth.needsReauth) {
+        const login = await authManager.startLogin(req.user?.userId, accountId, credentialDir);
+        return res.status(401).json({ error: '需要连接小红书后继续', code: 'AUTH_REQUIRED', auth: { ...login, accountId } });
+      }
       const job = registry.createOrReuse(req.user?.userId, attemptId, fingerprint, async ({ signal, markSideEffectStarted }) => {
         const buildId = nanoid(12);
         try {
-          const built = await buildMiniToolZip({ buildId, title: request.title, content: request.content, tags: request.tags, imageUrls: request.images, signal });
+          const built = await buildMiniToolZip({ buildId, title: request.title, content: request.content, tags: request.tags, imageUrls: request.images, signal, credentialHome: credentialDir });
           await runAudit(built.dir, { signal });
           await runAudit(built.zipPath, { signal });
-          const uploaded = await uploadPackage(built.zipPath, { signal, onBeforeConfirm: markSideEffectStarted });
+          const uploaded = await uploadPackage(built.zipPath, { signal, onBeforeConfirm: markSideEffectStarted, credentialHome: credentialDir });
           markSideEffectStarted(uploaded);
           const qrOut = path.join(path.dirname(built.zipPath), `${buildId}-qr.png`);
-          const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut, signal });
+          const preview = await createPreview({ fileId: uploaded.fileId, md5: uploaded.md5, qrOut, signal, credentialHome: credentialDir });
           const expectedQr = path.resolve(qrOut);
           const reportedQr = typeof preview.qrCodePath === 'string' && path.resolve(preview.qrCodePath) === expectedQr ? preview.qrCodePath : null;
           return {

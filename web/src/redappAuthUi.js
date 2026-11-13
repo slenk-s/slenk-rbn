@@ -94,107 +94,12 @@ export function focusNavigationIndex(currentIndex, count, direction) {
   return (currentIndex + direction + count) % count;
 }
 
-export function isUsableAuth(auth) {
-  return auth?.available === true
-    && auth.loggedIn === true
-    && auth.needsReauth === false;
-}
-
-export function canCommitLifecycle(lifecycle, generation, sessionId = lifecycle.sessionId) {
-  return lifecycle.generation === generation && lifecycle.sessionId === sessionId;
-}
-
-export function pollLifecycleTransition(lifecycle, sessionId, transferredGeneration) {
-  if (Number.isInteger(transferredGeneration)) {
-    return lifecycle.generation === transferredGeneration && lifecycle.sessionId === sessionId
-      ? { lifecycle, generation: transferredGeneration }
-      : { lifecycle, generation: lifecycle.generation, commit: false };
-  }
-  const generation = lifecycle.generation + 1;
-  return { lifecycle: { generation, sessionId }, generation };
-}
-
-export function cancelOperationCompletion({ lifecycle, operationGeneration, sessionId, succeeded, responseStatus }) {
-  if (!canCommitLifecycle(lifecycle, operationGeneration, sessionId)) {
-    return { commit: false, lifecycle, busy: true };
-  }
-  if (succeeded && responseStatus === 'cancelled') {
-    return {
-      commit: true,
-      lifecycle: { generation: operationGeneration, sessionId: null },
-      busy: false
-    };
-  }
-  const generation = operationGeneration + 1;
-  return {
-    commit: true,
-    lifecycle: { generation, sessionId },
-    busy: false,
-    pollGeneration: generation
-  };
-}
-
-export function reserveTransferredGeneration(currentGeneration, transferredGeneration) {
-  return Number.isInteger(transferredGeneration)
-    ? Math.max(currentGeneration, transferredGeneration)
-    : currentGeneration;
-}
-
-export function cancelSessionStateCompletion({ currentSession, response, transition }) {
-  if (currentSession?.sessionId !== response?.sessionId) return { commit: false };
-  return {
-    session: Number.isInteger(transition.pollGeneration)
-      ? { ...response, pollGeneration: transition.pollGeneration }
-      : response,
-    close: false,
-    announceSuccess: false
-  };
-}
-
-export function authActionPermissions({ auth, activeSession, loading, busy }) {
-  const idle = !loading && !busy;
-  return {
-    connect: idle && Boolean(auth) && !activeSession,
-    refresh: idle && !activeSession,
-    cancel: idle && activeSession,
-    logout: idle && Boolean(auth) && !activeSession
-  };
-}
-
 export function operationTransition(state, event, generation) {
   if (event === 'start') {
     const nextGeneration = state.generation + 1;
     return { state: { ...state, generation: nextGeneration }, generation: nextGeneration };
   }
   return { state, commit: generation === state.generation };
-}
-
-export function pollCompletionTransition(status, refreshedAuth) {
-  if (status === 'done') {
-    if (isUsableAuth(refreshedAuth)) return { close: true, clearSession: true };
-    return {
-      status: 'done',
-      refreshError: refreshedAuth
-        ? '授权完成，但当前账号状态仍不可用'
-        : '授权成功，状态刷新失败'
-    };
-  }
-  return { status };
-}
-
-export function sessionStatusPresentation(session, auth) {
-  const presentations = {
-    waiting_prompt: { tone: 'active', label: '准备中' },
-    waiting_scan: { tone: 'active', label: '等待扫码' },
-    expired: { tone: 'unavailable', label: '已过期' },
-    failed: { tone: 'unavailable', label: '失败' },
-    cancelled: { tone: 'idle', label: '已取消' },
-    done: { tone: 'warning', label: '成功待刷新' },
-    'not-found': { tone: 'unavailable', label: '已失效' }
-  };
-  return session && presentations[session.status]
-    ? presentations[session.status]
-    : authStatusPresentation(auth);
 }
 
 export function authStatusPresentation(auth) {

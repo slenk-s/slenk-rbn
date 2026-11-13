@@ -110,15 +110,54 @@ export function createPublishAttemptId(cryptoImpl = globalThis.crypto) {
   return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
 }
 
-export function createPublishRequestSnapshot({ attemptId, title, content, tags, images }) {
+export function createPublishRequestSnapshot({ attemptId, title, content, tags, images, accountId }) {
   const resolvedAttemptId = attemptId || createPublishAttemptId();
   return Object.freeze({
     attemptId: String(resolvedAttemptId),
     title: String(title),
     content: String(content),
     tags: Object.freeze([...tags]),
-    images: Object.freeze([...images])
+    images: Object.freeze([...images]),
+    // 多账号发布：accountId 必须随快照冻结，授权重放沿用同一账号。
+    ...(accountId != null && accountId !== '' ? { accountId: String(accountId) } : {})
   });
+}
+
+// ---- 多账号：列表渲染与发布选择器的纯函数（便于单测） ----
+
+export function accountStatusLabel(status) {
+  return status === 'bound' ? '已绑定' : '待绑定';
+}
+
+export function accountDisplayName(account) {
+  const nickname = typeof account?.nickname === 'string' ? account.nickname.trim() : '';
+  if (nickname) return nickname;
+  if (typeof account?.openIdMasked === 'string' && account.openIdMasked) return account.openIdMasked;
+  return '待绑定账号';
+}
+
+export function accountLoginHint(account) {
+  if (account?.status !== 'bound') return '尚未扫码绑定';
+  if (account.loggedIn === true) return account.needsReauth === true ? '需要重新授权' : '已登录';
+  return '未登录';
+}
+
+// 发布账号选择器只列已绑定账号；待绑定（未扫码）的账号不能作为发布目标。
+export function buildPublishAccountOptions(accounts) {
+  return (Array.isArray(accounts) ? accounts : [])
+    .filter(account => account?.status === 'bound')
+    .map(account => {
+      // 已绑定账号缺昵称/掩码时回退到账号 id，保证选择器里可区分。
+      const display = accountDisplayName(account);
+      const base = display === '待绑定账号' ? String(account.id) : display;
+      const needsReauth = account.needsReauth === true;
+      return {
+        id: String(account.id),
+        value: String(account.id),
+        label: needsReauth ? `${base}（需重新授权）` : base,
+        needsReauth
+      };
+    });
 }
 
 export function createPublishFlow({ request, generation }) {
@@ -364,6 +403,11 @@ function withPollingDeadline(promise, { signal, remainingMs }) {
   });
 }
 
+function withAccountQuery(path, accountId) {
+  if (!isNonemptyString(accountId)) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}accountId=${encodeURIComponent(accountId)}`;
+}
+
 export function createRedappAuthClient({ api, pollMs = 1000 }) {
   if (typeof api !== 'function') throw new TypeError('api must be a function');
   const interval = Number.isFinite(pollMs) && pollMs >= 0 ? pollMs : 1000;
@@ -372,13 +416,36 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
     return readResponse(await api(path, options));
   }
 
-  const status = (options = {}) => request('/api/redapp/auth', options);
-  const login = (options = {}) => request('/api/redapp/auth/login', { method: 'POST', ...options });
-  const session = id => request(`/api/redapp/auth/session/${encodeURIComponent(id)}`);
-  const cancel = (id, options = {}) => request(`/api/redapp/auth/session/${encodeURIComponent(id)}/cancel`, { method: 'POST', ...options });
-  const logout = (options = {}) => request('/api/redapp/auth/logout', { method: 'POST', ...options });
+  // accountId 走 query（服务端按 ?accountId= 鉴权），其余 options 原样透传给 fetch 适配器。
+  const splitAccount = ({ accountId, ...rest } = {}) => ({ accountId, rest });
 
-  async function pollSession(id, { signal, timeoutMs = 10 * 60 * 1000, onUpdate = () => {} } = {}) {
+  const status = (options = {}) => {
+    const { accountId, rest } = splitAccount(options);
+    return request(withAccountQuery('/api/redapp/auth', accountId), rest);
+  };
+  const login = (options = {}) => {
+    const { accountId, rest } = splitAccount(options);
+    return request(withAccountQuery('/api/redapp/auth/login', accountId), { method: 'POST', ...rest });
+  };
+  const session = (id, options = {}) => {
+    const { accountId, rest } = splitAccount(options);
+    return request(withAccountQuery(`/api/redapp/auth/session/${encodeURIComponent(id)}`, accountId), rest);
+  };
+  const cancel = (id, options = {}) => {
+    const { accountId, rest } = splitAccount(options);
+    return request(withAccountQuery(`/api/redapp/auth/session/${encodeURIComponent(id)}/cancel`, accountId), { method: 'POST', ...rest });
+  };
+  const logout = (options = {}) => {
+    const { accountId, rest } = splitAccount(options);
+    return request(withAccountQuery('/api/redapp/auth/logout', accountId), { method: 'POST', ...rest });
+  };
+
+  const listAccounts = (options = {}) => request('/api/redapp/accounts', options);
+  const createAccount = (options = {}) => request('/api/redapp/accounts', { method: 'POST', ...options });
+  const deleteAccount = (id, { deleteCredentials = true, ...options } = {}) =>
+    request(`/api/redapp/accounts/${encodeURIComponent(id)}?deleteCredentials=${deleteCredentials === false ? 'false' : 'true'}`, { method: 'DELETE', ...options });
+
+  async function pollSession(id, { accountId, signal, timeoutMs = 10 * 60 * 1000, onUpdate = () => {} } = {}) {
     if (!isNonemptyString(id)) throw authFlowError('not-found');
     const startedAt = Date.now();
     let transientFailures = 0;
@@ -389,7 +456,7 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
 
       let current;
       try {
-        current = await withPollingDeadline(session(id), {
+        current = await withPollingDeadline(session(id, { accountId }), {
           signal,
           remainingMs: timeoutMs - elapsed
         });
@@ -422,14 +489,15 @@ export function createRedappAuthClient({ api, pollMs = 1000 }) {
     }
   }
 
-  return { status, login, session, cancel, logout, pollSession };
+  return { status, login, session, cancel, logout, pollSession, listAccounts, createAccount, deleteAccount };
 }
 
 export async function publishWithAuth({
   publish,
   pollSession,
   onAuthRequired = () => {},
-  onAuthorized = () => {}
+  onAuthorized = () => {},
+  accountId
 }) {
   try {
     return await publish();
@@ -441,7 +509,8 @@ export async function publishWithAuth({
     await onAuthRequired(error.auth);
     let session;
     try {
-      session = await pollSession(sessionId);
+      // 授权重放与轮询必须留在发起发布的同一账号上下文。
+      session = await pollSession(sessionId, isNonemptyString(accountId) ? { accountId } : undefined);
     } catch (pollError) {
       if (pollError?.code === 'AUTH_POLL_CANCELLED') {
         throw Object.assign(new Error('授权未完成'), {

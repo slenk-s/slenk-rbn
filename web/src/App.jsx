@@ -6,6 +6,7 @@ import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   MINITOOL_PUBLISH_DEADLINE_MS,
   MINITOOL_PUBLISH_REQUEST_DEADLINE_MS,
+  buildPublishAccountOptions,
   canCommitPublishFlow,
   createPublishContinuation,
   createPublishFlow,
@@ -740,7 +741,7 @@ function StatusToast({ text }) {
   return <div className="status-toast" role="status">{text}</div>;
 }
 
-function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendToVideo }) {
+function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendToVideo, onOpenAccountManager }) {
   const isDownload = mode === 'download';
   const linkLabel = isDownload ? '商品链接' : '笔记链接';
   const resultLabel = isDownload ? '商品图片' : '图片';
@@ -766,6 +767,9 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   const [publishAuth, setPublishAuth] = useState(null);
   const [publishAuthOpen, setPublishAuthOpen] = useState(false);
   const [publishAuthCancelling, setPublishAuthCancelling] = useState(false);
+  // 发布账号选择器：打开发布弹框时拉取当前用户的小红书账号（选择器只列已绑定账号）。
+  const [xhsAccounts, setXhsAccounts] = useState([]);
+  const [publishAccountId, setPublishAccountId] = useState('');
   const publishFlowRef = useRef(null);
   const publishGenerationRef = useRef(0);
 
@@ -962,6 +966,20 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     if (!publishImages.length) { setStatus('发布需要至少 1 张图片。'); return; }
     if (!title.trim() && !content.trim()) { setStatus('标题和正文至少填一项。'); return; }
     setPublishConfirm(true);
+    void loadPublishAccounts();
+  }
+  // 拉取账号列表并校正选中项：优先保留上次选择（仍需已绑定），否则选第一个已绑定账号。
+  async function loadPublishAccounts() {
+    try {
+      const list = await api('/api/redapp/accounts');
+      const accounts = Array.isArray(list) ? list : [];
+      setXhsAccounts(accounts);
+      const bound = buildPublishAccountOptions(accounts);
+      setPublishAccountId(prev => (prev && bound.some(o => o.id === prev)) ? prev : (bound[0]?.id || ''));
+    } catch {
+      // 拉取失败保留上一次的账号列表，避免把“暂无账号”空态误报给用户；仅提示刷新失败。
+      setStatus('账号列表刷新失败，请稍后重试；当前展示的是上一次的结果。');
+    }
   }
   async function submitPublish() {
     const publishImages = images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9);
@@ -980,13 +998,15 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       return;
     }
     previousFlow?.controller.abort();
+    if (!publishAccountId) { setStatus('请先选择要发布的小红书账号。'); return; }
     let request;
     try {
       request = createPublishRequestSnapshot({
         title,
         content,
         tags,
-        images: images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9)
+        images: images.filter(img => !img.isVideo).map(img => img.cachedUrl || img.url).filter(Boolean).slice(0, 9),
+        accountId: publishAccountId
       });
     } catch (error) {
       setStatus(error.message || '无法生成安全的发布标识。');
@@ -1046,9 +1066,12 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     try {
       const data = await publishWithAuth({
         publish,
-        pollSession: sessionId => authClient.pollSession(sessionId, {
+        accountId: request.accountId,
+        pollSession: (sessionId, context) => authClient.pollSession(sessionId, {
           signal: flow.controller.signal,
           timeoutMs: 10 * 60 * 1000,
+          // 授权重放必须留在发起发布的同一账号；服务端 AUTH_REQUIRED 也会回传 auth.accountId。
+          accountId: context?.accountId ?? request.accountId,
           onUpdate: current => {
             if (!isCurrent() || current.sessionId !== flow.sessionId) return;
             setPublishAuth(previous => mergeDisplayedAuth(previous, current));
@@ -1241,7 +1264,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
     try {
       // 服务端取消要等版本门禁+CLI（最坏约 300s），给宽截止；失败仍按“取消结果不确定”处理。
       const cancelApi = createRedappFetchAdapter({ apiBase: API, token, deadlineMs: MINITOOL_PUBLISH_REQUEST_DEADLINE_MS });
-      const response = await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId);
+      const response = await createRedappAuthClient({ api: cancelApi }).cancel(flow.sessionId, { accountId: flow.request?.accountId });
       if (publishFlowRef.current !== flow) return;
       const result = interpretCancelResponse(flow.sessionId, response);
       if (mustRecover) {
@@ -1465,22 +1488,39 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
           </div>
         );
       })()}
-      {publishConfirm && (
+      {publishConfirm && (() => {
+        const publishAccountOptions = buildPublishAccountOptions(xhsAccounts);
+        const minitoolBlocked = publishAccountOptions.length === 0;
+        return (
         <div className="prompt-config-backdrop" onClick={() => setPublishConfirm(false)}>
           <div className="prompt-config-modal" onClick={e => e.stopPropagation()}>
             <button type="button" className="prompt-config-close" onClick={() => setPublishConfirm(false)}>×</button>
             <h3>发布到小红书</h3>
             <div className="publish-channel">
               <label className={'channel-opt' + (publishChannel === 'draft' ? ' active' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'draft'} onChange={() => setPublishChannel('draft')} /><b>存入草稿箱</b><span>本机弹出浏览器自动填好并存草稿，之后在 App 草稿箱发布</span></label>
-              <label className={'channel-opt' + (publishChannel === 'minitool' ? ' active' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'minitool'} onChange={() => setPublishChannel('minitool')} /><b>扫码直达</b><span>打包成小工具生成二维码，App 扫码直达预填好的发布页</span></label>
+              <label className={'channel-opt' + (publishChannel === 'minitool' ? ' active' : '') + (minitoolBlocked ? ' disabled' : '')}><input type="radio" name="publish-channel" checked={publishChannel === 'minitool'} disabled={minitoolBlocked} onChange={() => setPublishChannel('minitool')} /><b>扫码直达</b><span>打包成小工具生成二维码，App 扫码直达预填好的发布页</span></label>
             </div>
+            {publishChannel === 'minitool' ? (minitoolBlocked ? (
+              <div className="publish-account-empty">
+                <span>还没有已绑定的小红书账号，扫码直达需要先绑定一个账号。</span>
+                <button type="button" className="btn-secondary" onClick={() => { setPublishConfirm(false); onOpenAccountManager?.(); }}>去绑定账号</button>
+              </div>
+            ) : (
+              <div className="publish-account-row">
+                <label className="publish-account-label" htmlFor="publish-account-select">发布到小红书账号</label>
+                <select id="publish-account-select" className="publish-account-select" value={publishAccountId} onChange={e => setPublishAccountId(e.target.value)}>
+                  {publishAccountOptions.map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+            )) : null}
             <div className="prompt-config-actions">
               <button type="button" className="btn-secondary" onClick={() => setPublishConfirm(false)}>取消</button>
-              <button type="button" className="btn-primary" disabled={publishBusy} onClick={publishChannel === 'minitool' ? submitMinitoolPublish : submitPublish}>{publishBusy ? '处理中…' : '提交'}</button>
+              <button type="button" className="btn-primary" disabled={publishBusy || (publishChannel === 'minitool' && !publishAccountId)} onClick={publishChannel === 'minitool' ? submitMinitoolPublish : submitPublish}>{publishBusy ? '处理中…' : '提交'}</button>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
       {publishAuthOpen && publishAuth ? (
         <RedappAuthModal
           session={publishAuth}
@@ -1707,8 +1747,8 @@ function Workspace({ token }) {
           ))}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
         <main className="workspace">
-          <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} onSendToVideo={sendImageToVideo} />
-          <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} onSendToVideo={sendImageToVideo} />
+          <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} onSendToVideo={sendImageToVideo} onOpenAccountManager={() => setActive('dashboard')} />
+          <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} onSendToVideo={sendImageToVideo} onOpenAccountManager={() => setActive('dashboard')} />
           {active === 'dashboard' ? (
             <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId, nextActiveTextProviderId, nextActiveImageProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); if (nextActiveTextProviderId !== undefined) setActiveTextProviderId(nextActiveTextProviderId || ''); if (nextActiveImageProviderId !== undefined) setActiveImageProviderId(nextActiveImageProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={openTaskDetail} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} onTasksDelete={async (ids) => { const r = await api('/api/tasks/batch-delete', { method: 'POST', token, body: JSON.stringify({ ids }) }); await refresh(); setStatus('已删除 ' + (r.deleted ?? ids.length) + ' 个任务。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? null : (

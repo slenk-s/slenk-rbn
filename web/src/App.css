@@ -2720,8 +2720,6 @@ button:hover { transform: translateY(-1px); }
 .auth-status-pill.warning .auth-status-dot { background: #eab308; box-shadow: 0 0 0 3px rgba(234, 179, 8, .16); }
 .auth-status-pill.unavailable { color: #b91c1c; background: rgba(239, 68, 68, .08); }
 .auth-status-pill.unavailable .auth-status-dot { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .14); }
-.auth-shared-warning { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 12px 14px; border: 1px solid rgba(234, 179, 8, .24); border-radius: 14px; background: rgba(254, 249, 195, .42); color: #713f12; font-size: 12px; line-height: 1.55; }
-.auth-shared-warning b { white-space: nowrap; }
 .auth-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--border); }
 .auth-status-grid div { min-width: 0; padding: 11px 13px; background: #fff; }
 .auth-status-grid dt { color: var(--text); font-size: 11px; }
@@ -2775,13 +2773,40 @@ button:hover { transform: translateY(-1px); }
   cursor: pointer;
 }
 .auth-progress-reopen:hover { background: var(--accent-bg); }
+
+/* ---- 多账号：账号列表行卡 ---- */
+.xhs-account-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.xhs-account-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: #fff; }
+.xhs-account-row.pending { border-style: dashed; background: rgba(234, 179, 8, .05); }
+.xhs-account-info { min-width: 0; display: grid; gap: 5px; }
+.xhs-account-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.xhs-account-title b { color: var(--text-h); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xhs-account-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.xhs-account-pill.bound { color: #15803d; background: rgba(22, 163, 74, .09); }
+.xhs-account-pill.pending { color: #a16207; background: rgba(234, 179, 8, .12); }
+.xhs-account-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text); font-size: 12px; }
+.xhs-account-dir { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.xhs-account-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.xhs-account-actions button { min-height: 34px; }
+.xhs-account-delete { color: #b91c1c; }
+
+/* ---- 多账号：删除确认 ---- */
+.xhs-delete-modal { width: min(480px, 100%); }
+.xhs-delete-modal h3 { margin: 0 0 6px; }
+.xhs-delete-modal p { margin: 0 0 4px; color: var(--text); font-size: 13px; line-height: 1.6; }
+.xhs-delete-check { display: flex; align-items: flex-start; gap: 9px; margin: 12px 0 4px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--code-bg); cursor: pointer; }
+.xhs-delete-check input { margin-top: 2px; }
+.xhs-delete-check span { color: var(--text-h); font-size: 12px; line-height: 1.55; }
+
 @media (max-width: 640px) {
   .redapp-auth-card { padding: 16px; }
   .auth-card-head, .auth-modal-heading, .auth-logout-confirm { align-items: stretch; flex-direction: column; }
-  .auth-shared-warning, .auth-status-grid, .auth-modal-content { grid-template-columns: 1fr; }
+  .auth-status-grid, .auth-modal-content { grid-template-columns: 1fr; }
   .auth-status-pill { align-self: flex-start; }
   .auth-logout-confirm div, .auth-card-actions { display: grid; grid-template-columns: 1fr; }
   .auth-logout-confirm button, .auth-card-actions button { width: 100%; }
+  .xhs-account-row { align-items: stretch; flex-direction: column; }
+  .xhs-account-actions { justify-content: stretch; display: grid; grid-template-columns: 1fr; }
   .auth-qr-modal { padding: 18px; }
   .auth-qr-image, .auth-qr-placeholder { width: min(240px, 100%); justify-self: center; }
 }
@@ -2923,6 +2948,16 @@ button:hover { transform: translateY(-1px); }
 .channel-opt span { font-size: 12px; color: #888; line-height: 1.5; }
 .channel-opt.active { border-color: var(--accent); background: rgba(79, 70, 229, 0.06); }
 .channel-opt.active b { color: var(--accent); }
+.channel-opt.disabled { opacity: .55; cursor: not-allowed; }
+
+/* ---- 发布账号选择器 ---- */
+.publish-account-row { display: grid; gap: 6px; margin: 10px 0 2px; }
+.publish-account-label { color: var(--text); font-size: 12px; font-weight: 700; }
+.publish-account-select { width: 100%; padding: 9px 11px; border: 1.5px solid #e5e7eb; border-radius: 10px; background: #fff; color: var(--text-h); font-family: inherit; font-size: 13px; }
+.publish-account-select:focus { outline: none; border-color: var(--accent); }
+.publish-account-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 2px; padding: 11px 13px; border: 1px solid rgba(234, 179, 8, .26); border-radius: 12px; background: rgba(254, 249, 195, .42); }
+.publish-account-empty span { color: #713f12; font-size: 12px; line-height: 1.55; }
+.publish-account-empty button { flex: 0 0 auto; }
 
 /* 图片加载失败的占位（兜底链全部用尽后） */
 .img-broken { display: flex; align-items: center; justify-content: center; min-height: 80px; width: 100%; background: #f3f4f6; color: #9ca3af; font-size: 12px; border-radius: 8px; }

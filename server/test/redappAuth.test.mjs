@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import path from 'node:path';
 import { createRedappAuthManager } from '../src/lib/redappAuth.js';
+import { createXhsAccountRegistry } from '../src/lib/xhsAccountRegistry.js';
 import { paths } from '../src/paths.js';
 import {
   createAsyncProcessRunner,
@@ -21,6 +22,7 @@ import {
 } from '../src/lib/redappCli.js';
 
 let createRedappAuthRouter;
+let createRedappAccountsRouter;
 let createMiniToolPublishHandler;
 let createMiniToolPublishJobRegistry;
 let createMiniToolPublishRouter;
@@ -28,7 +30,7 @@ let publishQueue;
 
 test.before(async () => {
   process.env.TEST_DATABASE_URL ||= 'postgres://test:test@127.0.0.1:1/test?sslmode=disable';
-  ({ createRedappAuthRouter } = await import('../src/routes/redappAuth.js'));
+  ({ createRedappAuthRouter, createRedappAccountsRouter } = await import('../src/routes/redappAuth.js'));
   ({ createMiniToolPublishHandler, createMiniToolPublishJobRegistry, createMiniToolPublishRouter, publishQueue } = await import('../src/routes/publish.js'));
 });
 
@@ -69,6 +71,9 @@ async function invokeHandler(handler, body = {}, userId = 'user-1') {
   return response;
 }
 
+// 路由级 fake 账号注册表：仅用于发布 handler 的账号归属/凭证目录解析。
+const testAccountRegistry = { resolveCredentialDir: async (userId, accountId) => accountId === 'acct-1' ? '/cred/u1/acct-1' : null };
+
 test('maps only CLI AUTH_REQUIRED to safe available logged-out status', async () => {
   const parsed = parseTaggedOutput('RESULT_JSON:{"status":"error","code":"AUTH_REQUIRED","message":"TEST_AUTH_SECRET"}');
   assert.deepEqual(parsed.results, [{ status: 'error', code: 'AUTH_REQUIRED' }]);
@@ -89,7 +94,7 @@ test('maps only CLI AUTH_REQUIRED to safe available logged-out status', async ()
     runCli,
     readFile: () => Buffer.from('qr')
   });
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: true,
     loggedIn: false,
     openIdMasked: null,
@@ -116,7 +121,7 @@ test('nonzero exact AUTH_REQUIRED remains a safe available logged-out status', a
     readFile: () => Buffer.from('qr')
   });
 
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: true,
     loggedIn: false,
     openIdMasked: null,
@@ -176,7 +181,7 @@ test('null process status projects manager status as unavailable', async () => {
     readFile: () => Buffer.from('qr')
   });
 
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: false,
     loggedIn: false,
     openIdMasked: null,
@@ -206,13 +211,14 @@ test('null process status publish returns unavailable before all work', async ()
   });
   const handler = createMiniToolPublishHandler({
     authManager: manager,
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { calls.push('build'); },
     runAudit: () => { calls.push('audit'); return { output: '' }; },
     uploadPackage: async () => { calls.push('upload'); },
     createPreview: async () => { calls.push('preview'); }
   });
 
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 503);
   assert.deepEqual(response.body, { error: 'redapp CLI 不可用', code: 'REDAPP_UNAVAILABLE' });
   assert.deepEqual(calls, []);
@@ -232,12 +238,13 @@ test('nonzero AUTH_REQUIRED publish starts login before build audit upload or pr
   });
   const handler = createMiniToolPublishHandler({
     authManager: manager,
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { calls.push('build'); },
     runAudit: () => { calls.push('audit'); return { output: '' }; },
     uploadPackage: async () => { calls.push('upload'); },
     createPreview: async () => { calls.push('preview'); }
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 401);
   assert.equal(response.body.code, 'AUTH_REQUIRED');
   assert.equal(response.body.auth.status, 'waiting_prompt');
@@ -358,7 +365,7 @@ test('projects CLI failures as a safe unavailable auth status', async () => {
     runCli: () => { throw new Error('secret credential path C:/private/token.json'); },
     readFile: () => Buffer.from('qr')
   });
-  assert.deepEqual(await manager.getStatus(), {
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), {
     available: false,
     loggedIn: false,
     openIdMasked: null,
@@ -377,15 +384,16 @@ test('minitool publish returns AUTH_REQUIRED before building files', async () =>
       getStatus: () => ({ available: true, loggedIn: false }),
       startLogin: () => ({ sessionId: 's1', status: 'waiting_scan' })
     },
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
     createPreview: async () => ({})
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 401);
   assert.equal(response.body.code, 'AUTH_REQUIRED');
-  assert.deepEqual(response.body.auth, { sessionId: 's1', status: 'waiting_scan' });
+  assert.deepEqual(response.body.auth, { sessionId: 's1', status: 'waiting_scan', accountId: 'acct-1' });
   assert.equal(built, false);
 });
 
@@ -396,12 +404,13 @@ test('minitool publish treats expired credentials as AUTH_REQUIRED before buildi
       getStatus: () => ({ available: true, loggedIn: true, needsReauth: true }),
       startLogin: () => ({ sessionId: 'expired', status: 'waiting_prompt' })
     },
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
     createPreview: async () => ({})
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 401);
   assert.equal(response.body.code, 'AUTH_REQUIRED');
   assert.equal(response.body.auth.sessionId, 'expired');
@@ -412,12 +421,13 @@ test('minitool publish returns safe unavailable response before building files',
   let built = false;
   const handler = createMiniToolPublishHandler({
     authManager: { getStatus: () => ({ available: false, loggedIn: false, error: 'safe unavailable' }) },
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => { built = true; },
     runAudit: () => ({ output: '' }),
     uploadPackage: async () => ({}),
     createPreview: async () => ({})
   });
-  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
   assert.equal(response.statusCode, 503);
   assert.deepEqual(response.body, { error: 'safe unavailable', code: 'REDAPP_UNAVAILABLE' });
   assert.equal(built, false);
@@ -432,6 +442,7 @@ test('minitool publish job returns immediately and concurrent duplicates execute
   const handler = createMiniToolPublishHandler({
     authManager: { getStatus: () => ({ available: true, loggedIn: true, needsReauth: false }) },
     registry,
+    accountRegistry: testAccountRegistry,
     buildMiniToolZip: async () => {
       builds += 1;
       await new Promise(resolve => { resolveBuild = resolve; });
@@ -442,7 +453,7 @@ test('minitool publish job returns immediately and concurrent duplicates execute
     createPreview: async () => { previews += 1; return { previewUrl: 'https://safe.test/preview' }; },
     readQrImage: () => null
   });
-  const body = { attemptId: 'attempt-1234', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] };
+  const body = { attemptId: 'attempt-1234', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' };
   const [first, duplicate] = await Promise.all([invokeHandler(handler, body), invokeHandler(handler, body)]);
   assert.equal(first.statusCode, 202);
   assert.deepEqual(first.body, { attemptId: body.attemptId, status: 'running' });
@@ -554,18 +565,20 @@ test('authorization router protects every endpoint and delegates safe manager DT
   const manager = {
     getStatus: () => ({ available: true, loggedIn: false }),
     startLogin: () => ({ sessionId: 's1', status: 'waiting_prompt' }),
-    getSession: id => id === 's1' ? ({ sessionId: id, status: 'waiting_scan', qrImage: 'data:image/png;base64,cXI=' }) : null,
-    cancelLogin: id => { calls.push(['cancel', id]); return { sessionId: id, status: 'cancelled' }; },
+    getSession: (userId, accountId, sessionId) => sessionId === 's1' ? ({ sessionId, status: 'waiting_scan', qrImage: 'data:image/png;base64,cXI=' }) : null,
+    cancelLogin: (userId, accountId, sessionId) => { calls.push(['cancel', sessionId]); return { sessionId, status: 'cancelled' }; },
     logout: () => { calls.push(['logout']); return { available: true, loggedIn: false }; }
   };
   const verified = [];
   const router = createRedappAuthRouter({
     authManager: manager,
+    accountRegistry: { getForUser: async () => ({ id: 'acct-1', credentialDir: '/cred/u1/acct-1' }) },
     verify: (req, res, next) => { verified.push(req.path); next(); }
   });
   const stack = router.stack;
   assert.equal(stack[0].handle, router.stack[0].handle);
   const route = (method, path) => stack.find(layer => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
+  const base = { user: { userId: 'user-1' }, query: { accountId: 'acct-1' } };
   const requests = [
     ['get', '/', {}, { available: true, loggedIn: false }],
     ['post', '/login', {}, { sessionId: 's1', status: 'waiting_prompt' }],
@@ -575,7 +588,7 @@ test('authorization router protects every endpoint and delegates safe manager DT
   ];
   for (const [method, path, request, expected] of requests) {
     const response = createResponse();
-    await route(method, path)(request, response, error => { throw error; });
+    await route(method, path)({ ...base, ...request }, response, error => { throw error; });
     assert.deepEqual(response.body, expected);
   }
   assert.deepEqual(calls, [['cancel', 's1'], ['logout']]);
@@ -584,11 +597,12 @@ test('authorization router protects every endpoint and delegates safe manager DT
 test('authorization router returns 404 when a session is not found', async () => {
   const router = createRedappAuthRouter({
     authManager: { getSession: () => null },
+    accountRegistry: { getForUser: async () => ({ id: 'acct-1', credentialDir: '/cred/u1/acct-1' }) },
     verify: (req, res, next) => next()
   });
   const handler = router.stack.find(layer => layer.route?.path === '/session/:id' && layer.route.methods.get).route.stack[0].handle;
   const response = createResponse();
-  await handler({ params: { id: 'missing' } }, response, error => { throw error; });
+  await handler({ params: { id: 'missing' }, query: { accountId: 'acct-1' }, user: { userId: 'user-1' } }, response, error => { throw error; });
   assert.equal(response.statusCode, 404);
   assert.deepEqual(response.body, { error: 'session_not_found' });
 });
@@ -604,11 +618,11 @@ test('accepts URL and code only prompts without reading a QR file', async () => 
     randomId: () => 'link-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"authorizeUrl":"https://auth.example/device","userCode":"ABCD-EFGH","expiresInSeconds":30}\n');
   await tick();
 
-  assert.deepEqual(manager.getSession('link-session'), {
+  assert.deepEqual(manager.getSession('user-1', 'account-1', 'link-session'), {
     sessionId: 'link-session',
     status: 'waiting_scan',
     qrImage: null,
@@ -631,12 +645,12 @@ test('accepts URL and code only prompts from stderr without exposing raw output'
     randomId: () => 'stderr-link-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stderr.write('raw secret TEST_STDERR_SECRET\n');
   fake.stderr.write('PROMPT:{"authorizeUrl":"https://auth.example/device","userCode":"STDERR-CODE","expiresInSeconds":30}\n');
   await tick();
 
-  const session = manager.getSession('stderr-link-session');
+  const session = manager.getSession('user-1', 'account-1', 'stderr-link-session');
   assert.equal(session.status, 'waiting_scan');
   assert.equal(session.authorizeUrl, 'https://auth.example/device');
   assert.equal(session.userCode, 'STDERR-CODE');
@@ -652,11 +666,11 @@ test('accepts successful RESULT_JSON entirely from stderr and releases both stre
     randomId: () => 'stderr-result-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stderr.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openIdMasked":"ob12…7890"}}\n');
   await tick();
 
-  const session = manager.getSession('stderr-result-session');
+  const session = manager.getSession('user-1', 'account-1', 'stderr-result-session');
   assert.equal(session.status, 'done');
   assert.equal(session.auth.loggedIn, true);
   assert.equal(fake.stdout.listenerCount('data'), 0);
@@ -673,7 +687,7 @@ test('decodes split multibyte stderr without mixing stdout fragments', async () 
     randomId: () => 'stderr-utf8-session'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"authorizeUrl":"https://must-not-combine/');
   const line = Buffer.from('PROMPT:{"authorizeUrl":"https://auth.example/登录","userCode":"中文"}\n');
   const splitAt = line.indexOf(Buffer.from('登')) + 1;
@@ -681,7 +695,7 @@ test('decodes split multibyte stderr without mixing stdout fragments', async () 
   fake.stderr.write(line.subarray(splitAt));
   await tick();
 
-  const session = manager.getSession('stderr-utf8-session');
+  const session = manager.getSession('user-1', 'account-1', 'stderr-utf8-session');
   assert.equal(session.status, 'waiting_scan');
   assert.equal(session.authorizeUrl, 'https://auth.example/登录');
   assert.equal(session.userCode, '中文');
@@ -697,11 +711,11 @@ test('fails safely on overlong complete or unterminated stderr lines', async () 
       randomId: () => id
     });
 
-    manager.startLogin();
+    manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
     fake.stderr.write('x'.repeat(64 * 1024 + 1) + suffix);
     await tick();
 
-    const session = manager.getSession(id);
+    const session = manager.getSession('user-1', 'account-1', id);
     assert.equal(session.status, 'failed');
     assert.equal(session.error, '登录进程输出异常');
     assert.equal(JSON.stringify(session).includes('x'.repeat(100)), false);
@@ -719,14 +733,14 @@ test('reuses one active login session and sanitizes completion', async () => {
     randomId: () => 'session-1'
   });
 
-  const first = manager.startLogin();
-  const second = manager.startLogin();
+  const first = manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  const second = manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.equal(first.sessionId, second.sessionId);
   assert.equal(spawnCount, 1);
 
   fake.stdout.write('PROMPT:{"type":"auth_device_code","qrCodePath":"x.png","authorizeH5Url":"https://auth","userCode":"ABCD","expiresInSeconds":600}\n');
   await tick();
-  const waiting = manager.getSession('session-1');
+  const waiting = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(waiting.status, 'waiting_scan');
   assert.match(waiting.qrImage, /^data:image\/png;base64,/);
   assert.equal(waiting.authorizeUrl, 'https://auth');
@@ -737,7 +751,7 @@ test('reuses one active login session and sanitizes completion', async () => {
   fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"openId":"ob1234567890","accessToken":"hidden","scope":"base_info,skill_publish"}}\n');
   fake.emit('close', 0);
   await tick();
-  const done = manager.getSession('session-1');
+  const done = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(done.status, 'done');
   assert.equal(done.auth.loggedIn, true);
   assert.equal(JSON.stringify(done).includes('hidden'), false);
@@ -751,7 +765,7 @@ test('cancels locally before invoking the exact remote cancel command', async ()
     spawnCli: () => fake,
     runCli: args => {
       calls.push(args);
-      assert.equal(manager.getSession('session-1').status, 'cancelled');
+      assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'cancelled');
       assert.equal(fake.killed, true);
       throw new Error('TEST_CANCEL_SECRET');
     },
@@ -760,14 +774,14 @@ test('cancels locally before invoking the exact remote cancel command', async ()
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
-  const cancelled = await manager.cancelLogin('session-1');
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  const cancelled = await manager.cancelLogin('user-1', 'account-1', 'session-1');
   assert.equal(cancelled.status, 'cancelled');
   assert.deepEqual(calls, [['login', '--cancel']]);
   assert.equal(fake.killed, true);
   assert.equal(JSON.stringify(cancelled).includes('TEST_CANCEL_SECRET'), false);
-  assert.equal(manager.getSession('session-1').status, 'cancelled');
-  assert.equal(manager.getSession('missing'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'cancelled');
+  assert.equal(manager.getSession('user-1', 'account-1', 'missing'), null);
 });
 
 test('keeps the original ten-minute deadline when a prompt arrives after nine minutes', async () => {
@@ -788,13 +802,13 @@ test('keeps the original ten-minute deadline when a prompt arrives after nine mi
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.equal(timers[0].delay, 600000);
   currentTime += 9 * 60 * 1000;
   fake.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":600}\n');
   await tick();
 
-  assert.equal(manager.getSession('session-1').expiresAt, 601000);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').expiresAt, 601000);
   assert.equal(timers.at(-1).delay, 60000);
 });
 
@@ -815,12 +829,12 @@ test('rejects prompts and results that arrive after the absolute deadline', asyn
       clearTimer() {}
     });
 
-    manager.startLogin();
+    manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
     currentTime = 601001;
     fake.stdout.write(lateLine);
     await tick();
 
-    const expired = manager.getSession('session-1');
+    const expired = manager.getSession('user-1', 'account-1', 'session-1');
     assert.equal(expired.status, 'expired');
     assert.equal(expired.auth, null);
     assert.equal(expired.qrImage, null);
@@ -845,16 +859,16 @@ test('expires a login using injected timers and caps prompt expiry at ten minute
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":9999}\n');
   await tick();
-  assert.equal(manager.getSession('session-1').expiresAt, 602000);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').expiresAt, 602000);
   assert.equal(timers[0].delay, 600000);
 
   const expiryTimer = timers.find(timer => timer.delay === 600000 && !timer.cleared);
   expiryTimer.callback();
   assert.equal(fake.killed, true);
-  assert.equal(manager.getSession('session-1').status, 'expired');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'expired');
   assert.equal(timers.at(-1).delay, 300000);
 });
 
@@ -866,10 +880,10 @@ test('marks premature process close and spawn errors as failed without leaking o
     readFile: () => Buffer.from('png'),
     randomId: () => 'closed-session'
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stderr.write('accessToken=TEST_PROCESS_SECRET');
   fake.emit('close', 1);
-  const failed = manager.getSession('closed-session');
+  const failed = manager.getSession('user-1', 'account-1', 'closed-session');
   assert.equal(failed.status, 'failed');
   assert.equal(JSON.stringify(failed).includes('TEST_PROCESS_SECRET'), false);
 
@@ -879,8 +893,8 @@ test('marks premature process close and spawn errors as failed without leaking o
     readFile: () => Buffer.from('png'),
     randomId: () => 'spawn-session'
   });
-  assert.equal(throwing.startLogin().status, 'failed');
-  assert.equal(JSON.stringify(throwing.getSession('spawn-session')).includes('TEST_SPAWN_SECRET'), false);
+  assert.equal(throwing.startLogin('user-1', 'account-1', '/cred/user-1/account-1').status, 'failed');
+  assert.equal(JSON.stringify(throwing.getSession('user-1', 'account-1', 'spawn-session')).includes('TEST_SPAWN_SECRET'), false);
 });
 
 test('clears temporary session state when spawn throws or returns an unusable child', () => {
@@ -896,8 +910,8 @@ test('clears temporary session state when spawn throws or returns an unusable ch
       randomId: () => id
     });
 
-    assert.equal(manager.startLogin().status, 'failed');
-    const retained = manager.getSession(id);
+    assert.equal(manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1').status, 'failed');
+    const retained = manager.getSession('user-1', 'account-1', id);
     assert.equal(retained.status, 'failed');
     assert.equal(JSON.stringify(retained).includes('TEST_SPAWN_SECRET'), false);
   }
@@ -919,11 +933,11 @@ test('removes terminal sessions after five minutes', async () => {
     clearTimer() {}
   });
 
-  manager.startLogin();
-  await manager.cancelLogin('session-1');
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  await manager.cancelLogin('user-1', 'account-1', 'session-1');
   assert.equal(timers.at(-1).delay, 300000);
   timers.at(-1).callback();
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('dispose kills active children, clears timers, and removes every session', async () => {
@@ -945,16 +959,16 @@ test('dispose kills active children, clears timers, and removes every session', 
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   terminalChild.stdout.write('PROMPT:{"qrCodePath":"x.png","expiresInSeconds":10}\n');
   await tick();
-  await manager.cancelLogin('session-1');
-  manager.startLogin();
+  await manager.cancelLogin('user-1', 'account-1', 'session-1');
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   manager.dispose();
 
   assert.equal(activeChild.killed, true);
-  assert.equal(manager.getSession('session-1'), null);
-  assert.equal(manager.getSession('session-2'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-2'), null);
   assert.equal(timers.every(timer => timer.cleared), true);
 });
 
@@ -981,7 +995,7 @@ test('projects credential status and logout results through safe DTOs', async ()
     readFile: () => Buffer.from('png')
   });
 
-  for (const result of [await manager.getStatus(), await manager.logout()]) {
+  for (const result of [await manager.getStatus('user-1', 'account-1'), await manager.logout('user-1', 'account-1', '/cred/user-1/account-1')]) {
     assert.equal(result.loggedIn, true);
     assert.equal(result.openIdMasked, 'ob12…7890');
     assert.equal(JSON.stringify(result).includes('TEST_AUTH_SECRET'), false);
@@ -1019,14 +1033,14 @@ test('preserves already-sanitized auth DTOs and drops raw or unknown fields', as
     refreshExpireTimeMs: 4102448400000,
     needsReauth: false
   };
-  assert.deepEqual(await manager.getStatus(), expected);
-  assert.deepEqual(await manager.logout(), expected);
+  assert.deepEqual(await manager.getStatus('user-1', 'account-1'), expected);
+  assert.deepEqual(await manager.logout('user-1', 'account-1', '/cred/user-1/account-1'), expected);
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: safeCredentials })}\n`);
   await tick();
-  assert.deepEqual(manager.getSession('session-1').auth, expected);
-  const exposed = JSON.stringify(manager.getSession('session-1'));
+  assert.deepEqual(manager.getSession('user-1', 'account-1', 'session-1').auth, expected);
+  const exposed = JSON.stringify(manager.getSession('user-1', 'account-1', 'session-1'));
   assert.equal(exposed.includes('ob1234567890'), false);
   assert.equal(exposed.includes('TEST_AUTH_SECRET'), false);
   assert.equal(exposed.includes('TEST_UNKNOWN_SECRET'), false);
@@ -1049,7 +1063,7 @@ test('ignores late prompts and replaces prompt expiry timers safely', async () =
     clearTimer: timer => { timer.cleared = true; }
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"first.png","expiresInSeconds":10}\n');
   await tick();
   fake.stdout.write('PROMPT:{"qrCodePath":"second.png","expiresInSeconds":20}\n');
@@ -1058,10 +1072,10 @@ test('ignores late prompts and replaces prompt expiry timers safely', async () =
   assert.equal(timers[1].cleared, true);
   assert.equal(timers[2].delay, 20000);
 
-  await manager.cancelLogin('session-1');
+  await manager.cancelLogin('user-1', 'account-1', 'session-1');
   fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":30}\n');
   await tick();
-  assert.equal(manager.getSession('session-1').status, 'cancelled');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'cancelled');
 });
 
 test('expires a session that never emits a prompt', () => {
@@ -1079,11 +1093,11 @@ test('expires a session that never emits a prompt', () => {
     clearTimer() {}
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.equal(timers[0].delay, 600000);
   timers[0].callback();
   assert.equal(fake.killed, true);
-  assert.equal(manager.getSession('session-1').status, 'expired');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'expired');
 });
 
 test('drains stderr and does not schedule cleanup after disposal close', () => {
@@ -1101,13 +1115,13 @@ test('drains stderr and does not schedule cleanup after disposal close', () => {
     clearTimer() {}
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.ok(fake.stderr.listenerCount('data') > 0);
   manager.dispose();
   const timerCount = timers.length;
   fake.emit('close', 0);
   assert.equal(timers.length, timerCount);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('cleans up child streams and listeners on done and process error', async () => {
@@ -1120,7 +1134,7 @@ test('cleans up child streams and listeners on done and process error', async ()
       randomId: () => `${terminalEvent}-session`
     });
 
-    manager.startLogin();
+    manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
     if (terminalEvent === 'done') {
       fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
       await tick();
@@ -1128,7 +1142,7 @@ test('cleans up child streams and listeners on done and process error', async ()
       fake.emit('error', new Error('TEST_CHILD_SECRET'));
     }
 
-    const terminal = manager.getSession(`${terminalEvent}-session`);
+    const terminal = manager.getSession('user-1', 'account-1', `${terminalEvent}-session`);
     assert.equal(terminal.status, terminalEvent === 'done' ? 'done' : 'failed');
     assert.equal(fake.killed, true);
     assert.equal(fake.stdout.listenerCount('data'), 0);
@@ -1139,7 +1153,7 @@ test('cleans up child streams and listeners on done and process error', async ()
     fake.stdout.write('PROMPT:{"qrCodePath":"late.png"}\n');
     fake.emit('close', 1);
     await tick();
-    assert.equal(manager.getSession(`${terminalEvent}-session`).status, terminal.status);
+    assert.equal(manager.getSession('user-1', 'account-1', `${terminalEvent}-session`).status, terminal.status);
     assert.equal(fake.killCount, 1);
   }
 });
@@ -1150,32 +1164,33 @@ test('logout invalidates sessions first and rejects with a fixed safe error on C
     spawnCli: () => fake,
     runCli: async args => {
       assert.deepEqual(args, ['logout']);
-      assert.equal(manager.getSession('session-1'), null);
+      assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
       assert.equal(fake.killed, true);
       throw new Error('TEST_LOGOUT_SECRET');
     },
     readFile: () => Buffer.from('png'),
     randomId: () => 'session-1'
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
 
-  await assert.rejects(manager.logout(), error => {
+  await assert.rejects(manager.logout('user-1', 'account-1', '/cred/user-1/account-1'), error => {
     assert.equal(error.message, 'redapp 退出登录失败');
     assert.equal(error.message.includes('TEST_LOGOUT_SECRET'), false);
     return true;
   });
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('logout router passes failure to middleware without writing a success DTO', async () => {
   const router = createRedappAuthRouter({
     authManager: { logout: async () => { throw new Error('redapp 退出登录失败'); } },
+    accountRegistry: { getForUser: async () => ({ id: 'acct-1', credentialDir: '/cred/u1/acct-1' }) },
     verify: (req, res, next) => next()
   });
   const handler = router.stack.find(layer => layer.route?.path === '/logout').route.stack[0].handle;
   const response = createResponse();
   let routedError;
-  await handler({}, response, error => { routedError = error; });
+  await handler({ query: { accountId: 'acct-1' }, user: { userId: 'user-1' } }, response, error => { routedError = error; });
   await tick();
   assert.equal(routedError?.message, 'redapp 退出登录失败');
   assert.equal(response.body, undefined);
@@ -1188,7 +1203,7 @@ test('logout atomically invalidates sessions and ignores all late child events',
     spawnCli: () => fake,
     runCli: args => {
       calls.push(args);
-      assert.equal(manager.getSession('session-1'), null);
+      assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
       assert.equal(fake.killed, true);
       return { credentials: { loggedIn: false } };
     },
@@ -1196,18 +1211,18 @@ test('logout atomically invalidates sessions and ignores all late child events',
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
-  assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
-  const result = await manager.logout();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'waiting_prompt');
+  const result = await manager.logout('user-1', 'account-1', '/cred/user-1/account-1');
   assert.deepEqual(calls, [['logout']]);
   assert.equal(result.loggedIn, false);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 
   fake.stdout.write('PROMPT:{"qrCodePath":"late.png","expiresInSeconds":10}\n');
   fake.stdout.write('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true}}\n');
   fake.emit('close', 0);
   await tick();
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('logout during the pending spawn window kills the late child without throwing', async () => {
@@ -1219,8 +1234,8 @@ test('logout during the pending spawn window kills the late child without throwi
     readFile: () => Buffer.from('png'),
     randomId: () => 'session-1'
   });
-  manager.startLogin();
-  await manager.logout();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
+  await manager.logout('user-1', 'account-1', '/cred/user-1/account-1');
   resolveSpawn(late);
   await tick();
   assert.equal(late.killed, true);
@@ -1230,7 +1245,7 @@ test('logout during the pending spawn window kills the late child without throwi
     late.emit('close', 0);
   });
   await tick();
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('release during the pending spawn window keeps late stream events inert', async () => {
@@ -1242,7 +1257,7 @@ test('release during the pending spawn window keeps late stream events inert', a
     readFile: () => Buffer.from('png'),
     randomId: () => 'session-1'
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   manager.dispose();
   resolveSpawn(late);
   await tick();
@@ -1302,7 +1317,7 @@ test('default randomId produces a valid session id without injection', () => {
     runCli: () => ({ credentials: { loggedIn: false } }),
     readFile: () => Buffer.from('png')
   });
-  const session = manager.startLogin();
+  const session = manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   assert.match(session.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   manager.dispose();
 });
@@ -1320,7 +1335,7 @@ test('projection recomputes needsReauth from expiry instead of trusting the stor
     }),
     readFile: () => Buffer.from('png')
   });
-  const status = await manager.getStatus();
+  const status = await manager.getStatus('user-1', 'account-1');
   assert.equal(status.loggedIn, true);
   assert.equal(status.needsReauth, true);
 });
@@ -1335,12 +1350,12 @@ test('retained session auth recomputes needsReauth as expiry passes within reten
     randomId: () => 'session-1',
     now: () => current
   });
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(`RESULT_JSON:${JSON.stringify({ status: 'ok', credentials: { loggedIn: true, expireTimeMs: current + 1000 } })}\n`);
   await tick();
-  assert.equal(manager.getSession('session-1').auth.needsReauth, false);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').auth.needsReauth, false);
   current += 2000;
-  const retained = manager.getSession('session-1');
+  const retained = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(retained.status, 'done');
   assert.equal(retained.auth.loggedIn, true);
   assert.equal(retained.auth.needsReauth, true);
@@ -1356,9 +1371,9 @@ test('accepts a chunk over 64 KiB when every complete line is short', () => {
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(Buffer.from('noise\n'.repeat(11000)));
-  assert.equal(manager.getSession('session-1').status, 'waiting_prompt');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'waiting_prompt');
   assert.equal(fake.killed, false);
 });
 
@@ -1371,9 +1386,9 @@ test('fails safely when an individual complete stdout line exceeds 64 KiB', () =
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(Buffer.from(`TEST_OUTPUT_SECRET${'x'.repeat(64 * 1024)}\n`));
-  const failed = manager.getSession('session-1');
+  const failed = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error, '登录进程输出异常');
   assert.equal(fake.killed, true);
@@ -1389,9 +1404,9 @@ test('fails generically and kills the child when an unterminated stdout line exc
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   fake.stdout.write(Buffer.from(`TEST_OUTPUT_SECRET${'x'.repeat(64 * 1024)}`));
-  const failed = manager.getSession('session-1');
+  const failed = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error, '登录进程输出异常');
   assert.equal(fake.killed, true);
@@ -1409,13 +1424,13 @@ test('keeps every work-creating method closed after disposal', async () => {
   });
 
   manager.dispose();
-  assert.throws(() => manager.startLogin(), { message: '授权管理器已关闭' });
-  await assert.rejects(manager.getStatus(), { message: '授权管理器已关闭' });
-  await assert.rejects(manager.cancelLogin('session-1'), { message: '授权管理器已关闭' });
-  await assert.rejects(manager.logout(), { message: '授权管理器已关闭' });
+  assert.throws(() => manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.getStatus('user-1', 'account-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.cancelLogin('user-1', 'account-1', 'session-1'), { message: '授权管理器已关闭' });
+  await assert.rejects(manager.logout('user-1', 'account-1', '/cred/user-1/account-1'), { message: '授权管理器已关闭' });
   assert.equal(spawnCount, 0);
   assert.equal(runCount, 0);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('rejects login starts permanently after disposal', () => {
@@ -1428,9 +1443,9 @@ test('rejects login starts permanently after disposal', () => {
   });
 
   manager.dispose();
-  assert.throws(() => manager.startLogin(), { message: '授权管理器已关闭' });
+  assert.throws(() => manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1'), { message: '授权管理器已关闭' });
   assert.equal(spawnCount, 0);
-  assert.equal(manager.getSession('session-1'), null);
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1'), null);
 });
 
 test('decodes split UTF-8 characters in prompt and result lines', async () => {
@@ -1442,21 +1457,21 @@ test('decodes split UTF-8 characters in prompt and result lines', async () => {
     randomId: () => 'session-1'
   });
 
-  manager.startLogin();
+  manager.startLogin('user-1', 'account-1', '/cred/user-1/account-1');
   const prompt = Buffer.from('PROMPT:{"qrCodePath":"x.png","userCode":"授权码"}\n');
   const promptSplit = prompt.indexOf(Buffer.from('授')) + 1;
   fake.stdout.write(prompt.subarray(0, promptSplit));
   fake.stdout.write(prompt.subarray(promptSplit));
   await tick();
-  assert.equal(manager.getSession('session-1').status, 'waiting_scan');
-  assert.equal(manager.getSession('session-1').userCode, '授权码');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').status, 'waiting_scan');
+  assert.equal(manager.getSession('user-1', 'account-1', 'session-1').userCode, '授权码');
 
   const result = Buffer.from('RESULT_JSON:{"status":"ok","credentials":{"loggedIn":true,"scope":"基础信息"}}\n');
   const resultSplit = result.indexOf(Buffer.from('基')) + 1;
   fake.stdout.write(result.subarray(0, resultSplit));
   fake.stdout.write(result.subarray(resultSplit));
   await tick();
-  const done = manager.getSession('session-1');
+  const done = manager.getSession('user-1', 'account-1', 'session-1');
   assert.equal(done.status, 'done');
   assert.deepEqual(done.auth.scope, ['基础信息']);
 });
@@ -2082,4 +2097,317 @@ test('operation validation errors never reflect CLI-controlled results', () => {
     assert.equal(error.message.includes('TEST_SECRET'), false);
     return true;
   });
+});
+
+// ===== Task 5: 账号 CRUD 路由、管理员只读与发布按账号 =====
+
+// 路由级 fake store：内存行集合，按 user_id 过滤；供真实 createXhsAccountRegistry 包装。
+function createFakeAccountStore(initial = []) {
+  const rows = initial.map(r => ({ ...r }));
+  return {
+    rows,
+    listForUser: async userId => rows.filter(r => r.userId === userId),
+    getForUser: async (userId, id) => rows.find(r => r.userId === userId && r.id === id) || null,
+    createPendingForUser: async (userId, { id, credentialDir }) => {
+      const row = { id, userId, credentialDir, openId: null, nickname: '', createdAt: Date.now(), updatedAt: Date.now() };
+      rows.push(row);
+      return row;
+    },
+    bindOpenIdForUser: async (userId, id, { openId }) => {
+      const row = rows.find(r => r.userId === userId && r.id === id);
+      if (row) row.openId = openId;
+      return row;
+    },
+    findByOpenIdForUser: async (userId, openId) => rows.find(r => r.userId === userId && r.openId === openId) || null,
+    deleteForUser: async (userId, id) => {
+      const idx = rows.findIndex(r => r.userId === userId && r.id === id);
+      return idx < 0 ? null : rows.splice(idx, 1)[0];
+    }
+  };
+}
+
+function fakeAuthStatus(overrides = {}) {
+  return { available: true, loggedIn: false, openIdMasked: null, scope: [], expireTimeMs: null, refreshExpireTimeMs: null, needsReauth: true, ...overrides };
+}
+
+function routeAccount(id, userId, { openId = null, dir } = {}) {
+  return { id, userId, credentialDir: dir || `C:\\storage\\auth\\${userId}\\${id}`, openId, nickname: '', createdAt: 1000, updatedAt: 1000 };
+}
+
+function routeHandler(router, method, path) {
+  return router.stack.find(layer => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
+}
+
+async function invokeRoute(handler, { params = {}, query = {}, body = {}, userId = 'u1' } = {}) {
+  const response = createResponse();
+  await handler({ params, query, body, user: { userId } }, response, error => { throw error; });
+  return response;
+}
+
+function buildAccountsRouter({ store, registry, authManager, findUserById = async () => ({ isAdmin: true }), listAllAccounts = async () => [] }) {
+  const accountRegistry = registry || createXhsAccountRegistry({ ...store, removeCredentialDir: async () => {} });
+  return createRedappAccountsRouter({
+    accountRegistry,
+    authManager: authManager || { getStatus: async () => fakeAuthStatus() },
+    findUserById,
+    listAllAccounts,
+    verify: (req, res, next) => next()
+  });
+}
+
+test('accounts router applies JWT middleware before route handlers', async () => {
+  let handlerCalls = 0;
+  const router = createRedappAccountsRouter({
+    accountRegistry: {
+      listForUser: async () => { handlerCalls += 1; return []; },
+      createPendingForUser: async () => { handlerCalls += 1; return {}; },
+      deleteForUser: async () => { handlerCalls += 1; return null; }
+    },
+    findUserById: async () => { handlerCalls += 1; return null; },
+    listAllAccounts: async () => { handlerCalls += 1; return []; },
+    verify: (req, res) => res.status(401).json({ error: 'unauthorized' })
+  });
+  const response = createResponse();
+  const request = { method: 'GET', url: '/accounts', originalUrl: '/accounts', path: '/accounts' };
+  await new Promise((resolve, reject) => {
+    router.handle(request, response, error => error ? reject(error) : resolve());
+    setImmediate(resolve);
+  });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.body, { error: 'unauthorized' });
+  assert.equal(handlerCalls, 0);
+});
+
+test('GET /accounts returns only the current user masked accounts without secrets', async () => {
+  const statusCalls = [];
+  const store = createFakeAccountStore([
+    routeAccount('acct-1', 'u1', { openId: 'ob5cfa901234' }),
+    routeAccount('acct-2', 'u1'),
+    routeAccount('acct-3', 'u2', { openId: 'other12345678' })
+  ]);
+  const router = buildAccountsRouter({
+    store,
+    authManager: {
+      getStatus: async (userId, accountId, credentialDir) => {
+        statusCalls.push({ userId, accountId, credentialDir });
+        return fakeAuthStatus({ loggedIn: true, scope: ['base_info', 'skill_publish'], expireTimeMs: 12345, needsReauth: false });
+      }
+    }
+  });
+  const handler = routeHandler(router, 'get', '/accounts');
+  const response = await invokeRoute(handler, { userId: 'u1' });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.length, 2);
+  const [bound, pending] = response.body;
+  assert.equal(bound.id, 'acct-1');
+  assert.equal(bound.status, 'bound');
+  assert.equal(bound.openIdMasked, 'ob5c…1234');
+  assert.equal(bound.credentialDirHint, '…/acct-1');
+  assert.equal(bound.loggedIn, true);
+  assert.deepEqual(bound.scope, ['base_info', 'skill_publish']);
+  assert.equal(bound.expireTimeMs, 12345);
+  assert.equal(bound.needsReauth, false);
+  assert.equal(pending.status, 'pending_bind');
+  assert.equal(pending.openIdMasked, null);
+  const serialized = JSON.stringify(response.body);
+  assert.equal(serialized.includes('ob5cfa901234'), false);
+  assert.equal(serialized.toLowerCase().includes('storage\\auth'), false);
+  assert.equal(serialized.includes('accessToken'), false);
+  assert.equal(serialized.includes('"credentialDir":'), false);
+  // 状态机按账号调用：每个账号带自己的 userId/accountId/credentialDir。
+  assert.deepEqual(statusCalls, [
+    { userId: 'u1', accountId: 'acct-1', credentialDir: 'C:\\storage\\auth\\u1\\acct-1' },
+    { userId: 'u1', accountId: 'acct-2', credentialDir: 'C:\\storage\\auth\\u1\\acct-2' }
+  ]);
+});
+
+test('POST /accounts creates a pending account and returns pending_bind hint', async () => {
+  const store = createFakeAccountStore([]);
+  const registry = createXhsAccountRegistry({
+    ...store,
+    generateAccountId: () => 'acct-new',
+    generateCredentialDir: (userId, accountId) => `/auth/${userId}/${accountId}`,
+    removeCredentialDir: async () => {}
+  });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'post', '/accounts');
+  const response = await invokeRoute(handler, { userId: 'u1' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { id: 'acct-new', status: 'pending_bind', credentialDirHint: '…/acct-new' });
+  assert.equal(store.rows[0].openId, null);
+});
+
+test('DELETE /accounts/:id removes the disk dir when deleteCredentials is true', async () => {
+  const removed = [];
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1', { dir: 'C:\\storage\\auth\\u1\\acct-1' })]);
+  const registry = createXhsAccountRegistry({ ...store, removeCredentialDir: async dir => { removed.push(dir); } });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'delete', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, query: { deleteCredentials: 'true' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(removed, ['C:\\storage\\auth\\u1\\acct-1']);
+  assert.equal(store.rows.length, 0);
+});
+
+test('DELETE /accounts/:id keeps the disk dir when deleteCredentials is false', async () => {
+  const removed = [];
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1')]);
+  const registry = createXhsAccountRegistry({ ...store, removeCredentialDir: async dir => { removed.push(dir); } });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'delete', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-1' }, query: { deleteCredentials: 'false' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(removed, []);
+  assert.equal(store.rows.length, 0);
+});
+
+test('DELETE /accounts/:id returns 404 for an unowned account and removes nothing', async () => {
+  const removed = [];
+  const store = createFakeAccountStore([routeAccount('acct-1', 'u1')]);
+  const registry = createXhsAccountRegistry({ ...store, removeCredentialDir: async dir => { removed.push(dir); } });
+  const router = buildAccountsRouter({ registry });
+  const handler = routeHandler(router, 'delete', '/accounts/:id');
+  const response = await invokeRoute(handler, { userId: 'u1', params: { id: 'acct-other' } });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  assert.deepEqual(removed, []);
+});
+
+test('GET /admin/accounts returns grouped masked lists for an admin', async () => {
+  const store = createFakeAccountStore([
+    routeAccount('acct-1', 'u1', { openId: 'ob5cfa901234' }),
+    routeAccount('acct-3', 'u2', { openId: 'other12345678' })
+  ]);
+  const listAll = async () => [
+    { userId: 'u1', accounts: [store.rows[0]] },
+    { userId: 'u2', accounts: [store.rows[1]] }
+  ];
+  const router = buildAccountsRouter({ store, listAllAccounts: listAll });
+  const handler = routeHandler(router, 'get', '/admin/accounts');
+  const response = await invokeRoute(handler, { userId: 'admin-user' });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.length, 2);
+  assert.equal(response.body[0].userId, 'u1');
+  assert.equal(response.body[0].accounts[0].openIdMasked, 'ob5c…1234');
+  assert.equal(response.body[0].accounts[0].credentialDirHint, '…/acct-1');
+  assert.equal(response.body[1].userId, 'u2');
+  const serialized = JSON.stringify(response.body);
+  assert.equal(serialized.includes('ob5cfa901234'), false);
+  assert.equal(serialized.toLowerCase().includes('storage\\auth'), false);
+});
+
+test('GET /admin/accounts returns 403 XHS_ADMIN_REQUIRED for a non-admin and never lists', async () => {
+  let listed = 0;
+  const router = buildAccountsRouter({
+    store: createFakeAccountStore([]),
+    findUserById: async () => ({ isAdmin: false }),
+    listAllAccounts: async () => { listed += 1; return []; }
+  });
+  const handler = routeHandler(router, 'get', '/admin/accounts');
+  const response = await invokeRoute(handler, { userId: 'u1' });
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.body.code, 'XHS_ADMIN_REQUIRED');
+  assert.equal(listed, 0);
+});
+
+test('auth status routes return 404 XHS_ACCOUNT_NOT_FOUND for an unowned accountId', async () => {
+  const router = createRedappAuthRouter({
+    authManager: { getStatus: async () => fakeAuthStatus() },
+    accountRegistry: { getForUser: async () => null },
+    verify: (req, res, next) => next()
+  });
+  for (const [method, path] of [['get', '/'], ['post', '/login'], ['post', '/logout']]) {
+    const handler = routeHandler(router, method, path);
+    const response = await invokeRoute(handler, { userId: 'u1', query: { accountId: 'nope' } });
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  }
+});
+
+test('auth status routes forward the owned accountId and credentialDir to the manager', async () => {
+  const calls = [];
+  const router = createRedappAuthRouter({
+    authManager: {
+      getStatus: async (userId, accountId, credentialDir) => { calls.push(['status', userId, accountId, credentialDir]); return fakeAuthStatus({ loggedIn: true }); },
+      startLogin: async (userId, accountId, credentialDir) => { calls.push(['login', userId, accountId, credentialDir]); return { sessionId: 's1', status: 'waiting_prompt' }; },
+      getSession: async (userId, accountId, sessionId) => { calls.push(['session', userId, accountId, sessionId]); return { sessionId, status: 'done' }; },
+      cancelLogin: async (userId, accountId, sessionId) => { calls.push(['cancel', userId, accountId, sessionId]); return { sessionId, status: 'cancelled' }; },
+      logout: async (userId, accountId, credentialDir) => { calls.push(['logout', userId, accountId, credentialDir]); return fakeAuthStatus(); }
+    },
+    accountRegistry: { getForUser: async (userId, accountId) => accountId === 'acct-1' ? { id: 'acct-1', credentialDir: '/cred/u1/acct-1' } : null },
+    verify: (req, res, next) => next()
+  });
+  const requests = [
+    ['get', '/', {}],
+    ['post', '/login', {}],
+    ['get', '/session/:id', { id: 's1' }],
+    ['post', '/session/:id/cancel', { id: 's1' }],
+    ['post', '/logout', {}]
+  ];
+  for (const [method, path, params] of requests) {
+    const handler = routeHandler(router, method, path);
+    const response = await invokeRoute(handler, { userId: 'u1', query: { accountId: 'acct-1' }, params });
+    assert.equal(response.statusCode, 200);
+  }
+  assert.deepEqual(calls, [
+    ['status', 'u1', 'acct-1', '/cred/u1/acct-1'],
+    ['login', 'u1', 'acct-1', '/cred/u1/acct-1'],
+    ['session', 'u1', 'acct-1', 's1'],
+    ['cancel', 'u1', 'acct-1', 's1'],
+    ['logout', 'u1', 'acct-1', '/cred/u1/acct-1']
+  ]);
+});
+
+test('minitool publish returns AUTH_REQUIRED with accountId before building', async () => {
+  let built = false;
+  const accountRegistry = {
+    resolveCredentialDir: async (userId, accountId) => accountId === 'acct-1' ? '/cred/u1/acct-1' : null
+  };
+  const handler = createMiniToolPublishHandler({
+    accountRegistry,
+    authManager: {
+      getStatus: async () => fakeAuthStatus({ loggedIn: false, needsReauth: true }),
+      startLogin: async () => ({ sessionId: 's1', status: 'waiting_scan' })
+    },
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-acct-auth', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'acct-1' });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.code, 'AUTH_REQUIRED');
+  assert.equal(response.body.auth.accountId, 'acct-1');
+  assert.equal(built, false);
+});
+
+test('minitool publish rejects an accountId not owned by the user with 404', async () => {
+  let built = false;
+  const accountRegistry = { resolveCredentialDir: async () => null };
+  const handler = createMiniToolPublishHandler({
+    accountRegistry,
+    authManager: { getStatus: async () => fakeAuthStatus({ loggedIn: true }) },
+    buildMiniToolZip: async () => { built = true; },
+    runAudit: () => ({ output: '' }),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-acct-miss', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'], accountId: 'not-owned' });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.code, 'XHS_ACCOUNT_NOT_FOUND');
+  assert.equal(built, false);
+});
+
+test('minitool publish requires an accountId in the request body', async () => {
+  const handler = createMiniToolPublishHandler({
+    accountRegistry: { resolveCredentialDir: async () => null },
+    authManager: { getStatus: async () => fakeAuthStatus({ loggedIn: true }) },
+    buildMiniToolZip: async () => ({}),
+    runAudit: () => ({}),
+    uploadPackage: async () => ({}),
+    createPreview: async () => ({})
+  });
+  const response = await invokeHandler(handler, { attemptId: 'attempt-no-acct', title: '标题', content: '', tags: [], images: ['https://example.test/a.jpg'] });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, 'PUBLISH_VALIDATION');
 });

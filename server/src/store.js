@@ -378,6 +378,97 @@ async function getNote(id) {
   return rows[0] ? mapNote(rows[0]) : null;
 }
 
+function mapXhsAccount(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    credentialDir: row.credential_dir,
+    openId: row.open_id,
+    nickname: row.nickname,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+// 全部用户接口带 user_id 条件，服务端强制隔离，禁止跨用户访问。
+async function listXhsAccounts(userId) {
+  const { rows } = await query(
+    'select * from slenk_notes_xhs_accounts where user_id = $1 order by created_at desc',
+    [userId]
+  );
+  return rows.map(mapXhsAccount);
+}
+
+async function getXhsAccount(userId, id) {
+  const { rows } = await query('select * from slenk_notes_xhs_accounts where user_id = $1 and id = $2', [userId, id]);
+  return rows[0] ? mapXhsAccount(rows[0]) : null;
+}
+
+// 插入待绑定行：open_id 为 NULL，Postgres 的 unique(user_id, open_id) 对 NULL 互不冲突。
+async function createXhsAccountPending(userId, { id, credentialDir }) {
+  const { rows } = await query(
+    `insert into slenk_notes_xhs_accounts (id, user_id, credential_dir)
+     values ($1, $2, $3) returning *`,
+    [id, userId, credentialDir]
+  );
+  return mapXhsAccount(rows[0]);
+}
+
+// 扫码成功回填 open_id；unique(user_id, open_id) 冲突（23505）映射为 XHS_ACCOUNT_DUPLICATE。
+async function bindXhsAccountOpenId(userId, id, { openId, nickname } = {}) {
+  try {
+    const { rows } = await query(
+      `update slenk_notes_xhs_accounts set open_id = $3, nickname = $4, updated_at = now()
+       where user_id = $1 and id = $2 returning *`,
+      [userId, id, openId ?? null, nickname ?? '']
+    );
+    return rows[0] ? mapXhsAccount(rows[0]) : null;
+  } catch (error) {
+    if (error?.code === '23505') {
+      const mapped = new Error('XHS 账号已绑定');
+      mapped.code = 'XHS_ACCOUNT_DUPLICATE';
+      throw mapped;
+    }
+    throw error;
+  }
+}
+
+async function findXhsAccountByOpenId(userId, openId) {
+  const { rows } = await query(
+    'select * from slenk_notes_xhs_accounts where user_id = $1 and open_id = $2',
+    [userId, openId]
+  );
+  return rows[0] ? mapXhsAccount(rows[0]) : null;
+}
+
+// 返回被删行（含 credential_dir）供上层清理磁盘凭证目录；不存在或跨用户返回 null。
+async function deleteXhsAccount(userId, id) {
+  const { rows } = await query(
+    'delete from slenk_notes_xhs_accounts where user_id = $1 and id = $2 returning *',
+    [userId, id]
+  );
+  return rows[0] ? mapXhsAccount(rows[0]) : null;
+}
+
+// 管理员只读：按 user 分组返回 [{ userId, accounts }]。
+async function listAllXhsAccounts() {
+  const { rows } = await query(
+    'select * from slenk_notes_xhs_accounts order by user_id, created_at desc'
+  );
+  const groups = [];
+  const byUser = new Map();
+  for (const row of rows) {
+    const account = mapXhsAccount(row);
+    if (!byUser.has(row.user_id)) {
+      const group = { userId: row.user_id, accounts: [] };
+      byUser.set(row.user_id, group);
+      groups.push(group);
+    }
+    byUser.get(row.user_id).accounts.push(account);
+  }
+  return groups;
+}
+
 export {
   ensureAdmin,
   findUserByUsername,
@@ -405,5 +496,12 @@ export {
   setActiveProvider,
   getActiveProviderIds,
   saveNote,
-  getNote
+  getNote,
+  listXhsAccounts,
+  getXhsAccount,
+  createXhsAccountPending,
+  bindXhsAccountOpenId,
+  findXhsAccountByOpenId,
+  deleteXhsAccount,
+  listAllXhsAccounts
 };

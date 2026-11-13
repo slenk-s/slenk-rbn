@@ -11,6 +11,7 @@ alter table slenk_notes_user_settings enable row level security;
 alter table slenk_notes_providers enable row level security;
 alter table slenk_notes_tasks enable row level security;
 alter table slenk_notes_notes enable row level security;
+alter table slenk_notes_xhs_accounts enable row level security;
 
 -- Least privilege: remove the default Data API grants on the tables above.
 revoke all on slenk_notes_users from anon, authenticated;
@@ -24,3 +25,5 @@ revoke all on slenk_notes_tasks from anon, authenticated;
 revoke all on slenk_notes_tasks from public;
 revoke all on slenk_notes_notes from anon, authenticated;
 revoke all on slenk_notes_notes from public;
+revoke all on slenk_notes_xhs_accounts from anon, authenticated;
+revoke all on slenk_notes_xhs_accounts from public;

@@ -8,9 +8,25 @@ const MAX_LOGIN_SECONDS = 600;
 const MAX_LOGIN_OUTPUT_LINE_LENGTH = 64 * 1024;
 const CLOSED_ERROR_MESSAGE = '授权管理器已关闭';
 const MAX_MASKED_OPEN_ID_LENGTH = 512;
+const LOGIN_DONE_TIMEOUT_MS = 5000;
+const MATCH_FAILURE_ERROR = '扫码匹配失败';
+const MATCH_TIMEOUT_ERROR = '扫码匹配超时';
+const MATCH_DUPLICATE_ERROR = 'XHS 账号已绑定';
 
 function finiteNumberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// 匹配结果投影：只保留允许的字段并做类型约束，避免内部对象/异常文本泄漏到公开 DTO。
+function projectMatch(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const match = {};
+  if (typeof value.matched === 'boolean') match.matched = value.matched;
+  if (value.conflict === true) match.conflict = true;
+  if (typeof value.existingId === 'string') match.existingId = value.existingId.slice(0, 256);
+  if (typeof value.accountId === 'string') match.accountId = value.accountId.slice(0, 256);
+  if (typeof value.error === 'string') match.error = value.error.slice(0, 256);
+  return Object.keys(match).length ? match : undefined;
 }
 
 // needsReauth 永远在投影时刻按 loggedIn/expireTimeMs 重算，不信任上游存入的布尔值：
@@ -19,7 +35,7 @@ function projectAuthStatus(value, now = Date.now) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const loggedIn = source.loggedIn === true;
   const expireTimeMs = finiteNumberOrNull(source.expireTimeMs);
-  return {
+  const projected = {
     available: source.available === true,
     loggedIn,
     openIdMasked: typeof source.openIdMasked === 'string'
@@ -32,6 +48,9 @@ function projectAuthStatus(value, now = Date.now) {
     refreshExpireTimeMs: finiteNumberOrNull(source.refreshExpireTimeMs),
     needsReauth: !loggedIn || (expireTimeMs !== null && expireTimeMs <= now())
   };
+  const match = projectMatch(source.match);
+  if (match) projected.match = match;
+  return projected;
 }
 
 function unavailableAuthStatus() {
@@ -59,6 +78,22 @@ function loggedOutAuthStatus() {
   };
 }
 
+function busyLoginError() {
+  return Object.assign(new Error('同用户已有登录会话进行中'), { code: 'XHS_LOGIN_BUSY' });
+}
+
+// parseTaggedOutput 的 sanitize 已把 credentials 投影为公开 DTO（openId 被掩码），
+// 登录成功回执里的原始 openId 需从行内原文取出，供 onLoginDone 做扫码自动匹配。
+function rawLoginOpenId(line) {
+  const tag = 'RESULT_JSON:';
+  if (!line.startsWith(tag)) return undefined;
+  try {
+    return JSON.parse(line.slice(tag.length))?.credentials?.openId;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createRedappAuthManager({
   spawnCli,
   runCli,
@@ -66,11 +101,23 @@ export function createRedappAuthManager({
   now = Date.now,
   randomId = () => crypto.randomUUID(),
   setTimer = setTimeout,
-  clearTimer = clearTimeout
+  clearTimer = clearTimeout,
+  loginDoneTimeoutMs = LOGIN_DONE_TIMEOUT_MS,
+  onLoginDone
 }) {
-  let active = null;
   let disposed = false;
-  const sessions = new Map();
+  // 外层 Map<userId, UserAuthState>；每个用户独立持有自己的 active 会话、
+  // 按 accountId 索引的会话表与登录锁。不同用户之间完全隔离、可并行。
+  const users = new Map(); // userId -> { active: Session|null, sessions: Map<accountId, Session>, lock: boolean }
+
+  function userState(userId) {
+    let state = users.get(userId);
+    if (!state) {
+      state = { active: null, sessions: new Map(), lock: false };
+      users.set(userId, state);
+    }
+    return state;
+  }
 
   function publicSession(session) {
     return {
@@ -94,8 +141,10 @@ export function createRedappAuthManager({
   function scheduleRemoval(session) {
     if (session.retentionTimer) clearTimer(session.retentionTimer);
     session.retentionTimer = armTimer(() => {
-      sessions.delete(session.id);
-      if (active === session) active = null;
+      const state = users.get(session.userId);
+      if (!state) return;
+      if (state.sessions.get(session.accountId) === session) state.sessions.delete(session.accountId);
+      if (state.active === session) { state.active = null; state.lock = false; }
     }, TERMINAL_RETENTION_MS);
   }
 
@@ -121,6 +170,13 @@ export function createRedappAuthManager({
     session.closeHandler = null;
   }
 
+  function clearActive(state, session) {
+    if (state && state.active === session) {
+      state.active = null;
+      state.lock = false;
+    }
+  }
+
   function finish(session, status, values = {}, options = {}) {
     if (disposed || !ACTIVE_STATUSES.has(session.status)) return;
     session.status = status;
@@ -130,7 +186,7 @@ export function createRedappAuthManager({
       session.expiryTimer = null;
     }
     releaseChild(session, options);
-    if (active === session) active = null;
+    clearActive(users.get(session.userId), session);
     scheduleRemoval(session);
   }
 
@@ -170,13 +226,64 @@ export function createRedappAuthManager({
     }
   }
 
+  // 登录成功：协调 onLoginDone（扫码自动匹配 / 落库）与进入 done 终态。
+  // onLoginDone 的失败必须上浮到会话（auth.match），不得被吞掉后仍显示登录成功。
+  function matchFailure(err) {
+    if (err?.code === 'XHS_ACCOUNT_DUPLICATE') {
+      return { matched: false, conflict: true, error: MATCH_DUPLICATE_ERROR };
+    }
+    return { matched: false, error: MATCH_FAILURE_ERROR };
+  }
+
+  function settleLoginDone(session, info, auth) {
+    let pending;
+    try {
+      pending = onLoginDone?.(info);
+    } catch (err) {
+      auth.match = matchFailure(err);
+      finish(session, 'done', { auth });
+      return;
+    }
+    if (!pending || typeof pending.then !== 'function') {
+      finish(session, 'done', { auth });
+      return;
+    }
+    // 有界等待：matcher 在途时不会提前进入 done；超时/失败都以 auth.match 上浮结果。
+    const TIMEOUT = Symbol('loginDoneTimeout');
+    let timer = null;
+    const timeout = new Promise(resolve => {
+      timer = armTimer(() => resolve(TIMEOUT), loginDoneTimeoutMs);
+    });
+    Promise.race([
+      Promise.resolve(pending).then(result => result),
+      timeout
+    ]).then(result => {
+      if (result === TIMEOUT) {
+        auth.match = { matched: false, error: MATCH_TIMEOUT_ERROR };
+      } else if (result !== undefined) {
+        auth.match = result;
+      }
+      finish(session, 'done', { auth });
+    }).catch(err => {
+      auth.match = matchFailure(err);
+      finish(session, 'done', { auth });
+    }).finally(() => {
+      if (timer) clearTimer(timer);
+    });
+  }
+
   function handleLine(session, line) {
     if (expirePastDeadline(session)) return;
     const parsed = parseTaggedOutput(line);
     for (const prompt of parsed.prompts) handlePrompt(session, prompt);
     for (const result of parsed.results) {
       if (result.status === 'ok' && result.credentials?.loggedIn === true) {
-        finish(session, 'done', { auth: projectAuthStatus(result.credentials, now) });
+        settleLoginDone(session, {
+          userId: session.userId,
+          accountId: session.accountId,
+          credentialDir: session.credentialDir,
+          openId: rawLoginOpenId(line)
+        }, projectAuthStatus(result.credentials, now));
       }
     }
   }
@@ -245,12 +352,28 @@ export function createRedappAuthManager({
     finish(session, 'failed', { error: '登录进程启动失败' });
   }
 
-  function startLogin() {
+  function startLogin(userId, accountId, credentialDir) {
     assertOpen();
-    if (active && ACTIVE_STATUSES.has(active.status)) return publicSession(active);
+    const state = userState(userId);
+    if (state.lock) {
+      // 同一账号已有进行中的会话 → 复用；同一用户换账号 → 锁拒绝。
+      if (state.active?.accountId === accountId) return publicSession(state.active);
+      throw busyLoginError();
+    }
+    // 该账号槽位可能残留一个终态会话（保留窗口内）：新会话占位前先释放旧会话的定时器与子进程，
+    // 避免被替换的终态会话在 dispose/logout 时因不在表内而泄漏定时器。
+    const previous = state.sessions.get(accountId);
+    if (previous) {
+      if (previous.expiryTimer) clearTimer(previous.expiryTimer);
+      if (previous.retentionTimer) clearTimer(previous.retentionTimer);
+      releaseChild(previous);
+    }
     const createdAt = now();
     const session = {
       id: randomId(),
+      userId,
+      accountId,
+      credentialDir,
       status: 'waiting_prompt',
       deadlineAt: createdAt + MAX_LOGIN_SECONDS * 1000,
       child: null,
@@ -266,14 +389,15 @@ export function createRedappAuthManager({
       errorHandler: null,
       closeHandler: null
     };
-    sessions.set(session.id, session);
-    active = session;
+    state.sessions.set(accountId, session);
+    state.active = session;
+    state.lock = true;
 
     session.expiryTimer = armTimer(() => {
       if (ACTIVE_STATUSES.has(session.status)) finish(session, 'expired');
     }, Math.max(0, session.deadlineAt - now()));
     try {
-      const childOrPromise = spawnCli();
+      const childOrPromise = spawnCli({ credentialHome: credentialDir });
       if (childOrPromise && typeof childOrPromise.then === 'function') {
         childOrPromise.then(child => attachChild(session, child), () => failLoginStart(session));
       } else {
@@ -285,15 +409,19 @@ export function createRedappAuthManager({
     return publicSession(session);
   }
 
-  function getSession(id) {
-    const session = sessions.get(id);
-    return session ? publicSession(session) : null;
+  function getSession(userId, accountId, sessionId) {
+    const session = users.get(userId)?.sessions.get(accountId);
+    if (!session) return null;
+    if (sessionId !== undefined && session.id !== sessionId) return null;
+    return publicSession(session);
   }
 
-  async function getStatus() {
+  // credentialDir 可省略：有活动会话时沿用该账号记录的凭证目录；否则该账号尚未登记凭证目录。
+  async function getStatus(userId, accountId, credentialDir) {
     assertOpen();
+    const dir = credentialDir ?? users.get(userId)?.sessions.get(accountId)?.credentialDir;
     try {
-      const result = await runCli(['whoami']);
+      const result = await runCli(['whoami'], { credentialHome: dir });
       if (result?.status === 'error' && result.code === 'AUTH_REQUIRED') return loggedOutAuthStatus();
       return projectAuthStatus(result?.credentials, now);
     } catch {
@@ -301,32 +429,47 @@ export function createRedappAuthManager({
     }
   }
 
-  async function cancelLogin(id) {
+  async function cancelLogin(userId, accountId, sessionId) {
     assertOpen();
-    const session = sessions.get(id);
-    if (!session) return null;
+    const session = users.get(userId)?.sessions.get(accountId);
+    if (!session || session.id !== sessionId) return null;
     if (ACTIVE_STATUSES.has(session.status)) {
       finish(session, 'cancelled');
-      try { await runCli(['login', '--cancel']); } catch {}
+      try { await runCli(['login', '--cancel'], { credentialHome: session.credentialDir }); } catch {}
     }
     return publicSession(session);
   }
 
-  function invalidateSessions() {
-    active = null;
-    for (const session of sessions.values()) {
-      if (session.expiryTimer) clearTimer(session.expiryTimer);
-      if (session.retentionTimer) clearTimer(session.retentionTimer);
-      releaseChild(session);
-    }
-    sessions.clear();
+  function invalidateAccount(userId, accountId) {
+    const state = users.get(userId);
+    const session = state?.sessions.get(accountId);
+    if (!session) return;
+    if (session.expiryTimer) clearTimer(session.expiryTimer);
+    if (session.retentionTimer) clearTimer(session.retentionTimer);
+    releaseChild(session);
+    state.sessions.delete(accountId);
+    clearActive(state, session);
   }
 
-  async function logout() {
+  function invalidateAll() {
+    for (const state of users.values()) {
+      for (const session of state.sessions.values()) {
+        if (session.expiryTimer) clearTimer(session.expiryTimer);
+        if (session.retentionTimer) clearTimer(session.retentionTimer);
+        releaseChild(session);
+      }
+      state.sessions.clear();
+      state.active = null;
+      state.lock = false;
+    }
+    users.clear();
+  }
+
+  async function logout(userId, accountId, credentialDir) {
     assertOpen();
-    invalidateSessions();
+    invalidateAccount(userId, accountId);
     try {
-      const result = await runCli(['logout']);
+      const result = await runCli(['logout'], { credentialHome: credentialDir });
       return projectAuthStatus(result?.credentials, now);
     } catch {
       throw new Error('redapp 退出登录失败');
@@ -335,7 +478,7 @@ export function createRedappAuthManager({
 
   function dispose() {
     disposed = true;
-    invalidateSessions();
+    invalidateAll();
   }
 
   return { getStatus, startLogin, getSession, cancelLogin, logout, dispose };

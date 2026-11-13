@@ -1,23 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createRedappAuthClient, REDAPP_GATED_ACTION_DEADLINE_MS } from './redappAuthFlow.js';
 import {
-  authActionPermissions,
+  accountDisplayName,
+  accountLoginHint,
+  accountStatusLabel,
+  createRedappAuthClient,
+  REDAPP_GATED_ACTION_DEADLINE_MS
+} from './redappAuthFlow.js';
+import {
   boundedSessionError,
-  canCommitLifecycle,
-  cancelOperationCompletion,
-  cancelSessionStateCompletion,
   dashboardPollFailureDisposition,
   fetchWithDeadline,
   focusNavigationIndex,
   formatAuthExpiry,
   formatRemainingTime,
-  isUsableAuth,
-  pollLifecycleTransition,
-  pollCompletionTransition,
-  reserveTransferredGeneration,
   safeAuthorizeUrl,
-  safeQrImage,
-  sessionStatusPresentation
+  safeQrImage
 } from './redappAuthUi.js';
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'expired', 'cancelled', 'not-found', 'timeout', 'cancel-not-applied', 'publish-uncertain', 'publish-restart-unknown', 'publish-outcome-unknown', 'publish-failed']);
@@ -28,7 +25,7 @@ const SESSION_LABELS = {
   'publish-uncertain': '发布结果待确认', 'publish-restart-unknown': '原任务结果未知', 'publish-outcome-unknown': '上传结果未知', 'publish-failed': '发布失败'
 };
 const SESSION_GUIDANCE = {
-  done: '授权已完成。正在确认本机共享账号状态。', failed: '本次授权未完成，请查看原因后重试。',
+  done: '授权已完成，正在刷新账号状态。', failed: '本次授权未完成，请查看原因后重试。',
   expired: '授权信息已过期，请重新发起授权。', cancelled: '本次授权已取消，可在需要时重新发起。',
   'not-found': '服务器已找不到本次授权会话，请重新发起授权。',
   timeout: '授权等待已超时，请重新发起授权。',
@@ -59,7 +56,7 @@ function waitForNextPoll(signal, delayMs = 1500) {
   });
 }
 
-// options.deadlineMs 覆盖默认 20s 截止：status/login/cancel/logout 等服务端动作要等待
+// options.deadlineMs 覆盖默认 20s 截止：账号/登录/取消/退出等服务端动作要等待
 // 版本门禁（180s）+ CLI（120s），必须给宽截止；会话轮询 GET 保持小截止。
 function createFetchAdapter(apiBase, token, getSignal) {
   return (path, options = {}) => {
@@ -72,7 +69,7 @@ function createFetchAdapter(apiBase, token, getSignal) {
   };
 }
 
-export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, onRetry, onRefreshStatus, cancelling, refreshing }) {
+export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, onRetry, cancelling }) {
   const dialogRef = useRef(null);
   const openerRef = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -112,7 +109,7 @@ export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, o
       <section ref={dialogRef} tabIndex={-1} className="prompt-config-modal auth-qr-modal" role="dialog" aria-modal="true" aria-labelledby="redapp-auth-title">
         <button type="button" className="prompt-config-close" onClick={onClose} aria-label="关闭授权窗口">×</button>
         <div className="auth-modal-heading">
-          <div><h3 id="redapp-auth-title">连接小红书</h3><p>请使用手机完成授权。关闭此窗口不会取消本机正在进行的授权。</p></div>
+          <div><h3 id="redapp-auth-title">连接小红书</h3><p>请使用手机完成授权。关闭此窗口不会取消正在进行的授权。</p></div>
           <span className={'auth-session-state ' + (terminal ? 'terminal' : 'active')} role="status">{SESSION_LABELS[session.status] || '等待授权'}</span>
         </div>
         {terminal ? (
@@ -130,12 +127,11 @@ export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, o
               <div className="auth-countdown"><span>剩余时间</span><b>{formatRemainingTime(session.expiresAt, now)}</b></div>
               {session.userCode ? <div className="auth-user-code"><span>授权码</span><strong>{session.userCode}</strong></div> : null}
               {authorizeUrl ? <a className="auth-authorize-link" href={authorizeUrl} target="_blank" rel="noreferrer">在浏览器中打开授权页面</a> : null}
-              <p className="auth-modal-tip">授权会更新这台电脑上的共享账号，其他正在使用工作台的人也会受到影响。</p>
+              <p className="auth-modal-tip">授权只会更新当前账号的凭证，不影响你的其他账号。</p>
             </div>
           </div>
         )}
         <div className="prompt-config-actions auth-modal-actions">
-          {mode !== 'resume-publish' && session.status === 'done' && session.refreshError ? <button type="button" className="btn-primary" disabled={refreshing} onClick={onRefreshStatus}>{refreshing ? '刷新中…' : '刷新授权状态'}</button> : null}
           {terminal && session.status !== 'done' && onRetry ? <button type="button" className="btn-primary" onClick={onRetry}>{mode === 'resume-publish' && session.status === 'publish-uncertain' ? '查询发布结果' : mode === 'resume-publish' && ['publish-restart-unknown', 'publish-outcome-unknown'].includes(session.status) ? '我已核对，允许重新发布' : '重新授权'}</button> : null}
           {active ? <button type="button" className="btn-danger" disabled={cancelling} onClick={onCancel}>{cancelling ? '取消中…' : '取消本次授权'}</button> : null}
           <button type="button" className="btn-secondary" onClick={onClose}>关闭窗口</button>
@@ -145,134 +141,109 @@ export function RedappAuthModal({ session, mode = 'manage', onClose, onCancel, o
   );
 }
 
+// 账号列表卡片：每个 Slenk 用户管理自己的小红书账号（含待绑定条目），互不影响。
+// 同一时刻全卡片只保留一个进行中的扫码会话（服务端也限制同用户单会话）。
 export function RedappAuthCard({ apiBase, token, setMessage }) {
   const mounted = useRef(false);
   const pollController = useRef(null);
   const operationController = useRef(null);
-  const operationGeneration = useRef(0);
-  const lifecycle = useRef({ generation: 0, sessionId: null });
-  const [auth, setAuth] = useState(null);
+  const [accounts, setAccounts] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState('');
   const [error, setError] = useState('');
-  const [session, setSession] = useState(null);
+  const [session, setSession] = useState(null); // { ...session, accountId }
   const [modalOpen, setModalOpen] = useState(false);
-  const [confirmLogout, setConfirmLogout] = useState(false);
+  const [confirmLogoutId, setConfirmLogoutId] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteCredentials, setDeleteCredentials] = useState(true);
 
   const makeClient = useCallback(signal => createRedappAuthClient({
     api: createFetchAdapter(apiBase, token, signal), pollMs: 1500
   }), [apiBase, token]);
 
-  const beginOperation = useCallback(({ abortPoll = false, sessionId = lifecycle.current.sessionId } = {}) => {
+  const beginOperation = useCallback(({ abortPoll = false } = {}) => {
     operationController.current?.abort();
     if (abortPoll) pollController.current?.abort();
     const controller = new AbortController();
     operationController.current = controller;
-    const generation = ++operationGeneration.current;
-    lifecycle.current = { generation, sessionId };
-    return { controller, generation, client: makeClient(controller.signal) };
+    return { controller, client: makeClient(controller.signal) };
   }, [makeClient]);
-  const isCurrent = useCallback((generation, controller, sessionId = lifecycle.current.sessionId) => mounted.current
-    && !controller.signal.aborted
-    && canCommitLifecycle(lifecycle.current, generation, sessionId), []);
 
-  const refreshStatus = useCallback(async ({ quiet = false, closeDone = false } = {}) => {
-    const { controller, generation, client } = beginOperation();
+  const refreshAccounts = useCallback(async ({ quiet = false } = {}) => {
+    const { controller, client } = beginOperation();
     if (!quiet) setLoading(true);
-    setBusy(true);
-    setError('');
     try {
-      const next = await client.status({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
-      if (!isCurrent(generation, controller)) return null;
-      setAuth(next);
-      if (closeDone && isUsableAuth(next)) {
-        lifecycle.current = { generation, sessionId: null };
-        setSession(null); setModalOpen(false); setMessage?.('小红书授权已连接。');
-      } else if (closeDone) {
-        setSession(previous => previous?.status === 'done'
-          ? { ...previous, refreshError: '授权完成，但当前账号状态仍不可用' }
-          : previous);
-      }
-      return next;
+      const list = await client.listAccounts({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+      if (!mounted.current || controller.signal.aborted) return null;
+      setAccounts(Array.isArray(list) ? list : []);
+      setError('');
+      return list;
     } catch (cause) {
-      if (isCurrent(generation, controller) && cause?.name !== 'AbortError') {
-        setAuth(null);
-        setError('无法读取授权状态，请稍后重试。');
-        if (closeDone) setSession(previous => previous?.status === 'done'
-          ? { ...previous, refreshError: '授权成功，状态刷新失败' }
-          : previous);
+      if (mounted.current && !controller.signal.aborted && cause?.name !== 'AbortError') {
+        setAccounts(null);
+        setError('无法读取账号列表，请稍后重试。');
       }
       return null;
     } finally {
-      if (isCurrent(generation, controller)) { setLoading(false); setBusy(false); }
+      if (mounted.current && !controller.signal.aborted) setLoading(false);
     }
-  }, [beginOperation, isCurrent, setMessage]);
+  }, [beginOperation]);
 
   useEffect(() => {
     mounted.current = true;
-    const kickoff = setTimeout(() => refreshStatus(), 0);
+    const kickoff = setTimeout(() => refreshAccounts(), 0);
     return () => {
       clearTimeout(kickoff);
       mounted.current = false;
       operationController.current?.abort();
       pollController.current?.abort();
     };
-  }, [refreshStatus]);
+  }, [refreshAccounts]);
+
+  // 「退出」两步确认：第一次进入待确认态，5 秒内未二次点击自动复位。
+  useEffect(() => {
+    if (!confirmLogoutId) return undefined;
+    const timer = setTimeout(() => setConfirmLogoutId(''), 5000);
+    return () => clearTimeout(timer);
+  }, [confirmLogoutId]);
 
   const sessionId = session?.sessionId;
-  const pollGeneration = session?.pollGeneration;
+  const sessionAccountId = session?.accountId;
   useEffect(() => {
     if (!sessionId) return undefined;
     pollController.current?.abort();
     const controller = new AbortController();
     pollController.current = controller;
-    const pollTransition = pollLifecycleTransition(lifecycle.current, sessionId, pollGeneration);
-    if (pollTransition.commit === false) return () => controller.abort();
-    const generation = pollTransition.generation;
-    operationGeneration.current = Math.max(operationGeneration.current, generation);
-    lifecycle.current = pollTransition.lifecycle;
-    const pollClient = makeClient(controller.signal);
+    const client = makeClient(controller.signal);
+    const alive = () => mounted.current && !controller.signal.aborted;
+    const budgetAt = Date.now() + 10 * 60 * 1000;
+    let transientFailures = 0;
 
-    const pollIsCurrent = () => mounted.current
-      && !controller.signal.aborted
-      && canCommitLifecycle(lifecycle.current, generation, sessionId);
+    async function finishDone(current) {
+      // 扫码成功后服务端已完成自动匹配/落库；无论成功、冲突还是异常都刷新列表
+      // （冲突时本次待绑定行已被服务端清理）。
+      let list = null;
+      try { list = await client.listAccounts({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS }); } catch { list = null; }
+      if (!alive()) return;
+      if (Array.isArray(list)) { setAccounts(list); setLoading(false); }
+      const match = current?.auth?.match;
+      setSession(null);
+      setModalOpen(false);
+      setMessage?.(match?.conflict === true
+        ? '这个账号之前已经绑定过，已复用现有绑定。'
+        : match && match.matched === false
+          ? '扫码成功，但账号绑定结果异常，请刷新账号列表确认。'
+          : '小红书账号授权成功。');
+    }
 
     async function pollExactSession() {
-      // 与服务端会话寿命（MAX_LOGIN_SECONDS = 600s）一致的轮询预算：
-      // 瞬时失败在预算内按有界退避重试，只有取消与 404 立即终止。
-      const budgetAt = Date.now() + 10 * 60 * 1000;
-      let transientFailures = 0;
       while (!controller.signal.aborted) {
         try {
-          const current = await pollClient.session(sessionId);
-          if (!pollIsCurrent() || current?.sessionId !== sessionId) return;
+          const current = await client.session(sessionId, { accountId: sessionAccountId });
+          if (!alive() || current?.sessionId !== sessionId) return;
           transientFailures = 0;
-          if (current.status === 'done') {
-            try {
-              const nextAuth = await pollClient.status({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
-              if (!pollIsCurrent()) return;
-              setAuth(nextAuth);
-              const transition = pollCompletionTransition('done', nextAuth);
-              if (transition.close) {
-                lifecycle.current = { generation, sessionId: null };
-                setSession(previous => previous?.sessionId === sessionId ? null : previous);
-                setModalOpen(false);
-                setMessage?.('小红书授权已连接。');
-              } else {
-                setSession(previous => previous?.sessionId === sessionId
-                  ? { ...previous, ...current, ...transition }
-                  : previous);
-              }
-            } catch (cause) {
-              if (!pollIsCurrent() || cause?.name === 'AbortError') return;
-              setAuth(null);
-              setSession(previous => previous?.sessionId === sessionId
-                ? { ...previous, ...current, ...pollCompletionTransition('done', null) }
-                : previous);
-            }
-            return;
-          }
-          setSession(previous => previous?.sessionId === sessionId ? { ...previous, ...current } : previous);
+          if (current.status === 'done') { await finishDone(current); return; }
+          setSession(previous => previous?.sessionId === sessionId ? { ...previous, ...current, accountId: sessionAccountId } : previous);
           if (TERMINAL_STATUSES.has(current.status)) return;
           if (current.status !== 'waiting_prompt' && current.status !== 'waiting_scan') {
             setSession(previous => previous?.sessionId === sessionId ? { ...previous, status: 'failed', error: '收到未知授权状态。' } : previous);
@@ -280,7 +251,7 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
           }
           await waitForNextPoll(controller.signal);
         } catch (cause) {
-          if (!pollIsCurrent()) return;
+          if (!alive()) return;
           const disposition = dashboardPollFailureDisposition(cause);
           if (disposition === 'abort') return;
           if (disposition === 'not-found') {
@@ -299,131 +270,210 @@ export function RedappAuthCard({ apiBase, token, setMessage }) {
     }
     pollExactSession();
     return () => controller.abort();
-  }, [makeClient, pollGeneration, sessionId, setMessage]);
+  }, [makeClient, sessionId, sessionAccountId, setMessage]);
 
-  async function connect() {
-    if (!auth || busy) return;
-    setConfirmLogout(false);
+  async function startScan(account) {
+    if (!account?.id || busyAction) return;
     setError('');
+    setConfirmLogoutId('');
     if (session && !TERMINAL_STATUSES.has(session.status)) { setModalOpen(true); return; }
-    const { controller, generation, client } = beginOperation();
-    setBusy(true);
+    const { controller, client } = beginOperation();
+    setBusyAction(`login:${account.id}`);
     try {
-      const next = await client.login({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
-      if (!isCurrent(generation, controller)) return;
-      setSession(next);
+      const next = await client.login({ accountId: account.id, deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+      if (!mounted.current || controller.signal.aborted) return;
+      setSession({ ...next, accountId: account.id });
       setModalOpen(true);
     } catch (cause) {
-      if (isCurrent(generation, controller) && cause?.name !== 'AbortError') setError('无法开始授权，请确认 redapp CLI 可用后重试。');
+      if (mounted.current && !controller.signal.aborted && cause?.name !== 'AbortError') {
+        setError(cause?.code === 'XHS_LOGIN_BUSY'
+          ? '已有一个扫码授权在进行，请先完成或取消它。'
+          : '无法开始授权，请确认 redapp CLI 可用后重试。');
+      }
     } finally {
-      if (isCurrent(generation, controller)) setBusy(false);
+      if (mounted.current) setBusyAction('');
     }
+  }
+
+  // 添加账号：先创建待绑定行（列表立即出现「待绑定」条目），随后立即对该账号发起扫码。
+  async function addAccount() {
+    if (busyAction) return;
+    setError('');
+    const { controller, client } = beginOperation();
+    setBusyAction('create');
+    let created = null;
+    try {
+      created = await client.createAccount({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+    } catch (cause) {
+      if (mounted.current && !controller.signal.aborted && cause?.name !== 'AbortError') {
+        setError('无法创建账号，请稍后重试。');
+      }
+    }
+    if (!mounted.current) return;
+    setBusyAction('');
+    if (!created?.id) return;
+    await refreshAccounts({ quiet: true });
+    await startScan({ id: created.id, status: 'pending_bind' });
   }
 
   async function cancelSession() {
-    const cancellingId = session?.sessionId;
-    if (!cancellingId || busy) return;
-    const { controller, generation, client } = beginOperation();
-    let releasedBusy = false;
-    setBusy(true); setError('');
+    const cancelling = session;
+    if (!cancelling?.sessionId || busyAction) return;
+    const { controller, client } = beginOperation();
+    setBusyAction('cancel');
+    setError('');
     try {
-      const cancelled = await client.cancel(cancellingId, { deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
-      const transition = cancelOperationCompletion({
-        lifecycle: lifecycle.current,
-        operationGeneration: generation,
-        sessionId: cancellingId,
-        responseStatus: cancelled.status,
-        succeeded: true
-      });
-      if (!transition.commit || controller.signal.aborted || cancelled.sessionId !== cancellingId) return;
-      operationGeneration.current = reserveTransferredGeneration(
-        operationGeneration.current,
-        transition.pollGeneration
-      );
-      setBusy(transition.busy);
-      releasedBusy = true;
+      const cancelled = await client.cancel(cancelling.sessionId, { accountId: cancelling.accountId, deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+      if (!mounted.current || controller.signal.aborted || cancelled?.sessionId !== cancelling.sessionId) return;
       pollController.current?.abort();
-      lifecycle.current = transition.lifecycle;
-      setSession(previous => {
-        const completion = cancelSessionStateCompletion({
-          currentSession: previous,
-          response: cancelled,
-          transition
-        });
-        return completion.commit === false ? previous : completion.session;
-      });
-    } catch {
-      const transition = cancelOperationCompletion({
-        lifecycle: lifecycle.current,
-        operationGeneration: generation,
-        sessionId: cancellingId,
-        succeeded: false
-      });
-      if (transition.commit && !controller.signal.aborted) {
-        operationGeneration.current = reserveTransferredGeneration(
-          operationGeneration.current,
-          transition.pollGeneration
-        );
-        setBusy(transition.busy);
-        releasedBusy = true;
-        lifecycle.current = transition.lifecycle;
-        setSession(previous => previous?.sessionId === cancellingId
-          ? { ...previous, pollGeneration: transition.pollGeneration }
-          : previous);
-        setError('取消授权失败，当前授权可能仍在进行。');
+      if (cancelled.status === 'done') {
+        // 取消未生效（授权已完成）：按完成处理，刷新账号列表。
+        setSession(null);
+        setModalOpen(false);
+        const list = await refreshAccounts({ quiet: true });
+        if (list) setMessage?.('授权已完成，账号状态已刷新。');
+        return;
       }
+      setSession(previous => previous?.sessionId === cancelling.sessionId
+        ? { ...previous, ...cancelled, accountId: cancelling.accountId }
+        : previous);
+    } catch {
+      if (mounted.current && !controller.signal.aborted) setError('取消授权失败，当前授权可能仍在进行。');
     } finally {
-      if (!releasedBusy && isCurrent(generation, controller)) setBusy(false);
+      if (mounted.current) setBusyAction('');
     }
   }
 
-  async function logout() {
-    const activeSession = Boolean(session && !TERMINAL_STATUSES.has(session.status));
-    if (activeSession) return;
-    if (!confirmLogout) { setConfirmLogout(true); setError(''); return; }
-    const { controller, generation, client } = beginOperation({ abortPoll: true, sessionId: null });
-    setBusy(true); setLoading(true); setError('');
+  async function logoutAccount(account) {
+    if (!account?.id || busyAction) return;
+    if (confirmLogoutId !== account.id) { setConfirmLogoutId(account.id); return; }
+    setConfirmLogoutId('');
+    const { controller, client } = beginOperation({ abortPoll: session?.accountId === account.id });
+    setBusyAction(`logout:${account.id}`);
+    setError('');
     try {
-      const next = await client.logout({ deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
-      if (!isCurrent(generation, controller, null)) return;
-      setAuth(next); setSession(null); setModalOpen(false); setConfirmLogout(false); setMessage?.('已退出本机共享的小红书授权。');
+      await client.logout({ accountId: account.id, deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+      if (!mounted.current) return;
+      if (session?.accountId === account.id) { setSession(null); setModalOpen(false); }
+      await refreshAccounts({ quiet: true });
+      setMessage?.('已退出该账号的小红书授权。');
     } catch (cause) {
-      if (isCurrent(generation, controller, null) && cause?.name !== 'AbortError') setError('退出失败，当前共享授权没有被确认移除。');
-    } finally { if (isCurrent(generation, controller, null)) { setBusy(false); setLoading(false); } }
+      if (mounted.current && !controller.signal.aborted && cause?.name !== 'AbortError') {
+        setError('退出失败，未能确认该账号授权已移除。');
+      }
+    } finally {
+      if (mounted.current) setBusyAction('');
+    }
   }
 
-  const presentation = sessionStatusPresentation(session, auth);
-  const scope = Array.isArray(auth?.scope) ? auth.scope.filter(item => typeof item === 'string').slice(0, 8) : [];
-  const connected = isUsableAuth(auth);
-  const activeSession = Boolean(session && !TERMINAL_STATUSES.has(session.status));
-  const permissions = authActionPermissions({ auth, activeSession, loading, busy });
+  async function performDelete() {
+    const target = deleteTarget;
+    if (!target?.id || busyAction) return;
+    const { controller, client } = beginOperation({ abortPoll: session?.accountId === target.id });
+    setBusyAction(`delete:${target.id}`);
+    setError('');
+    try {
+      await client.deleteAccount(target.id, { deleteCredentials, deadlineMs: REDAPP_GATED_ACTION_DEADLINE_MS });
+      if (!mounted.current) return;
+      if (session?.accountId === target.id) { setSession(null); setModalOpen(false); }
+      setDeleteTarget(null);
+      await refreshAccounts({ quiet: true });
+      setMessage?.(deleteCredentials
+        ? '账号已删除，本机凭证文件已一并清理。'
+        : '账号已解绑，本机凭证文件已保留。');
+    } catch (cause) {
+      if (mounted.current && !controller.signal.aborted && cause?.name !== 'AbortError') {
+        setError('删除失败，请稍后重试。');
+      }
+    } finally {
+      if (mounted.current) setBusyAction('');
+    }
+  }
+
+  const list = Array.isArray(accounts) ? accounts : [];
+  const busy = Boolean(busyAction);
 
   return (
     <>
       <section className="card redapp-auth-card">
         <div className="section-head auth-card-head">
-          <div><h3>小红书本机授权</h3><p>管理当前电脑用于发布的小红书账号。</p></div>
-          <span className={'auth-status-pill ' + presentation.tone}><i className="auth-status-dot" />{loading ? '读取中…' : presentation.label}</span>
+          <div><h3>小红书账号管理</h3><p>每个用户管理自己的小红书账号，互不影响。</p></div>
+          <div className="section-head-actions">
+            <button type="button" className="btn-secondary" disabled={busy} onClick={() => refreshAccounts()}>{loading ? '刷新中…' : '刷新'}</button>
+            <button type="button" className="btn-primary" disabled={busy} onClick={addAccount}>{busyAction === 'create' ? '创建中…' : '添加小红书账号'}</button>
+          </div>
         </div>
-        <div className="auth-shared-warning"><b>共享电脑提示</b><span>此授权由本机所有工作台用户共用。连接、重新授权或退出都会影响其他用户。</span></div>
         {error ? <p className="auth-card-error" role="alert">{error}</p> : null}
-        {!loading && !auth ? <p className="auth-cli-unavailable">状态未知/读取失败。刷新成功前不会更改本机共享授权。</p> : null}
-        {!loading && auth?.available ? <dl className="auth-status-grid">
-          <div><dt>账号</dt><dd>{auth.openIdMasked || (auth.loggedIn ? '已隐藏' : '未连接')}</dd></div>
-          <div><dt>授权范围</dt><dd>{scope.length ? scope.join('、') : '未提供'}</dd></div>
-          <div><dt>访问授权到期</dt><dd>{formatAuthExpiry(auth.expireTimeMs)}</dd></div>
-          <div><dt>刷新授权到期</dt><dd>{formatAuthExpiry(auth.refreshExpireTimeMs)}</dd></div>
-        </dl> : null}
-        {!loading && auth && !auth.available ? <p className="auth-cli-unavailable">redapp CLI 当前不可用，无法在这台电脑上管理小红书授权。</p> : null}
-        {session ? <div className="auth-session-summary"><span>共享授权进度：<b>{presentation.label}</b></span><button type="button" className="btn-secondary" onClick={() => setModalOpen(true)}>查看授权进度</button></div> : null}
-        {confirmLogout ? <div className="auth-logout-confirm" role="alert"><p><b>确认退出共享授权？</b> 这会让本机所有用户暂时无法发布到小红书。</p><div><button type="button" className="btn-danger" disabled={busy || loading} onClick={logout}>{busy ? '退出中…' : '确认影响所有用户并退出'}</button><button type="button" className="btn-secondary" disabled={busy || loading} onClick={() => setConfirmLogout(false)}>取消</button></div></div> : null}
-        <div className="auth-card-actions">
-          <button type="button" className="btn-primary" disabled={!permissions.connect || !auth?.available} onClick={connect}>{busy ? '处理中…' : connected ? '重新授权' : '连接小红书'}</button>
-          <button type="button" className="btn-secondary" disabled={!permissions.refresh} onClick={() => refreshStatus()}>{loading ? '刷新中…' : '刷新状态'}</button>
-          {auth?.loggedIn ? <button type="button" className="btn-danger" disabled={!permissions.logout} onClick={logout}>退出共享授权</button> : null}
-        </div>
+        {loading && !accounts ? <p className="auth-cli-unavailable">正在读取账号列表…</p> : null}
+        {!loading && !accounts ? <p className="auth-cli-unavailable">账号列表读取失败。刷新成功前不会更改任何账号。</p> : null}
+        {accounts && list.length === 0 ? <p className="auth-cli-unavailable">还没有绑定小红书账号。点击「添加小红书账号」，用小红书 App 扫码完成绑定。</p> : null}
+        {list.length ? (
+          <ul className="xhs-account-list">
+            {list.map(account => (
+              <li key={account.id} className={'xhs-account-row' + (account.status === 'pending_bind' ? ' pending' : '')}>
+                <div className="xhs-account-info">
+                  <div className="xhs-account-title">
+                    <b>{accountDisplayName(account)}</b>
+                    <span className={'xhs-account-pill ' + (account.status === 'bound' ? 'bound' : 'pending')}>{accountStatusLabel(account.status)}</span>
+                  </div>
+                  <div className="xhs-account-meta">
+                    <span>{accountLoginHint(account)}</span>
+                    {account.status === 'bound' && Number.isFinite(account.expireTimeMs) ? <span>授权到期 {formatAuthExpiry(account.expireTimeMs)}</span> : null}
+                    {account.credentialDirHint ? <span className="xhs-account-dir">{account.credentialDirHint}</span> : null}
+                  </div>
+                </div>
+                <div className="xhs-account-actions">
+                  {account.status === 'pending_bind' ? (
+                    <button type="button" className="btn-primary" disabled={busy} onClick={() => startScan(account)}>{busyAction === `login:${account.id}` ? '发起中…' : '扫码绑定'}</button>
+                  ) : (
+                    <>
+                      <button type="button" className="btn-secondary" disabled={busy} onClick={() => startScan(account)}>{busyAction === `login:${account.id}` ? '发起中…' : '重新授权'}</button>
+                      {account.loggedIn ? (
+                        <button type="button" className={confirmLogoutId === account.id ? 'btn-danger' : 'btn-secondary'} disabled={busy} onClick={() => logoutAccount(account)}>
+                          {confirmLogoutId === account.id ? '再次点击确认退出' : busyAction === `logout:${account.id}` ? '退出中…' : '退出'}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                  <button type="button" className="btn-secondary xhs-account-delete" disabled={busy} onClick={() => { setDeleteTarget(account); setDeleteCredentials(true); }}>删除</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {session ? (
+          <div className="auth-session-summary">
+            <span>扫码授权进度：<b>{SESSION_LABELS[session.status] || '等待授权'}</b></span>
+            <button type="button" className="btn-secondary" onClick={() => setModalOpen(true)}>查看授权进度</button>
+          </div>
+        ) : null}
       </section>
-      {modalOpen && session ? <RedappAuthModal session={session} onClose={() => setModalOpen(false)} onCancel={cancelSession} onRetry={connect} onRefreshStatus={() => refreshStatus({ closeDone: true })} cancelling={busy} refreshing={busy} /> : null}
+      {modalOpen && session ? (
+        <RedappAuthModal
+          session={session}
+          onClose={() => setModalOpen(false)}
+          onCancel={cancelSession}
+          onRetry={() => startScan({ id: session.accountId })}
+          cancelling={busyAction === 'cancel'}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <div className="prompt-config-backdrop auth-qr-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setDeleteTarget(null); }}>
+          <section className="prompt-config-modal xhs-delete-modal" role="dialog" aria-modal="true" aria-labelledby="xhs-delete-title">
+            <button type="button" className="prompt-config-close" onClick={() => setDeleteTarget(null)} aria-label="关闭删除确认">×</button>
+            <h3 id="xhs-delete-title">删除小红书账号</h3>
+            <p>将删除「{accountDisplayName(deleteTarget)}」的绑定。之后可以重新添加并扫码绑定。</p>
+            <label className="xhs-delete-check">
+              <input type="checkbox" checked={deleteCredentials} onChange={event => setDeleteCredentials(event.target.checked)} />
+              <span>同时删除凭证文件（本机保存的登录凭证；取消勾选则仅解绑，凭证保留）</span>
+            </label>
+            <div className="prompt-config-actions">
+              <button type="button" className="btn-secondary" disabled={busy} onClick={() => setDeleteTarget(null)}>取消</button>
+              <button type="button" className="btn-danger" disabled={busy} onClick={performDelete}>{busyAction === `delete:${deleteTarget.id}` ? '删除中…' : '确认删除'}</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </>
   );
 }

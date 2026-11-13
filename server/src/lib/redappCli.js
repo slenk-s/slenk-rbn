@@ -30,24 +30,26 @@ async function terminateProcessTree(pid, force) {
   }
 }
 
-export function createRedappNpmEnv(platform = process.platform) {
-  return {
+export function createRedappNpmEnv(platform = process.platform, { credentialHome } = {}) {
+  const env = {
     ...process.env,
     NPM_CONFIG_PREFIX: NPM_PREFIX,
     NPM_CONFIG_CACHE: NPM_CACHE,
     PATH: (platform === 'win32' ? NPM_PREFIX : path.join(NPM_PREFIX, 'bin')) + path.delimiter + process.env.PATH
   };
+  if (credentialHome) env.SKILLHUB_UPLOAD_HOME = credentialHome;
+  return env;
 }
 
-function npmEnv() {
-  return createRedappNpmEnv();
+function npmEnv({ credentialHome } = {}) {
+  return createRedappNpmEnv(process.platform, { credentialHome });
 }
 
-function spawnNode(args, timeoutMs) {
+function spawnNode(args, timeoutMs, { credentialHome } = {}) {
   const r = spawnSync(process.execPath, args, {
     encoding: 'utf8',
     timeout: timeoutMs,
-    env: npmEnv(),
+    env: npmEnv({ credentialHome }),
     windowsHide: true
   });
   return {
@@ -68,7 +70,7 @@ export function createAsyncProcessRunner({
   maxOutputBytes = MAX_PROCESS_OUTPUT_BYTES,
   platform = process.platform
 } = {}) {
-  return function runNodeAsync(args, timeoutMs, { signal } = {}) {
+  return function runNodeAsync(args, timeoutMs, { signal, credentialHome, spawnProcess: spawnForCall } = {}) {
     return new Promise(resolve => {
       let child;
       const stdoutChunks = [];
@@ -150,8 +152,8 @@ export function createAsyncProcessRunner({
       };
 
       try {
-        child = spawnProcess(process.execPath, args, {
-          env: npmEnv(),
+        child = (spawnForCall || spawnProcess)(process.execPath, args, {
+          env: createRedappNpmEnv(platform, { credentialHome }),
           windowsHide: true,
           detached: platform !== 'win32',
           stdio: ['ignore', 'pipe', 'pipe']
@@ -354,10 +356,10 @@ export const ensureRedappCliAsync = createRedappCliEnsurerAsync({
   executeGate: options => spawnNodeAsync([redappSkillGatePath], 180 * 1000, options)
 });
 
-export async function spawnRedappLogin() {
-  await ensureRedappCliAsync();
+export async function spawnRedappLogin({ credentialHome } = {}) {
+  await ensureRedappCliAsync({ credentialHome });
   return spawn(process.execPath, [CLI_ENTRY, 'login', '--agent'], {
-    env: npmEnv(),
+    env: npmEnv({ credentialHome }),
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -399,8 +401,8 @@ export const readRedappQrFile = createRedappQrReader({
 });
 
 // 未门禁的执行原语只供版本检查后的公共 runner 使用。
-function runRedappCommandUngated(args, { timeoutMs = 120 * 1000 } = {}) {
-  return spawnNode([CLI_ENTRY, ...args, '--agent'], timeoutMs);
+function runRedappCommandUngated(args, { timeoutMs = 120 * 1000, credentialHome } = {}) {
+  return spawnNode([CLI_ENTRY, ...args, '--agent'], timeoutMs, { credentialHome });
 }
 
 function parseCommandExecution(execution = {}) {
@@ -439,8 +441,8 @@ export function createRedappCommandRunnerAsync({ ensureCli, execute }) {
   };
 }
 
-function runRedappCommandUngatedAsync(args, { timeoutMs = 120 * 1000, signal } = {}) {
-  return spawnNodeAsync([CLI_ENTRY, ...args, '--agent'], timeoutMs, { signal });
+function runRedappCommandUngatedAsync(args, { timeoutMs = 120 * 1000, signal, credentialHome } = {}) {
+  return spawnNodeAsync([CLI_ENTRY, ...args, '--agent'], timeoutMs, { signal, credentialHome });
 }
 
 export const runRedappCommandAsync = createRedappCommandRunnerAsync({
@@ -496,27 +498,27 @@ const operations = createRedappOperations({
 });
 
 export function createRedappOperationsAsync({ runCommand, writeFile, fileExists }) {
-  async function dryRunThenConfirm(args, { timeoutMs = 120 * 1000, confirmOnlyArgs = [], signal, onBeforeConfirm = () => {} } = {}) {
-    const plan = await runCommand([...args, '--dry-run'], { timeoutMs, signal });
+  async function dryRunThenConfirm(args, { timeoutMs = 120 * 1000, confirmOnlyArgs = [], signal, credentialHome, onBeforeConfirm = () => {} } = {}) {
+    const plan = await runCommand([...args, '--dry-run'], { timeoutMs, signal, credentialHome });
     const planHash = plan?.plan?.planHash;
     if (!planHash) throw new Error('dry-run 未返回 planHash');
-    return runCommand([...args, ...confirmOnlyArgs, '--confirm', planHash], { timeoutMs, signal, onBeforeDispatch: onBeforeConfirm });
+    return runCommand([...args, ...confirmOnlyArgs, '--confirm', planHash], { timeoutMs, signal, credentialHome, onBeforeDispatch: onBeforeConfirm });
   }
 
-  async function uploadPackageAsync(zipPath, { signal, onBeforeConfirm } = {}) {
-    const result = await dryRunThenConfirm(['upload', '--file', zipPath, '--type', 'pkg'], { timeoutMs: 180 * 1000, signal, onBeforeConfirm });
+  async function uploadPackageAsync(zipPath, { signal, onBeforeConfirm, credentialHome } = {}) {
+    const result = await dryRunThenConfirm(['upload', '--file', zipPath, '--type', 'pkg'], { timeoutMs: 180 * 1000, signal, onBeforeConfirm, credentialHome });
     const fileId = result?.data?.fileId;
     const md5 = result?.data?.md5;
     if (!fileId || !md5) throw new Error('上传回执缺少 fileId/md5');
     return { fileId, md5 };
   }
 
-  async function createPreviewAsync({ fileId, md5, appName, qrOut, signal }) {
+  async function createPreviewAsync({ fileId, md5, appName, qrOut, signal, credentialHome }) {
     const previewJson = qrOut.replace(/\.png$/i, '') + '.json';
     writeFile(previewJson, JSON.stringify({ pkgFileId: fileId, md5, appName: appName || '笔记发布助手', version: '1.0.0' }, null, 2));
     const result = await dryRunThenConfirm(
       ['preview', '--source', 'thirdAgent', '--file', previewJson],
-      { timeoutMs: 120 * 1000, confirmOnlyArgs: ['--qr-out', qrOut], signal }
+      { timeoutMs: 120 * 1000, confirmOnlyArgs: ['--qr-out', qrOut], signal, credentialHome }
     );
     const data = sanitizeData(result?.data);
     return { qrCodePath: data.qrCodePath || (fileExists(qrOut) ? qrOut : null), previewUrl: data.previewUrl || '', raw: data };
