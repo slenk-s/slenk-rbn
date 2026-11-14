@@ -8,6 +8,17 @@ import { defineConfig } from 'vite'
 // (images show as broken). Keep this list in sync with those mounts.
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        // React 很少变：单独 vendor chunk，应用改动时缓存不失效，浏览器可并行解析。
+        // Vite 8（rolldown）要求 manualChunks 是函数而非对象形式。
+        manualChunks(id) {
+          if (id.includes('/node_modules/react/') || id.includes('/node_modules/react-dom/')) return 'vendor-react';
+        },
+      },
+    },
+  },
   server: {
     allowedHosts: ['236963.xyz'],
     proxy: {
