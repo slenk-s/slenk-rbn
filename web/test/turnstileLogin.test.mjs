@@ -87,6 +87,7 @@ test('auth flip dispose cancels pending work and reduced motion preserves succes
   flip.challengeSucceeded(() => { ready += 1; });
   const pending = scheduled.at(-1);
   flip.dispose();
+  assert.equal(flip.disposed(), true);
   assert.equal(pending.cancelled, true);
   pending.callback();
   assert.equal(ready, 2, 'disposed callbacks cannot advance the phase');

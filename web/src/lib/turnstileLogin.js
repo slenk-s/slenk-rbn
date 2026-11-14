@@ -45,6 +45,9 @@ export function createAuthFlipController({
     phase() {
       return currentPhase;
     },
+    disposed() {
+      return disposed;
+    },
     challengeSucceeded(onFlipReady) {
       if (disposed || currentPhase !== 'challenge') return false;
       currentPhase = 'success-feedback';

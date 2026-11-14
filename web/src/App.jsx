@@ -1987,7 +1987,15 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
     if (flipRef.current.flipCompleted()) setFlipPhase(flipRef.current.phase());
   }, []);
 
-  useEffect(() => () => flipRef.current.dispose(), []);
+  useEffect(() => {
+    if (flipRef.current.disposed()) {
+      flipRef.current = createAuthFlipController({
+        reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+      });
+      setFlipPhase(flipRef.current.phase());
+    }
+    return () => flipRef.current.dispose();
+  }, []);
 
   useEffect(() => {
     if (backActive) usernameRef.current?.focus();

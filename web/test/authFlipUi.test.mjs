@@ -27,6 +27,8 @@ test('auth flip UI isolates inactive faces and exposes success feedback', () => 
 });
 
 test('auth flip UI transfers focus after the back face becomes active', () => {
+  assert.match(source, /flipRef\.current\.disposed\(\)/);
+  assert.match(source, /flipRef\.current\s*=\s*createAuthFlipController/);
   assert.match(source, /usernameRef\s*=\s*useRef/);
   assert.match(source, /ref=\{usernameRef\}/);
   assert.match(source, /usernameRef\.current\?\.focus\(\)/);
