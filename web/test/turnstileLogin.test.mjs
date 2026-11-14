@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   createTurnstileLoginFlow,
   createAuthFlipController,
+  authFlipViewState,
+  moveFocusToChallenge,
+  selectTurnstileSize,
   createLeaveLoginCleanup,
   createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
@@ -34,7 +37,7 @@ test('auth flip pauses on success then completes the left flip once', () => {
   scheduled[0].callback();
   assert.equal(flip.phase(), 'flipping-to-login');
   assert.deepEqual(ready, ['ready']);
-  assert.equal(scheduled[1].ms, 700, 'a fallback prevents a stuck transition');
+  assert.equal(scheduled[1].ms, 900, 'the watchdog leaves room for commit and paint beyond the CSS transition');
 
   assert.equal(flip.flipCompleted(), true);
   assert.equal(flip.phase(), 'login');
@@ -56,7 +59,7 @@ test('auth flip reverses to challenge and ignores stale fallback completion', ()
   assert.equal(flip.returnToChallenge(() => challengeReady.push('ready')), true);
   assert.equal(flip.phase(), 'flipping-to-challenge');
   const reverseFallback = scheduled.at(-1);
-  assert.equal(reverseFallback.ms, 700);
+  assert.equal(reverseFallback.ms, 900);
   assert.equal(flip.flipCompleted(), true);
   assert.equal(flip.phase(), 'challenge');
   assert.deepEqual(challengeReady, ['ready']);
@@ -91,6 +94,72 @@ test('auth flip dispose cancels pending work and reduced motion preserves succes
   assert.equal(pending.cancelled, true);
   pending.callback();
   assert.equal(ready, 2, 'disposed callbacks cannot advance the phase');
+});
+
+test('auth flip cancels success feedback directly because no transform started', () => {
+  const scheduled = [];
+  let ready = 0;
+  const flip = createAuthFlipController({
+    schedule(callback, ms) { const task = { callback, ms, cancelled: false }; scheduled.push(task); return task; },
+    cancel(task) { task.cancelled = true; }
+  });
+  flip.challengeSucceeded(() => {});
+  assert.equal(flip.phase(), 'success-feedback');
+
+  assert.equal(flip.returnToChallenge(() => { ready += 1; }), true);
+  assert.equal(flip.phase(), 'challenge');
+  assert.equal(ready, 1);
+  assert.equal(scheduled[0].cancelled, true);
+  assert.equal(scheduled.length, 1, 'no fake reverse transform watchdog is scheduled');
+});
+
+test('auth flip watchdog leaves paint margin beyond the 700ms CSS transition', () => {
+  const scheduled = [];
+  const flip = createAuthFlipController({
+    schedule(callback, ms) { const task = { callback, ms }; scheduled.push(task); return task; },
+    cancel() {},
+    flipDurationMs: 700,
+    watchdogMarginMs: 200
+  });
+  flip.challengeSucceeded(() => {});
+  scheduled[0].callback();
+  assert.equal(scheduled[1].ms, 900);
+});
+
+test('auth flip reduced motion can change while the page is open', () => {
+  const scheduled = [];
+  const flip = createAuthFlipController({
+    schedule(callback, ms) { const task = { callback, ms, cancelled: false }; scheduled.push(task); return task; },
+    cancel(task) { task.cancelled = true; },
+    reducedMotion: false
+  });
+  flip.setReducedMotion(true);
+  flip.challengeSucceeded(() => {});
+  scheduled[0].callback();
+  assert.equal(flip.phase(), 'login');
+  assert.equal(scheduled.length, 1);
+});
+
+test('auth flip view state exposes exactly one semantic face', () => {
+  assert.deepEqual(authFlipViewState('challenge'), { frontActive: true, backActive: false, cardFlipped: false });
+  assert.deepEqual(authFlipViewState('success-feedback'), { frontActive: true, backActive: false, cardFlipped: false });
+  assert.deepEqual(authFlipViewState('flipping-to-login'), { frontActive: false, backActive: false, cardFlipped: true });
+  assert.deepEqual(authFlipViewState('login'), { frontActive: false, backActive: true, cardFlipped: true });
+  assert.deepEqual(authFlipViewState('flipping-to-challenge'), { frontActive: false, backActive: false, cardFlipped: false });
+});
+
+test('auth flip returns focus to a stable challenge recovery target', () => {
+  const events = [];
+  const active = { blur() { events.push('blur'); } };
+  const target = { focus() { events.push('focus'); } };
+  moveFocusToChallenge({ activeElement: active, challengeTarget: target });
+  assert.deepEqual(events, ['blur', 'focus']);
+});
+
+test('Turnstile uses compact layout when the available content is narrower than normal widget', () => {
+  assert.equal(selectTurnstileSize(244), 'compact');
+  assert.equal(selectTurnstileSize(300), 'normal');
+  assert.equal(selectTurnstileSize(undefined), 'normal');
 });
 
 test('Turnstile two-stage login keeps a fresh challenge token in memory only', () => {

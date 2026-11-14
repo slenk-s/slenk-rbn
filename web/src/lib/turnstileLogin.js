@@ -1,12 +1,31 @@
 export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
 
+export function authFlipViewState(phase) {
+  return {
+    frontActive: phase === 'challenge' || phase === 'success-feedback',
+    backActive: phase === 'login',
+    cardFlipped: phase === 'flipping-to-login' || phase === 'login'
+  };
+}
+
+export function moveFocusToChallenge({ activeElement, challengeTarget }) {
+  activeElement?.blur?.();
+  challengeTarget?.focus?.();
+}
+
+export function selectTurnstileSize(contentWidth) {
+  return typeof contentWidth === 'number' && Number.isFinite(contentWidth) && contentWidth < 300 ? 'compact' : 'normal';
+}
+
 export function createAuthFlipController({
   schedule = globalThis.setTimeout,
   cancel = globalThis.clearTimeout,
   successDelayMs = 450,
   flipDurationMs = 700,
+  watchdogMarginMs = 200,
   reducedMotion = false
 } = {}) {
+  let motionPreference = reducedMotion;
   let currentPhase = 'challenge';
   let pendingHandle = null;
   let transitionGeneration = 0;
@@ -53,7 +72,7 @@ export function createAuthFlipController({
       currentPhase = 'success-feedback';
       completionCallback = onFlipReady;
       scheduleGuarded(() => {
-        if (reducedMotion) {
+        if (motionPreference) {
           currentPhase = 'login';
           const callback = completionCallback;
           completionCallback = null;
@@ -62,7 +81,7 @@ export function createAuthFlipController({
         }
         currentPhase = 'flipping-to-login';
         onFlipReady?.('flipping-to-login');
-        scheduleGuarded(() => completeFlip('flipping-to-login', 'login'), flipDurationMs);
+        scheduleGuarded(() => completeFlip('flipping-to-login', 'login'), flipDurationMs + watchdogMarginMs);
       }, successDelayMs);
       return true;
     },
@@ -76,7 +95,7 @@ export function createAuthFlipController({
       cancelPending();
       transitionGeneration += 1;
       completionCallback = onChallengeReady;
-      if (reducedMotion) {
+      if (currentPhase === 'success-feedback' || motionPreference) {
         currentPhase = 'challenge';
         const callback = completionCallback;
         completionCallback = null;
@@ -84,8 +103,11 @@ export function createAuthFlipController({
         return true;
       }
       currentPhase = 'flipping-to-challenge';
-      scheduleGuarded(() => completeFlip('flipping-to-challenge', 'challenge'), flipDurationMs);
+      scheduleGuarded(() => completeFlip('flipping-to-challenge', 'challenge'), flipDurationMs + watchdogMarginMs);
       return true;
+    },
+    setReducedMotion(value) {
+      motionPreference = Boolean(value);
     },
     dispose() {
       if (disposed) return;

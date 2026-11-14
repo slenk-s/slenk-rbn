@@ -6,6 +6,9 @@ import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
   createAuthFlipController,
+  authFlipViewState,
+  moveFocusToChallenge,
+  selectTurnstileSize,
   createLeaveLoginCleanup,
   createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
@@ -1844,7 +1847,7 @@ const TURNSTILE_SITEKEY = '0x4AAAAAAF-KfPS4yQCRHsCg';
 function AuthBrand() {
   return <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
 }
-function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, renderAttempt, retryWidget, successVisible }) {
+function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, retryButtonRef, renderAttempt, retryWidget, successVisible }) {
   const turnstileRef = useRef(null);
 
   useEffect(() => {
@@ -1860,6 +1863,7 @@ function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate,
         options: {
           sitekey: TURNSTILE_SITEKEY,
           action: 'login',
+          size: selectTurnstileSize(turnstileRef.current?.parentElement?.clientWidth),
           callback: (token) => onComplete(token, generation),
           'error-callback': (code) => onInvalidate('人机验证失败（错误码 ' + code + '），请重试', true, generation),
           'expired-callback': () => onInvalidate('人机验证已过期，请重新验证', true, generation),
@@ -1891,7 +1895,7 @@ function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate,
         <div ref={turnstileRef}></div>
       </div>
       {successVisible && <div className="auth-success" role="status" aria-live="polite"><span className="auth-success-check">✓</span><span>验证成功</span></div>}
-      {error && <><p className="auth-error" aria-live="polite">{error}</p><button className="btn-secondary" type="button" onClick={retryWidget}>重新加载验证</button></>}
+      {error && <><p className="auth-error" aria-live="polite">{error}</p><button ref={retryButtonRef} className="btn-secondary" type="button" onClick={retryWidget}>重新加载验证</button></>}
     </>
   );
 }
@@ -1913,6 +1917,7 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   const submittingRef = useRef(false);
   const widgetIdRef = useRef(null);
   const usernameRef = useRef(null);
+  const retryButtonRef = useRef(null);
   const flipRef = useRef(null);
   if (flipRef.current === null) {
     flipRef.current = createAuthFlipController({
@@ -1922,14 +1927,15 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   const [flipPhase, setFlipPhase] = useState(flipRef.current.phase());
   const [renderAttempt, setRenderAttempt] = useState(0);
   const stage = flow.stage(pathname);
-  const frontActive = flipPhase === 'challenge' || flipPhase === 'success-feedback';
-  const backActive = flipPhase === 'login';
-  const cardFlipped = flipPhase === 'flipping-to-login' || flipPhase === 'login';
+  const { frontActive, backActive, cardFlipped } = authFlipViewState(flipPhase);
   const rawRerenderWidget = useCallback(() => {
     flow.invalidate();
     setRenderAttempt(attempt => attempt + 1);
   }, [flow]);
   const returnCardToChallenge = useCallback(() => {
+    if (usernameRef.current === document.activeElement || document.activeElement?.type === 'password') {
+      moveFocusToChallenge({ activeElement: document.activeElement, challengeTarget: retryButtonRef.current });
+    }
     const started = flipRef.current.returnToChallenge(() => {
       setFlipPhase('challenge');
       rawRerenderWidget();
@@ -1999,7 +2005,17 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
 
   useEffect(() => {
     if (backActive) usernameRef.current?.focus();
-  }, [backActive]);
+    if (flipPhase === 'challenge' && error) retryButtonRef.current?.focus();
+  }, [backActive, error, flipPhase]);
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!media) return undefined;
+    const sync = () => flipRef.current.setReducedMotion(media.matches);
+    sync();
+    media.addEventListener?.('change', sync);
+    return () => media.removeEventListener?.('change', sync);
+  }, []);
 
   useEffect(() => {
     if (stage === 'challenge' && flow.token() !== null) {
@@ -2047,7 +2063,7 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
         <div className={'auth-flip-card' + (cardFlipped ? ' is-flipped' : '')} data-phase={flipPhase} onTransitionEnd={handleFlipTransitionEnd}>
           <section className="auth-card auth-face auth-face-front" aria-hidden={!frontActive} inert={!frontActive}>
             <AuthBrand />
-            <TurnstileChallenge error={frontActive ? error : ''} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} successVisible={flipPhase === 'success-feedback'} />
+            <TurnstileChallenge error={frontActive ? error : ''} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} retryButtonRef={retryButtonRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} successVisible={flipPhase === 'success-feedback'} />
           </section>
           <form className="auth-card auth-face auth-face-back" aria-hidden={!backActive} inert={!backActive} onSubmit={login}>
             <AuthBrand />

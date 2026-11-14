@@ -24,6 +24,9 @@ test('auth flip UI isolates inactive faces and exposes success feedback', () => 
   assert.match(source, /验证成功/);
   assert.match(source, /auth-success-check[^\n]*✓/);
   assert.match(source, /onTransitionEnd=\{handleFlipTransitionEnd\}/);
+  assert.match(source, /authFlipViewState\(flipPhase\)/);
+  assert.match(source, /moveFocusToChallenge/);
+  assert.match(source, /selectTurnstileSize/);
 });
 
 test('auth flip UI transfers focus after the back face becomes active', () => {
