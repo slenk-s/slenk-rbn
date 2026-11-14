@@ -1,5 +1,99 @@
 export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
 
+export function createAuthFlipController({
+  schedule = globalThis.setTimeout,
+  cancel = globalThis.clearTimeout,
+  successDelayMs = 450,
+  flipDurationMs = 700,
+  reducedMotion = false
+} = {}) {
+  let currentPhase = 'challenge';
+  let pendingHandle = null;
+  let transitionGeneration = 0;
+  let disposed = false;
+  let completionCallback = null;
+
+  function cancelPending() {
+    if (pendingHandle !== null) {
+      cancel(pendingHandle);
+      pendingHandle = null;
+    }
+  }
+
+  function scheduleGuarded(callback, delay) {
+    cancelPending();
+    const generation = ++transitionGeneration;
+    pendingHandle = schedule(() => {
+      if (disposed || generation !== transitionGeneration) return;
+      pendingHandle = null;
+      callback();
+    }, delay);
+  }
+
+  function completeFlip(expectedPhase, nextPhase) {
+    if (disposed || currentPhase !== expectedPhase) return false;
+    cancelPending();
+    transitionGeneration += 1;
+    currentPhase = nextPhase;
+    const callback = completionCallback;
+    completionCallback = null;
+    callback?.(nextPhase);
+    return true;
+  }
+
+  return {
+    phase() {
+      return currentPhase;
+    },
+    challengeSucceeded(onFlipReady) {
+      if (disposed || currentPhase !== 'challenge') return false;
+      currentPhase = 'success-feedback';
+      completionCallback = onFlipReady;
+      scheduleGuarded(() => {
+        if (reducedMotion) {
+          currentPhase = 'login';
+          const callback = completionCallback;
+          completionCallback = null;
+          callback?.('login');
+          return;
+        }
+        currentPhase = 'flipping-to-login';
+        onFlipReady?.('flipping-to-login');
+        scheduleGuarded(() => completeFlip('flipping-to-login', 'login'), flipDurationMs);
+      }, successDelayMs);
+      return true;
+    },
+    flipCompleted() {
+      if (currentPhase === 'flipping-to-login') return completeFlip('flipping-to-login', 'login');
+      if (currentPhase === 'flipping-to-challenge') return completeFlip('flipping-to-challenge', 'challenge');
+      return false;
+    },
+    returnToChallenge(onChallengeReady) {
+      if (disposed || currentPhase === 'challenge' || currentPhase === 'flipping-to-challenge') return false;
+      cancelPending();
+      transitionGeneration += 1;
+      completionCallback = onChallengeReady;
+      if (reducedMotion) {
+        currentPhase = 'challenge';
+        const callback = completionCallback;
+        completionCallback = null;
+        callback?.('challenge');
+        return true;
+      }
+      currentPhase = 'flipping-to-challenge';
+      scheduleGuarded(() => completeFlip('flipping-to-challenge', 'challenge'), flipDurationMs);
+      return true;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      transitionGeneration += 1;
+      cancelPending();
+      completionCallback = null;
+    }
+  };
+}
+
 export function createLeaveLoginCleanup({ flow, submittingRef, setSubmitting, setError, setUsername, setPassword, scheduleReset }) {
   return () => {
     flow.invalidate();

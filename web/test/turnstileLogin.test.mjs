@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createTurnstileLoginFlow,
+  createAuthFlipController,
   createLeaveLoginCleanup,
   createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
@@ -10,6 +11,86 @@ import {
   renderTurnstileWidget,
   subscribeTurnstileScriptLoad
 } from '../src/lib/turnstileLogin.js';
+
+test('auth flip pauses on success then completes the left flip once', () => {
+  const scheduled = [];
+  const cancelled = [];
+  const ready = [];
+  const flip = createAuthFlipController({
+    schedule(callback, ms) {
+      const task = { callback, ms, cancelled: false };
+      scheduled.push(task);
+      return task;
+    },
+    cancel(task) { task.cancelled = true; cancelled.push(task); }
+  });
+
+  assert.equal(flip.phase(), 'challenge');
+  assert.equal(flip.challengeSucceeded(() => ready.push('ready')), true);
+  assert.equal(flip.phase(), 'success-feedback');
+  assert.equal(scheduled[0].ms, 450);
+  assert.equal(flip.challengeSucceeded(() => ready.push('duplicate')), false);
+
+  scheduled[0].callback();
+  assert.equal(flip.phase(), 'flipping-to-login');
+  assert.deepEqual(ready, ['ready']);
+  assert.equal(scheduled[1].ms, 700, 'a fallback prevents a stuck transition');
+
+  assert.equal(flip.flipCompleted(), true);
+  assert.equal(flip.phase(), 'login');
+  assert.equal(scheduled[1].cancelled, true);
+  assert.equal(flip.flipCompleted(), false, 'transitionend and fallback are idempotent');
+});
+
+test('auth flip reverses to challenge and ignores stale fallback completion', () => {
+  const scheduled = [];
+  const flip = createAuthFlipController({
+    schedule(callback, ms) { const task = { callback, ms, cancelled: false }; scheduled.push(task); return task; },
+    cancel(task) { task.cancelled = true; }
+  });
+  flip.challengeSucceeded(() => {});
+  scheduled[0].callback();
+  flip.flipCompleted();
+
+  const challengeReady = [];
+  assert.equal(flip.returnToChallenge(() => challengeReady.push('ready')), true);
+  assert.equal(flip.phase(), 'flipping-to-challenge');
+  const reverseFallback = scheduled.at(-1);
+  assert.equal(reverseFallback.ms, 700);
+  assert.equal(flip.flipCompleted(), true);
+  assert.equal(flip.phase(), 'challenge');
+  assert.deepEqual(challengeReady, ['ready']);
+  reverseFallback.callback();
+  assert.equal(flip.phase(), 'challenge');
+  assert.deepEqual(challengeReady, ['ready']);
+});
+
+test('auth flip dispose cancels pending work and reduced motion preserves success feedback', () => {
+  const scheduled = [];
+  const flip = createAuthFlipController({
+    schedule(callback, ms) { const task = { callback, ms, cancelled: false }; scheduled.push(task); return task; },
+    cancel(task) { task.cancelled = true; },
+    reducedMotion: true
+  });
+  let ready = 0;
+  flip.challengeSucceeded(() => { ready += 1; });
+  assert.equal(flip.phase(), 'success-feedback');
+  assert.equal(scheduled[0].ms, 450);
+  scheduled[0].callback();
+  assert.equal(flip.phase(), 'login');
+  assert.equal(ready, 1);
+  assert.equal(scheduled.length, 1, 'reduced motion skips the 700ms transition fallback');
+
+  assert.equal(flip.returnToChallenge(() => { ready += 1; }), true);
+  assert.equal(flip.phase(), 'challenge');
+  assert.equal(ready, 2);
+  flip.challengeSucceeded(() => { ready += 1; });
+  const pending = scheduled.at(-1);
+  flip.dispose();
+  assert.equal(pending.cancelled, true);
+  pending.callback();
+  assert.equal(ready, 2, 'disposed callbacks cannot advance the phase');
+});
 
 test('Turnstile two-stage login keeps a fresh challenge token in memory only', () => {
   const flow = createTurnstileLoginFlow();
