@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const css = fs.readFileSync(new URL('../src/App.css', import.meta.url), 'utf8');
 
 test('auth flip UI renders one two-sided scene with shared branding', () => {
   assert.match(source, /className="auth-screen"/);
@@ -30,4 +31,31 @@ test('auth flip UI transfers focus after the back face becomes active', () => {
   assert.match(source, /ref=\{usernameRef\}/);
   assert.match(source, /usernameRef\.current\?\.focus\(\)/);
   assert.match(source, /disabled=\{submitting\s*\|\|\s*!backActive\}/);
+});
+
+test('auth flip CSS provides perspective, backface isolation, and a left 700ms turn', () => {
+  assert.match(css, /\.auth-flip-scene[\s\S]*?perspective\s*:/);
+  assert.match(css, /\.auth-flip-card[\s\S]*?transform-style\s*:\s*preserve-3d/);
+  assert.match(css, /\.auth-face[\s\S]*?backface-visibility\s*:\s*hidden/);
+  assert.match(css, /\.auth-face-back[\s\S]*?rotateY\(180deg\)/);
+  assert.match(css, /\.auth-flip-card\.is-flipped[\s\S]*?rotateY\(-180deg\)/);
+  assert.match(css, /transition\s*:\s*transform\s+700ms/);
+  assert.match(css, /transform-origin\s*:\s*center\s+center/);
+});
+
+test('auth flip CSS uses the selected glass surface and success treatment', () => {
+  assert.match(css, /\.auth-face[\s\S]*?linear-gradient/);
+  assert.match(css, /\.auth-face[\s\S]*?backdrop-filter\s*:\s*blur\(18px\)/);
+  assert.match(css, /\.auth-face[\s\S]*?border\s*:/);
+  assert.match(css, /\.auth-success[\s\S]*?background/);
+  assert.match(css, /\.auth-success-check[\s\S]*?border-radius\s*:\s*50%/);
+  assert.match(css, /\.auth-face\[aria-hidden="true"\][\s\S]*?pointer-events\s*:\s*none/);
+});
+
+test('auth flip CSS supports reduced motion and narrow screens without overflow', () => {
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(css, /prefers-reduced-motion:[\s\S]*?\.auth-flip-card[\s\S]*?transition-duration/);
+  assert.match(css, /@media\s*\(max-width:\s*600px\)/);
+  assert.match(css, /max-width\s*:\s*calc\(100vw\s*-\s*32px\)/);
+  assert.match(css, /overflow-x\s*:\s*clip/);
 });
