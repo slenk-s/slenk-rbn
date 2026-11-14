@@ -154,14 +154,39 @@ async function countTasksByType(userId, type, tab) {
 }
 
 // 任务结果全站共享：列表与详情不再按 user_id 过滤，附带生成者用户名用于前端署名。
+// 列表接口被前端每 4 秒轮询（任务全站共享），只回展示所需字段；
+// result/payload 是重 JSONB，改由 /api/tasks/:id 按需拉取（结果面板/详情弹窗才需要）。
+const TASK_LIST_COLUMNS = `t.id, t.user_id, u.username, t.type, t.label, t.status, t.tab,
+  t.provider_id, t.created_at, t.updated_at, t.error,
+  t.payload->>'noteId' as note_id, t.payload->>'noteTitle' as note_title,
+  t.payload->>'purpose' as purpose`;
+
+function mapTaskListRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || null,
+    type: row.type,
+    label: displayTaskLabel({ ...row, payload: { purpose: row.purpose } }),
+    status: row.status,
+    tab: row.tab,
+    providerId: row.provider_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    error: row.error,
+    noteId: row.note_id || null,
+    noteTitle: row.note_title || null
+  };
+}
+
 async function listAllTasks(limit = 200) {
   const { rows } = await query(
-    `select t.*, u.username from slenk_notes_tasks t
+    `select ${TASK_LIST_COLUMNS} from slenk_notes_tasks t
      left join slenk_notes_users u on u.id = t.user_id
      order by t.created_at desc limit $1`,
     [limit]
   );
-  return rows.map(mapTask);
+  return rows.map(mapTaskListRow);
 }
 
 async function getTaskById(id) {

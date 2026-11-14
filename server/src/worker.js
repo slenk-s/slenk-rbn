@@ -13,6 +13,7 @@ import { collectReferenceImages } from './lib/referenceImages.js';
 import { uploadResultAsset } from './cloudStorage.js';
 import { capImageSize } from './lib/imageFormat.js';
 import { publishNoteToXhs } from './lib/xhsPublish.js';
+import { mapConcurrent } from './lib/concurrency.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -448,7 +449,11 @@ async function runImage(payload, provider, id) {
   const pathname = referenceCount ? '/images/edits' : '/images/generations';
   // 每张参考图单独一次编辑请求，count 是每张参考图的张数，最终张数 = 参考图数 x count。
   const perReference = pathname === '/images/edits' && referenceCount > 1 && payload.perReference !== false;
-  const requests = perReference ? referenceCount * count : count;
+  const requestConcurrency = Math.max(1, Math.min(4, Number(process.env.IMAGE_REQUEST_CONCURRENCY) || 2));
+  // 无参考图 → /images/generations 支持 n=1..10（中转站文档「单次返回图片数」），一次批量返回多张，
+  // 免掉 count-1 次串行往返；有参考图走 /images/edits，其 n 仅支持 1（文档示例亦如此），只能逐张请求。
+  const canBatch = !referenceCount && count > 1;
+  const requests = canBatch ? 1 : (perReference ? referenceCount * count : count);
   const splitPrompts = perReference ? splitPromptByReference(prompt, referenceCount) : null;
   const referenceIndexes = [];
   const images = [];
@@ -465,10 +470,11 @@ async function runImage(payload, provider, id) {
     }
     return refSizeCache.get(idx);
   }
-  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests }));
-  for (let i = 0; i < requests; i++) {
+  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests, batch: canBatch ? count : 1, concurrency: requestConcurrency }));
+  // 单次请求：n 传入批量张数时一次拿回 n 张（/images/generations），否则 n=1（/images/edits）。
+  const requestOne = async (i, n = 1) => {
     const refIndex = perReference ? (i % referenceCount) : -1;
-    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n: 1, size: await requestSize(refIndex) };
+    const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n, size: await requestSize(refIndex) };
     let res;
     if (useFormApi) {
       const partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
@@ -484,12 +490,45 @@ async function runImage(payload, provider, id) {
     if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
     // 中转站（litellm）会把上游 400 包进 HTTP 200 的 body：error 字段存在同样按失败抛出。
     if (data?.error) { console.error('image api soft error', pathname, JSON.stringify(data.error)); errorFromApi(data, res, 'ai_image_error'); }
-    lastData = data;
-    const asset = await extractImageAsset(data, id, i);
+    return { data };
+  };
+  const pushAsset = async (data, index, refIndex) => {
+    const asset = await extractImageAsset(data, id, index);
     if (asset) {
       images.push(asset.url);
       localImages.push(asset.local);
       referenceIndexes.push(refIndex >= 0 ? refIndex + 1 : images.length);
+      return true;
+    }
+    return false;
+  };
+  if (canBatch) {
+    // 无参考图 + 多张：单次 n=count 批量返回，省掉 count-1 次串行往返（常规单张 120s）。
+    const { data } = await requestOne(0, count);
+    lastData = data;
+    const items = (Array.isArray(data?.data) && data.data.length ? data.data : [data])
+      .map(item => typeof item === 'string' ? { url: item } : item);
+    let produced = 0;
+    for (let k = 0; k < items.length && produced < count; k++) {
+      if (await pushAsset(items[k], k, -1)) produced++;
+    }
+    // 供应商忽略 n（只回 1 张）时补足，维持「返回 count 张」的既有契约。
+    if (produced < count) {
+      console.warn(`[worker] 批量 n=${count} 实际返回 ${produced} 张，补足 ${count - produced} 张`);
+      const missing = Array.from({ length: count - produced }, (_, j) => produced + j);
+      const results = await mapConcurrent(missing, requestConcurrency, i => requestOne(i, 1));
+      for (let j = 0; j < results.length; j++) {
+        lastData = results[j].data;
+        await pushAsset(results[j].data, missing[j], -1);
+      }
+    }
+  } else {
+    // 有参考图（或 count=1）：n=1 逐张请求；不同参考图/序号相互独立，小并发池加速，输出按序回填。
+    const results = await mapConcurrent(Array.from({ length: requests }, (_, i) => i), requestConcurrency, i => requestOne(i, 1));
+    for (let i = 0; i < results.length; i++) {
+      lastData = results[i].data;
+      const refIndex = perReference ? (i % referenceCount) : -1;
+      await pushAsset(results[i].data, i, refIndex);
     }
   }
   // 没出图就是失败：把上游错误信息带进任务，而不是把原始 JSON 当结果存起来。
@@ -627,24 +666,26 @@ function renderOneVideo(input, output, payload, id) {
 }
 
 // 多张图片：同一任务内逐张出片，videos/localVideos 按输入顺序回填，前端结果区并列展示。
+// 每张是独立的 ffmpeg 编码（不同输出文件），用有界并发池并行，避免多图任务串行放大墙钟时间。
+// 默认 2 路（ffmpeg 是 CPU 密集，过高反而争抢核），可用 env VIDEO_CONCURRENCY 调 1–4。
 async function makeVideos(payload, id) {
   const urls = (payload.mediaUrls || []).filter(Boolean);
   if (!urls.length) throw new Error('图片素材缺失，请先上传实况视频图片。');
-  const videos = [];
-  const localVideos = [];
-  const localPaths = [];
-  for (let i = 0; i < urls.length; i++) {
-    const input = resolveUploadUrl(urls[i]);
+  const concurrency = Math.max(1, Math.min(4, Number(process.env.VIDEO_CONCURRENCY) || 2));
+  const results = await mapConcurrent(urls, concurrency, async (url, i) => {
+    const input = resolveUploadUrl(url);
     const multi = urls.length > 1;
     const out = path.join(videoDir, multi ? `${id}-${i + 1}.mp4` : `${id}.mp4`);
     await renderOneVideo(input, out, payload, multi ? `${id}#${i + 1}` : id);
     const local = `/videos/${path.basename(out)}`;
     const cloud = await uploadResultAsset(out, path.basename(out), 'video/mp4');
-    videos.push(cloud || local);
-    localVideos.push(local);
-    localPaths.push(out);
-  }
-  return { videos, localVideos, localPaths };
+    return { video: cloud || local, localVideo: local, localPath: out };
+  });
+  return {
+    videos: results.map(r => r.video),
+    localVideos: results.map(r => r.localVideo),
+    localPaths: results.map(r => r.localPath)
+  };
 }
 
 new Worker('ai-tasks', async (job) => {
