@@ -3,14 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   MAX_QR_IMAGE_LENGTH,
-  authStatusPresentation,
   boundedSessionError,
   dashboardPollFailureDisposition,
   fetchWithDeadline,
   focusNavigationIndex,
   formatAuthExpiry,
   formatRemainingTime,
-  operationTransition,
   safeAuthorizeUrl,
   safeQrImage
 } from '../src/redappAuthUi.js';
@@ -45,27 +43,12 @@ test('formatAuthExpiry handles seconds, milliseconds, and invalid values safely'
   assert.equal(formatAuthExpiry('C:/credentials.json'), '未提供');
 });
 
-test('authStatusPresentation distinguishes unknown, unavailable, reauth, connected, and disconnected states', () => {
-  assert.deepEqual(authStatusPresentation(null), { tone: 'unknown', label: '状态未知' });
-  assert.deepEqual(authStatusPresentation({ available: false }), { tone: 'unavailable', label: 'CLI 不可用' });
-  assert.deepEqual(authStatusPresentation({ available: true, loggedIn: true, needsReauth: true }), { tone: 'warning', label: '需要重新授权' });
-  assert.deepEqual(authStatusPresentation({ available: true, loggedIn: true, needsReauth: false }), { tone: 'connected', label: '已连接' });
-  assert.deepEqual(authStatusPresentation({ available: true, loggedIn: false }), { tone: 'idle', label: '未连接' });
-});
-
 test('safeQrImage accepts the full encoded form of a 2 MiB raster and rejects beyond it', () => {
   const prefix = 'data:image/png;base64,';
   assert.equal(MAX_QR_IMAGE_LENGTH, Math.ceil(2 * 1024 * 1024 / 3) * 4 + 64);
   const valid = prefix + 'A'.repeat(MAX_QR_IMAGE_LENGTH - prefix.length);
   assert.equal(safeQrImage(valid), valid);
   assert.equal(safeQrImage(valid + 'A'), '');
-});
-
-test('operation generation permits only the latest operation to commit', () => {
-  const first = operationTransition({ generation: 0 }, 'start');
-  const second = operationTransition(first.state, 'start');
-  assert.equal(operationTransition(second.state, 'commit', first.generation).commit, false);
-  assert.equal(operationTransition(second.state, 'commit', second.generation).commit, true);
 });
 
 test('account-scoped cancel keeps polling on failure and applies terminal state on success', () => {

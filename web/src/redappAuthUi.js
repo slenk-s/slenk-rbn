@@ -93,19 +93,3 @@ export function focusNavigationIndex(currentIndex, count, direction) {
   if (currentIndex < 0) return direction < 0 ? count - 1 : 0;
   return (currentIndex + direction + count) % count;
 }
-
-export function operationTransition(state, event, generation) {
-  if (event === 'start') {
-    const nextGeneration = state.generation + 1;
-    return { state: { ...state, generation: nextGeneration }, generation: nextGeneration };
-  }
-  return { state, commit: generation === state.generation };
-}
-
-export function authStatusPresentation(auth) {
-  if (!auth) return { tone: 'unknown', label: '状态未知' };
-  if (!auth.available) return { tone: 'unavailable', label: 'CLI 不可用' };
-  if (auth.loggedIn && auth.needsReauth) return { tone: 'warning', label: '需要重新授权' };
-  if (auth.loggedIn) return { tone: 'connected', label: '已连接' };
-  return { tone: 'idle', label: '未连接' };
-}
