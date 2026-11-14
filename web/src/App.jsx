@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import QRCode from 'qrcode';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { diffLines } from './diffText.js';
 import { fetchJsonWithTimeout, fetchWithTimeout } from './fetchWithTimeout.js';
+import { useTabFormState } from './useTabFormState.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
@@ -595,7 +595,7 @@ function Dashboard({ token, me, activeProviderId, activeTextProviderId, activeIm
     <section className="dashboard-settings">
       <section className="card dashboard-hero"><div className="hero-copy"><span className="eyebrow">全站设置区</span><h2>仪表盘</h2><p>集中查看运行状态，并管理 AI 供应商、本地存储、队列与视频 worker。</p></div><div className="hero-stats"><div><b>{providers.length}</b><span>供应商</span></div><div><b>{tasks.length}</b><span>任务</span></div><div><b>Local</b><span>存储</span></div></div></section>
       <div className="dashboard-row">
-        <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，每 4 秒刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={toggleManage}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div>{manageMode && <div className="task-batch-bar"><label className="task-select-all"><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />全选</label><span className="task-batch-count">{selectedCount ? '已选 ' + selectedCount + ' 个' : '勾选后可批量删除'}</span><button type="button" className={confirmingDelete ? 'task-view-btn task-delete-btn confirm-armed' : 'task-view-btn task-delete-btn'} disabled={!selectedCount} onClick={deleteSelectedTasks}>{confirmingDelete ? '确认删除 ' + selectedCount + ' 个？' : '删除所选'}</button></div>}<ul className="task-list">{tasks.map(t => { const canDelete = me?.isAdmin || t.userId === me?.id; return <li key={t.id} data-status={t.status}><div className="task-status-row">{manageMode && canDelete ? <input type="checkbox" className="task-select" checked={selectedIds.has(t.id)} onChange={() => toggleTaskSelect(t.id)} aria-label={'选择 ' + (t.label || t.type)} /> : null}<b>{t.label || t.type}</b>{t.username ? <span className="task-owner">{t.username}</span> : null}<span>{t.status}</span>{!manageMode && <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>; })}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
+        <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，跨用户共享，自动轮询刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={toggleManage}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div>{manageMode && <div className="task-batch-bar"><label className="task-select-all"><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />全选</label><span className="task-batch-count">{selectedCount ? '已选 ' + selectedCount + ' 个' : '勾选后可批量删除'}</span><button type="button" className={confirmingDelete ? 'task-view-btn task-delete-btn confirm-armed' : 'task-view-btn task-delete-btn'} disabled={!selectedCount} onClick={deleteSelectedTasks}>{confirmingDelete ? '确认删除 ' + selectedCount + ' 个？' : '删除所选'}</button></div>}<ul className="task-list">{tasks.map(t => { const canDelete = me?.isAdmin || t.userId === me?.id; return <li key={t.id} data-status={t.status}><div className="task-status-row">{manageMode && canDelete ? <input type="checkbox" className="task-select" checked={selectedIds.has(t.id)} onChange={() => toggleTaskSelect(t.id)} aria-label={'选择 ' + (t.label || t.type)} /> : null}<b>{t.label || t.type}</b>{t.username ? <span className="task-owner">{t.username}</span> : null}<span>{t.status}</span>{!manageMode && <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>; })}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
         <ProviderManager token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
       </div>
       <RedappAuthCard apiBase={API} token={token} setMessage={setMessage} />
@@ -622,14 +622,14 @@ function groupTasksByNote(list) {
   const byId = new Map();
   const ungrouped = [];
   for (const t of sorted) {
-    const nid = t.payload && t.payload.noteId;
+    const nid = t.noteId;
     if (!nid) { ungrouped.push(t); continue; }
     if (!byId.has(nid)) byId.set(nid, []);
     byId.get(nid).push(t);
   }
   const groups = [...byId.entries()].map(([key, tasks]) => ({
     key,
-    title: String(tasks[0]?.payload?.noteTitle || '').trim() || '未命名笔记',
+    title: String(tasks[0]?.noteTitle || '').trim() || '未命名笔记',
     tasks,
   }));
   if (ungrouped.length) groups.push({ key: '__ungrouped', title: '未分组', tasks: ungrouped });
@@ -660,7 +660,9 @@ function DiffCell({ line }) {
   if (line.type !== 'changed' || !line.pairs) return <span>{line.new}</span>;
   return <span>{line.pairs.map((p, i) => p.type === 'changed' ? <mark key={i}>{p.new}</mark> : <span key={i}>{p.new}</span>)}</span>;
 }
-function renderFieldDiff(fieldKey, oldText, newText, titleCandidates, activeIndex, onSelectCandidate, draftTags, onDraftTagsChange) {
+function FieldDiffView({ fieldKey, oldText, newText, titleCandidates, activeIndex, onSelectCandidate, draftTags, onDraftTagsChange }) {
+  // diffLines 是 O(行×词) 计算，只在 oldText/newText 变时算一次；草稿话题打字不触发重算。
+  const diff = useMemo(() => diffLines(oldText, newText), [oldText, newText]);
   if (fieldKey === 'title' && Array.isArray(titleCandidates) && titleCandidates.length) {
     return (
       <div className="diff-title-options">
@@ -682,7 +684,7 @@ function renderFieldDiff(fieldKey, oldText, newText, titleCandidates, activeInde
   }
   return (
     <div className="diff-lines">
-      {diffLines(oldText, newText).map((line, index) => (
+      {diff.map((line, index) => (
         <div key={index} className="diff-line" data-type={line.type}>
           <div className="diff-code"><DiffCell line={line} /></div>
         </div>
@@ -1356,6 +1358,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       const res = await fetch(API + '/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ title, content, tags, images }) });
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || '生成失败');
+      const { default: QRCode } = await import('qrcode');
       const qrDataUrl = await QRCode.toDataURL(data.url, { width: 320, margin: 2 });
       setQr({ url: data.url, image: qrDataUrl });
       setStatus('二维码已生成，手机扫码预览笔记。');
@@ -1471,7 +1474,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
             <h3>{aiDiff.title} · 改动对比</h3>
             <p>{aiDiff.message}确认后才会写入表单。</p>
             <div className="diff-panel">
-              {renderFieldDiff(aiDiff.fieldKey, aiDiff.oldText, aiDiff.newText, aiDiff.titleCandidates, aiDiff.activeIndex, (index) => setAiDiff(prev => prev && { ...prev, activeIndex: index }), aiDiff.draftTags, (value) => setAiDiff(prev => prev && { ...prev, draftTags: value, newText: value }))}
+              {<FieldDiffView fieldKey={aiDiff.fieldKey} oldText={aiDiff.oldText} newText={aiDiff.newText} titleCandidates={aiDiff.titleCandidates} activeIndex={aiDiff.activeIndex} onSelectCandidate={(index) => setAiDiff(prev => prev && { ...prev, activeIndex: index })} draftTags={aiDiff.draftTags} onDraftTagsChange={(value) => setAiDiff(prev => prev && { ...prev, draftTags: value, newText: value })} />}
             </div>
             <div className="prompt-config-actions">
               <button type="button" className="btn-secondary" onClick={() => setAiDiff(null)}>取消</button>
@@ -1575,23 +1578,18 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
   );
 }
 
+// 隐藏的 rewrite/download 工作区只吃 5 个稳定 props：memo 后父组件状态变化（打字/轮询）
+// 不再触发两个 display:none 工作区重渲；onSendToVideo/onOpenAccountManager 已用 useCallback 稳定。
+const MemoNoteRewriteWorkspace = memo(NoteRewriteWorkspace);
+
 
 function Workspace({ token }) {
   const [active, setActive] = useState('dashboard');
   const [lastToolTab, setLastToolTab] = useState('replace-image');
-  const [textByTab, setTextByTab] = useState({});
-  const [defaultPromptByTab, setDefaultPromptByTab] = useState({});
-  const [secondaryPromptByTab, setSecondaryPromptByTab] = useState({});
-  const [filesByTab, setFilesByTab] = useState({});
-  const [noteDrafts, setNoteDrafts] = useState({});
-  const [canvasSizeByTab, setCanvasSizeByTab] = useState({});
-  const [outputCountByTab, setOutputCountByTab] = useState({});
-  const [perReferenceByTab, setPerReferenceByTab] = useState({});
-  const [motionEffectByTab, setMotionEffectByTab] = useState({});
-  const [durationModeByTab, setDurationModeByTab] = useState({});
-  const [customDurationByTab, setCustomDurationByTab] = useState({});
-  const [shakeStrengthByTab, setShakeStrengthByTab] = useState({});
-  const [shakeFrequencyByTab, setShakeFrequencyByTab] = useState({});
+  // 页签表单状态（text/提示词/文件/画布/运镜等 12 组）已抽到 useTabFormState，
+  // 派生值与 setter 名字与原局部变量一致，下方 JSX 与 handler 零改动。
+  // 刻意不解构 durationMode/setDurationMode：它们从未被读取（submit 硬编码 'fixed'）。
+  const { text, defaultPrompt, secondaryPrompt, files, canvasSize, outputCount, perReference, motionEffect, customDuration, shakeStrength, shakeFrequency, setText, setDefaultPrompt, setSecondaryPrompt, setFiles, setCanvasSize, setOutputCount, setPerReference, setMotionEffect, setCustomDuration, setShakeStrength, setShakeFrequency, seedDefaultPrompt, addFileToTab } = useTabFormState({ active, prompts: PROMPTS });
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [taskDetailId, setTaskDetailId] = useState('');
   const [lightbox, setLightbox] = useState(null);
@@ -1615,42 +1613,11 @@ function Workspace({ token }) {
   const uploadLabel = isLiveVideo ? '图片' : isFileFocused ? '文件' : '图片';
   const uploadAccept = isLiveVideo ? UPLOAD_ACCEPT.image : isFileFocused ? UPLOAD_ACCEPT.all : UPLOAD_ACCEPT.image;
   useEffect(() => {
-    const prompt = PROMPTS[active] || '';
-    setDefaultPromptByTab(prev => (prev[active] !== undefined ? prev : { ...prev, [active]: prompt }));
+    seedDefaultPrompt(active);
     if (active !== 'dashboard') setLastToolTab(active);
-  }, [active]);
-
-  const text = textByTab[active] || '';
-  const defaultPrompt = defaultPromptByTab[active] !== undefined ? defaultPromptByTab[active] : (PROMPTS[active] || '');
-  const secondaryPrompt = secondaryPromptByTab[active] || '';
-  const files = filesByTab[active] || [];
-  const noteDraft = noteDrafts[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] };
-  // 默认画布：竖版 3:4（小红书笔记最常用的比例）。
-  const canvasSize = canvasSizeByTab[active] || '1080x1440';
-  const outputCount = outputCountByTab[active] || '1';
-  // 多张参考图时默认按图号一一对应生成；要「多张参考图合成一张」时关掉这个开关。
-  const perReference = perReferenceByTab[active] !== false;
-  const motionEffect = motionEffectByTab[active] || '手持轻晃';
-  const durationMode = durationModeByTab[active] || 'fixed';
-  const customDuration = customDurationByTab[active] || '3';
-  // 用 ?? 而不是 ||：用户显式调到 0（静止画面）必须能生效，只有从未设置时才用默认值。
-  const shakeStrength = shakeStrengthByTab[active] ?? 35;
-  const shakeFrequency = shakeFrequencyByTab[active] ?? 45;
-  const setText = (v) => setTextByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
-  const setNoteDraft = (v) => setNoteDrafts(prev => ({ ...prev, [active]: { ...(prev[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] }), ...(typeof v === 'function' ? v(prev[active] || { link: '', title: '', content: '', tags: [], tagInput: '', selectedImageIds: [] }) : v) } }));
-  const setDefaultPrompt = (v) => setDefaultPromptByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
-  const setSecondaryPrompt = (v) => setSecondaryPromptByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '') : v }));
-  const setFiles = (v) => setFilesByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || []) : v }));
-  const setCanvasSize = (v) => setCanvasSizeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1080x1440') : v }));
-  const setOutputCount = (v) => setOutputCountByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '1') : v }));
-  const setPerReference = (v) => setPerReferenceByTab(prev => ({ ...prev, [active]: v }));
+  }, [active, seedDefaultPrompt]);
   const fileInputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
-  const setMotionEffect = (v) => setMotionEffectByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '手持轻晃') : v }));
-  const setDurationMode = (v) => setDurationModeByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || 'fixed') : v }));
-  const setCustomDuration = (v) => setCustomDurationByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || '3') : v }));
-  const setShakeStrength = (v) => setShakeStrengthByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || 0) : v }));
-  const setShakeFrequency = (v) => setShakeFrequencyByTab(prev => ({ ...prev, [active]: typeof v === 'function' ? v(prev[active] || 0) : v }));
   const refresh = useCallback(async () => {
     try {
       const [taskData, providerData] = await Promise.all([api('/api/tasks', { token }), api('/api/providers', { token })]);
@@ -1665,15 +1632,19 @@ function Workspace({ token }) {
       setTasks(taskData.tasks || []);
     } catch (err) { setStatus(err.message); }
   }, [token]);
+  // 有非终态任务时 4 秒快速轮询（结果区要跟进状态），全部终态则退到 30 秒心跳：
+  // 既保持跨用户任务可见，又避免空闲时每 4 秒拉一次轻量列表 + 整树重渲。
+  const hasActiveTasks = tasks.some(t => !['done', 'failed'].includes(t.status));
   useEffect(() => {
     if (!token) return;
     refresh();
+    const interval = hasActiveTasks ? 4000 : 30000;
     const tick = () => { if (!document.hidden) refreshTasks(); };
-    const timer = setInterval(tick, 4000);
+    const timer = setInterval(tick, interval);
     const onVisible = () => { if (!document.hidden) refreshTasks(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
-  }, [token, refresh, refreshTasks]);
+  }, [token, refresh, refreshTasks, hasActiveTasks]);
   useEffect(() => { if (!token) return; api('/api/auth/me', { token }).then(data => setMe(data.user || null)).catch(() => setMe(null)); }, [token]);
   const clearedTabs = useRef(new Set());
   const pendingTaskId = useRef('');
@@ -1701,13 +1672,12 @@ function Workspace({ token }) {
     setSelectedTaskId(result.id || ''); await refresh();
   }
   // 笔记改写/商品下载的图片卡片一键把图送进实况视频页输入区：追加到最后，不跳转页面。
-  function sendImageToVideo(file) {
+  const sendImageToVideo = useCallback(function (file) {
     if (!file || !file.url) return;
-    const cur = filesByTab['live-video'] || [];
-    if (cur.some(f => f.url === file.url)) { setStatus('这张图已在实况视频输入区。'); return; }
-    setFilesByTab(prev => ({ ...prev, 'live-video': [...(prev['live-video'] || []), { url: file.url, name: file.name || '笔记图片' }].slice(0, 9) }));
-    setStatus('已传送到实况视频的图片输入区。');
-  }
+    const added = addFileToTab('live-video', { url: file.url, name: file.name || '笔记图片' });
+    setStatus(added ? '已传送到实况视频的图片输入区。' : '这张图已在实况视频输入区。');
+  }, [addFileToTab]);
+  const openAccountManager = useCallback(() => setActive('dashboard'), []);
   function viewTask(taskId) { setSelectedTaskId(taskId); const task = tasks.find(t => t.id === taskId); const targetTab = task ? (task.tab || TYPE_TO_TAB[task.type] || lastToolTab) : lastToolTab; clearedTabs.current.delete(targetTab); setActive(targetTab); setLastToolTab(targetTab); }
   function openTaskDetail(taskId) { setTaskDetailId(taskId); }
   async function uploadMany(list) {
@@ -1733,12 +1703,28 @@ function Workspace({ token }) {
     return createTask('rewrite', { prompt: submitText, source: text.trim() || submitText, canvasSize, providerId: selectedProviderId, model: selectedModelName });
   }
   function resetPrompt() { setText(PROMPTS[active] || ''); }
-  const currentTask = tasks.find(t => t.id === selectedTaskId);
   const [collapsedTaskGroups, setCollapsedTaskGroups] = useState(() => new Set());
   // 侧边栏任务列表只显示当前功能的任务；早期任务可能没有 tab 字段，用 TYPE_TO_TAB 兜底。
-  const tabTasks = active === 'dashboard' ? [] : tasks.filter(t => (t.tab || TYPE_TO_TAB[t.type]) === active);
-  const taskGroups = groupTasksByNote(tabTasks);
-  const taskDetail = tasks.find(t => t.id === taskDetailId);
+  const tabTasks = useMemo(() => active === 'dashboard' ? [] : tasks.filter(t => (t.tab || TYPE_TO_TAB[t.type]) === active), [tasks, active]);
+  const taskGroups = useMemo(() => groupTasksByNote(tabTasks), [tabTasks]);
+  // 列表行是轻量投影（无 result/payload）；结果面板与详情弹窗按需拉 /api/tasks/:id 并缓存，
+  // 列表状态变了（如 running→done）再重拉拿到 result，避免结果区空转或读到旧状态。
+  const [detailById, setDetailById] = useState({});
+  const ensureDetail = useCallback(async (id) => {
+    if (!id) return;
+    const row = tasks.find(t => t.id === id);
+    const cached = detailById[id];
+    // 已缓存且与列表状态一致（无列表行时按缓存为准）就跳过；状态变了才重拉。
+    if (cached && cached.status === (row?.status ?? cached.status)) return;
+    try {
+      const { task } = await api(`/api/tasks/${id}`, { token });
+      setDetailById(prev => ({ ...prev, [id]: task }));
+    } catch { /* 列表行仍在，下次轮询再试 */ }
+  }, [tasks, detailById, token]);
+  useEffect(() => { if (selectedTaskId) ensureDetail(selectedTaskId); }, [selectedTaskId, ensureDetail]);
+  useEffect(() => { if (taskDetailId) ensureDetail(taskDetailId); }, [taskDetailId, ensureDetail]);
+  const currentTask = detailById[selectedTaskId] || tasks.find(t => t.id === selectedTaskId) || null;
+  const taskDetail = detailById[taskDetailId] || tasks.find(t => t.id === taskDetailId) || null;
   // 不能只看 TAB_TO_TYPE：ai-image / replace-image 不在 TYPE_TO_TAB 的反向映射里，
   // 否则会被误判成文本模式，页面芯片和提交都会错用文本供应商。
   const activeMode = TEXT_TABS.has(active) || FILE_TABS.has(active) ? 'text' : 'image';
@@ -1784,8 +1770,8 @@ function Workspace({ token }) {
           ))}{tabTasks.length === 0 && <li className="empty-task">当前功能暂无任务</li>}</ul></div>)}
         </aside>
         <main className="workspace">
-          <NoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} onSendToVideo={sendImageToVideo} onOpenAccountManager={() => setActive('dashboard')} />
-          <NoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} onSendToVideo={sendImageToVideo} onOpenAccountManager={() => setActive('dashboard')} />
+          <MemoNoteRewriteWorkspace token={token} mode="rewrite" hidden={active !== 'note-rewrite'} onSendToVideo={sendImageToVideo} onOpenAccountManager={openAccountManager} />
+          <MemoNoteRewriteWorkspace token={token} mode="download" hidden={active !== 'note-download'} onSendToVideo={sendImageToVideo} onOpenAccountManager={openAccountManager} />
           {active === 'dashboard' ? (
             <Dashboard token={token} me={me} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={(nextProviders, nextActiveProviderId, nextActiveTextProviderId, nextActiveImageProviderId) => { setProviders(nextProviders || []); setActiveProviderId(nextActiveProviderId || ''); if (nextActiveTextProviderId !== undefined) setActiveTextProviderId(nextActiveTextProviderId || ''); if (nextActiveImageProviderId !== undefined) setActiveImageProviderId(nextActiveImageProviderId || ''); }} onProvidersUpdate={(data) => { setProviders(data.providers || []); setActiveProviderId(data.activeProviderId || ''); setActiveTextProviderId(data.activeTextProviderId || ''); setActiveImageProviderId(data.activeImageProviderId || ''); }} tasks={tasks} setMessage={ setStatus} selectedTaskId={selectedTaskId} onViewTask={openTaskDetail} onTaskDelete={async (id) => { await api('/api/tasks/' + id, { method: 'DELETE', token }); await refresh(); setStatus('任务已删除。'); }} onTasksDelete={async (ids) => { const r = await api('/api/tasks/batch-delete', { method: 'POST', token, body: JSON.stringify({ ids }) }); await refresh(); setStatus('已删除 ' + (r.deleted ?? ids.length) + ' 个任务。'); }} />
           ) : active === 'note-rewrite' || active === 'note-download' ? null : (
