@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { diffLines } from './diffText.js';
-import { fetchWithTimeout } from './fetchWithTimeout.js';
+import { fetchJsonWithTimeout, fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
@@ -1843,15 +1843,15 @@ const TURNSTILE_SITEKEY = '0x4AAAAAAF-KfPS4yQCRHsCg';
 function AuthBrand() {
   return <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
 }
-function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdRef }) {
+function TurnstileChallenge({ error, hidden, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, renderAttempt, retryWidget }) {
   const turnstileRef = useRef(null);
-  const [renderAttempt, setRenderAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let cleanupScript = null;
     function render() {
       if (cancelled) return;
+      const generation = onBeginChallenge();
       renderTurnstileWidget({
         turnstile: window.turnstile,
         container: turnstileRef.current,
@@ -1859,11 +1859,11 @@ function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdR
         options: {
           sitekey: TURNSTILE_SITEKEY,
           action: 'login',
-          callback: onComplete,
-          'error-callback': (code) => onInvalidate('人机验证失败（错误码 ' + code + '），请重试', true),
-          'expired-callback': () => onInvalidate('人机验证已过期，请重新验证', true),
+          callback: (token) => onComplete(token, generation),
+          'error-callback': (code) => onInvalidate('人机验证失败（错误码 ' + code + '），请重试', true, generation),
+          'expired-callback': () => onInvalidate('人机验证已过期，请重新验证', true, generation),
         },
-        onRenderError: () => onInvalidate('人机验证初始化失败，请重试')
+        onRenderError: () => onInvalidate('人机验证初始化失败，请重试', true, generation)
       });
     }
     if (window.turnstile) render();
@@ -1882,12 +1882,7 @@ function TurnstileChallenge({ error, hidden, onComplete, onInvalidate, widgetIdR
       if (window.turnstile && widgetIdRef.current !== null) window.turnstile.remove(widgetIdRef.current);
       widgetIdRef.current = null;
     };
-  }, [onComplete, onInvalidate, renderAttempt, widgetIdRef]);
-
-  const retryWidget = () => {
-    if (window.turnstile && widgetIdRef.current !== null) window.turnstile.reset(widgetIdRef.current);
-    else setRenderAttempt(attempt => attempt + 1);
-  };
+  }, [onBeginChallenge, onComplete, onInvalidate, renderAttempt, widgetIdRef]);
 
   return (
     <div className="auth-screen" hidden={hidden}>
@@ -1919,32 +1914,39 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const widgetIdRef = useRef(null);
+  const [renderAttempt, setRenderAttempt] = useState(0);
   const stage = flow.stage(pathname);
-  const resetWidget = useCallback(() => {
-    if (window.turnstile && widgetIdRef.current !== null) window.turnstile.reset(widgetIdRef.current);
-  }, []);
-  const scheduleWidgetReset = useCallback(() => setTimeout(resetWidget, 0), [resetWidget]);
+  const rerenderWidget = useCallback(() => {
+    flow.invalidate();
+    setRenderAttempt(attempt => attempt + 1);
+  }, [flow]);
+  const scheduleWidgetReset = useCallback(() => setTimeout(rerenderWidget, 0), [rerenderWidget]);
   const leaveLogin = useCallback(createLeaveLoginCleanup({
     flow,
     submittingRef,
     setSubmitting,
     setError,
+    setUsername,
+    setPassword,
     scheduleReset: scheduleWidgetReset
   }), [flow, scheduleWidgetReset]);
 
   useEffect(() => registerLeaveLogin(leaveLogin), [leaveLogin, registerLeaveLogin]);
 
-  const invalidate = useCallback((message, shouldResetWidget = false) => {
-    flow.invalidate();
+  const invalidate = useCallback((message, shouldResetWidget = false, challengeGeneration = null) => {
+    if (challengeGeneration === null) flow.invalidate();
+    else if (!flow.invalidateChallenge(challengeGeneration)) return;
     if (shouldResetWidget) scheduleWidgetReset();
     submittingRef.current = false;
     setSubmitting(false);
+    setUsername('');
+    setPassword('');
     setError(message || '');
     navigate('/', { replace: true });
   }, [flow, navigate, scheduleWidgetReset]);
 
-  const completeChallenge = useCallback((token) => {
-    if (!flow.completeChallenge(token)) return;
+  const completeChallenge = useCallback((token, challengeGeneration) => {
+    if (!flow.completeChallenge(token, challengeGeneration)) return;
     if (flow.stage('/login') !== 'login') {
       invalidate('人机验证未完成，请稍后重试', true);
       return;
@@ -1972,13 +1974,12 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
     submittingRef.current = true;
     setSubmitting(true); setError('');
     try {
-      const r = await fetchWithTimeout(API + '/api/auth/login', {
+      const { response: r, data } = await fetchJsonWithTimeout(API + '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: request.signal,
         body: JSON.stringify({ username, password, 'cf-turnstile-response': request.token })
-      }, LOGIN_REQUEST_TIMEOUT_MS);
-      const data = await readJsonResponse(r);
+      }, LOGIN_REQUEST_TIMEOUT_MS, readJsonResponse);
       if (!flow.isCurrentLogin(request)) return;
       if (!r.ok) throw new Error(data.error === 'forbidden' ? '人机验证失败，请重试' : data.error === 'invalid_credentials' ? '用户名或密码错误' : (data.error || '登录失败'));
       persistCurrentLogin({
@@ -1996,7 +1997,7 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
 
   return (
     <>
-      <TurnstileChallenge error={stage === 'challenge' ? error : ''} hidden={stage !== 'challenge'} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} />
+      <TurnstileChallenge error={stage === 'challenge' ? error : ''} hidden={stage !== 'challenge'} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} />
       {stage === 'login' && <CredentialsLogin error={error} submitting={submitting} username={username} password={password} onUsername={setUsername} onPassword={setPassword} onSubmit={login} />}
     </>
   );

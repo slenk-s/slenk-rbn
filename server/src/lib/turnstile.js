@@ -9,6 +9,7 @@ function redact(value, token, secret) {
 }
 
 const DIAGNOSTIC_REASONS = new Set([
+  'invalid_token',
   'invalid_config',
   'siteverify_transport',
   'siteverify_rejected',
@@ -59,6 +60,10 @@ export function formatTurnstileDiagnostic(result) {
   return diagnostic;
 }
 
+export function shouldLogTurnstileFailure(result) {
+  return result?.ok === false && result.reason !== 'invalid_token';
+}
+
 export async function verifyTurnstile({
   token,
   secret,
@@ -70,7 +75,11 @@ export async function verifyTurnstile({
   if (
     typeof token !== 'string' ||
     token.length === 0 ||
-    token.length > TOKEN_MAX_LENGTH ||
+    token.length > TOKEN_MAX_LENGTH
+  ) {
+    return { ok: false, reason: 'invalid_token' };
+  }
+  if (
     typeof secret !== 'string' ||
     secret.length === 0 ||
     expectedAction !== 'login' ||

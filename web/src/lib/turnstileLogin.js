@@ -1,11 +1,13 @@
 export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
 
-export function createLeaveLoginCleanup({ flow, submittingRef, setSubmitting, setError, scheduleReset }) {
+export function createLeaveLoginCleanup({ flow, submittingRef, setSubmitting, setError, setUsername, setPassword, scheduleReset }) {
   return () => {
     flow.invalidate();
     submittingRef.current = false;
     setSubmitting(false);
     setError('');
+    setUsername('');
+    setPassword('');
     scheduleReset();
   };
 }
@@ -21,6 +23,7 @@ export function createLoginPopStateHandler({ flow, getCurrentPathname, getNextPa
 
 export function createTurnstileLoginFlow() {
   let challengeToken = null;
+  let challengeGeneration = 0;
   let loginGeneration = 0;
   let activeLogin = null;
 
@@ -30,9 +33,19 @@ export function createTurnstileLoginFlow() {
     activeLogin = null;
   }
 
+  function invalidateCurrentChallenge() {
+    challengeGeneration += 1;
+    challengeToken = null;
+    supersedeLogin();
+  }
+
   return {
-    completeChallenge(token) {
-      if (activeLogin !== null || challengeToken !== null) return false;
+    beginChallenge() {
+      challengeGeneration += 1;
+      return challengeGeneration;
+    },
+    completeChallenge(token, generation = challengeGeneration) {
+      if (generation !== challengeGeneration || activeLogin !== null || challengeToken !== null) return false;
       supersedeLogin();
       challengeToken = typeof token === 'string' && token.trim() ? token : null;
       return challengeToken !== null;
@@ -44,8 +57,12 @@ export function createTurnstileLoginFlow() {
       return pathname === '/login' && challengeToken !== null ? 'login' : 'challenge';
     },
     invalidate() {
-      challengeToken = null;
-      supersedeLogin();
+      invalidateCurrentChallenge();
+    },
+    invalidateChallenge(generation) {
+      if (generation !== challengeGeneration) return false;
+      invalidateCurrentChallenge();
+      return true;
     },
     beginLogin() {
       if (challengeToken === null || activeLogin !== null) return null;

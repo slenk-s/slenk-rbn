@@ -4,6 +4,7 @@ import { ensureAdmin, findUserByUsername, findUserById } from '../store.js';
 import { sign, verify } from '../auth.js';
 import {
   formatTurnstileDiagnostic,
+  shouldLogTurnstileFailure,
   verifyTurnstile,
 } from '../lib/turnstile.js';
 
@@ -28,7 +29,9 @@ async function verifyLoginTurnstile(req, res) {
     remoteIp: req.ip,
   });
   if (!result.ok) {
-    console.warn('Turnstile verification rejected', formatTurnstileDiagnostic(result));
+    if (shouldLogTurnstileFailure(result)) {
+      console.warn('Turnstile verification rejected', formatTurnstileDiagnostic(result));
+    }
     res.status(403).json({ error: 'forbidden' });
     return false;
   }

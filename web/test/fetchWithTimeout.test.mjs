@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchWithTimeout } from '../src/fetchWithTimeout.js';
+import { fetchJsonWithTimeout, fetchWithTimeout } from '../src/fetchWithTimeout.js';
 
 function fakeFetch({ resolveMs, record }) {
   return (url, options = {}) => new Promise((resolve, reject) => {
@@ -69,4 +69,25 @@ test('服务端正常报错时保留原来的错误信息', async () => {
   globalThis.fetch = () => Promise.reject(new Error('网络不可达'));
 
   await assert.rejects(() => fetchWithTimeout('/api/notes/parse', { method: 'POST' }, 1000), /网络不可达/);
+});
+
+test('JSON deadline remains active while the response body is consumed', async () => {
+  let receivedSignal;
+  globalThis.fetch = async (_url, options = {}) => {
+    receivedSignal = options.signal;
+    return {
+      ok: true,
+      text() {
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        });
+      }
+    };
+  };
+
+  await assert.rejects(
+    () => fetchJsonWithTimeout('/api/auth/login', { method: 'POST' }, 25, response => response.text()),
+    /请求超时（0 秒），请稍后重试/
+  );
+  assert.equal(receivedSignal.aborted, true);
 });

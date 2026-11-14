@@ -95,13 +95,15 @@ test('Turnstile full leave-login cleanup aborts submission, clears UI, and sched
     submittingRef,
     setSubmitting(value) { events.push(`submitting:${value}`); },
     setError(value) { events.push(`error:${value}`); },
+    setUsername(value) { events.push(`username:${value}`); },
+    setPassword(value) { events.push(`password:${value}`); },
     scheduleReset() { events.push('reset'); }
   });
 
   cleanup();
 
   assert.equal(submittingRef.current, false);
-  assert.deepEqual(events, ['invalidate', 'submitting:false', 'error:', 'reset']);
+  assert.deepEqual(events, ['invalidate', 'submitting:false', 'error:', 'username:', 'password:', 'reset']);
 });
 
 test('Turnstile two-stage login invalidation aborts and supersedes a pending login', () => {
@@ -178,6 +180,29 @@ test('Turnstile two-stage login accepts a replacement challenge after invalidati
   assert.equal(oldRequest.signal.aborted, true);
   assert.equal(flow.isCurrentLogin(oldRequest), false);
   assert.equal(flow.token(), 'replacement-token');
+});
+
+test('Turnstile ignores an old success callback that arrives after invalidation', () => {
+  const flow = createTurnstileLoginFlow();
+  const oldGeneration = flow.beginChallenge();
+
+  flow.invalidate();
+
+  assert.equal(flow.completeChallenge('late-old-token', oldGeneration), false);
+  assert.equal(flow.token(), null);
+  assert.equal(flow.stage('/login'), 'challenge');
+});
+
+test('Turnstile ignores an old expiry callback after a newer challenge succeeds', () => {
+  const flow = createTurnstileLoginFlow();
+  const oldGeneration = flow.beginChallenge();
+  flow.invalidate();
+  const newGeneration = flow.beginChallenge();
+
+  assert.equal(flow.completeChallenge('new-token', newGeneration), true);
+  assert.equal(flow.invalidateChallenge(oldGeneration), false);
+  assert.equal(flow.token(), 'new-token');
+  assert.equal(flow.stage('/login'), 'login');
 });
 
 test('Turnstile widget rendering converts synchronous exceptions into recoverable failures', () => {

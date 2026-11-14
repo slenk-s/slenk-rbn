@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   formatTurnstileDiagnostic,
+  shouldLogTurnstileFailure,
   verifyTurnstile,
 } from '../src/lib/turnstile.js';
 
@@ -82,6 +83,14 @@ test('Turnstile diagnostic formatter rejects nested credentials and invalid fiel
     details: { errorCodes: ['invalid-input-response'] },
   });
   assertRedacted(diagnostic);
+});
+
+test('Turnstile logging skips malformed client tokens but keeps operational failures', () => {
+  assert.equal(shouldLogTurnstileFailure({ ok: false, reason: 'invalid_token' }), false);
+  assert.equal(shouldLogTurnstileFailure({ ok: false, reason: 'invalid_config' }), true);
+  assert.equal(shouldLogTurnstileFailure({ ok: false, reason: 'siteverify_transport' }), true);
+  assert.equal(shouldLogTurnstileFailure({ ok: false, reason: 'action_mismatch' }), true);
+  assert.equal(shouldLogTurnstileFailure({ ok: false, reason: 'hostname_mismatch' }), true);
 });
 
 test('Turnstile diagnostic formatter accepts only safe primitive diagnostic values', () => {
@@ -197,6 +206,22 @@ test('Turnstile classifies a thrown fetch as a redacted transport failure', asyn
 
   assert.deepEqual(result, { ok: false, reason: 'siteverify_transport' });
   assertRedacted(result);
+});
+
+test('Turnstile rejects malformed client tokens without calling Siteverify', async () => {
+  for (const invalidToken of [undefined, '', 'x'.repeat(2049)]) {
+    let called = false;
+    const result = await verifyTurnstile({
+      token: invalidToken,
+      secret,
+      expectedAction,
+      expectedHostnames,
+      fetchImpl: async () => { called = true; return response({ success: true }); },
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'invalid_token' });
+    assert.equal(called, false);
+  }
 });
 
 test('Turnstile rejects a non-login expected action as invalid configuration', async () => {
