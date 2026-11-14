@@ -5,6 +5,7 @@ import { fetchJsonWithTimeout, fetchWithTimeout } from './fetchWithTimeout.js';
 import { RedappAuthCard, RedappAuthModal } from './RedappAuth.jsx';
 import {
   createTurnstileLoginFlow,
+  createAuthFlipController,
   createLeaveLoginCleanup,
   createLoginPopStateHandler,
   LOGIN_REQUEST_TIMEOUT_MS,
@@ -1843,7 +1844,7 @@ const TURNSTILE_SITEKEY = '0x4AAAAAAF-KfPS4yQCRHsCg';
 function AuthBrand() {
   return <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
 }
-function TurnstileChallenge({ error, hidden, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, renderAttempt, retryWidget }) {
+function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, renderAttempt, retryWidget, successVisible }) {
   const turnstileRef = useRef(null);
 
   useEffect(() => {
@@ -1885,26 +1886,23 @@ function TurnstileChallenge({ error, hidden, onBeginChallenge, onComplete, onInv
   }, [onBeginChallenge, onComplete, onInvalidate, renderAttempt, widgetIdRef]);
 
   return (
-    <div className="auth-screen" hidden={hidden}>
-      <div className="auth-card">
-        <AuthBrand />
+    <>
+      <div className="auth-turnstile-slot" aria-hidden={successVisible}>
         <div ref={turnstileRef}></div>
-        {error && <><p className="auth-error">{error}</p><button className="btn-secondary" type="button" onClick={retryWidget}>重新加载验证</button></>}
       </div>
-    </div>
+      {successVisible && <div className="auth-success" role="status" aria-live="polite"><span className="auth-success-check">✓</span><span>验证成功</span></div>}
+      {error && <><p className="auth-error" aria-live="polite">{error}</p><button className="btn-secondary" type="button" onClick={retryWidget}>重新加载验证</button></>}
+    </>
   );
 }
-function CredentialsLogin({ error, submitting, username, password, onUsername, onPassword, onSubmit }) {
+function CredentialsLogin({ error, submitting, username, password, onUsername, onPassword, onSubmit, usernameRef, backActive }) {
   return (
-    <div className="auth-screen">
-      <form className="auth-card" onSubmit={onSubmit}>
-        <AuthBrand />
-        <label>用户名<input value={username} onChange={e => onUsername(e.target.value)} placeholder="请输入用户名" required /></label>
-        <label>密码<input type="password" value={password} onChange={e => onPassword(e.target.value)} placeholder="请输入密码" required /></label>
-        {error && <p className="auth-error">{error}</p>}
-        <button className="btn-primary" type="submit" disabled={submitting}>{submitting ? '登录中...' : '登录'}</button>
-      </form>
-    </div>
+    <>
+      <label>用户名<input ref={usernameRef} value={username} onChange={e => onUsername(e.target.value)} placeholder="请输入用户名" required /></label>
+      <label>密码<input type="password" value={password} onChange={e => onPassword(e.target.value)} placeholder="请输入密码" required /></label>
+      {error && <p className="auth-error" aria-live="polite">{error}</p>}
+      <button className="btn-primary" type="submit" disabled={submitting || !backActive}>{submitting ? '登录中...' : '进入工作台'}</button>
+    </>
   );
 }
 function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
@@ -1914,13 +1912,36 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const widgetIdRef = useRef(null);
+  const usernameRef = useRef(null);
+  const flipRef = useRef(null);
+  if (flipRef.current === null) {
+    flipRef.current = createAuthFlipController({
+      reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    });
+  }
+  const [flipPhase, setFlipPhase] = useState(flipRef.current.phase());
   const [renderAttempt, setRenderAttempt] = useState(0);
   const stage = flow.stage(pathname);
-  const rerenderWidget = useCallback(() => {
+  const frontActive = flipPhase === 'challenge' || flipPhase === 'success-feedback';
+  const backActive = flipPhase === 'login';
+  const cardFlipped = flipPhase === 'flipping-to-login' || flipPhase === 'login';
+  const rawRerenderWidget = useCallback(() => {
     flow.invalidate();
     setRenderAttempt(attempt => attempt + 1);
   }, [flow]);
-  const scheduleWidgetReset = useCallback(() => setTimeout(rerenderWidget, 0), [rerenderWidget]);
+  const returnCardToChallenge = useCallback(() => {
+    const started = flipRef.current.returnToChallenge(() => {
+      setFlipPhase('challenge');
+      rawRerenderWidget();
+    });
+    setFlipPhase(flipRef.current.phase());
+    if (!started && flipRef.current.phase() === 'challenge') rawRerenderWidget();
+  }, [rawRerenderWidget]);
+  const scheduleWidgetReset = useCallback(() => setTimeout(returnCardToChallenge, 0), [returnCardToChallenge]);
+  const rerenderWidget = useCallback(() => {
+    flow.invalidate();
+    returnCardToChallenge();
+  }, [flow, returnCardToChallenge]);
   const leaveLogin = useCallback(createLeaveLoginCleanup({
     flow,
     submittingRef,
@@ -1951,9 +1972,26 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
       invalidate('人机验证未完成，请稍后重试', true);
       return;
     }
+    const accepted = flipRef.current.challengeSucceeded((phase) => setFlipPhase(phase));
+    if (!accepted) {
+      invalidate('人机验证状态异常，请重新验证', true);
+      return;
+    }
+    setFlipPhase(flipRef.current.phase());
     setError('');
     navigate('/login');
   }, [flow, invalidate, navigate]);
+
+  const handleFlipTransitionEnd = useCallback((event) => {
+    if (event.target !== event.currentTarget || event.propertyName !== 'transform') return;
+    if (flipRef.current.flipCompleted()) setFlipPhase(flipRef.current.phase());
+  }, []);
+
+  useEffect(() => () => flipRef.current.dispose(), []);
+
+  useEffect(() => {
+    if (backActive) usernameRef.current?.focus();
+  }, [backActive]);
 
   useEffect(() => {
     if (stage === 'challenge' && flow.token() !== null) {
@@ -1996,10 +2034,20 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   }
 
   return (
-    <>
-      <TurnstileChallenge error={stage === 'challenge' ? error : ''} hidden={stage !== 'challenge'} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} />
-      {stage === 'login' && <CredentialsLogin error={error} submitting={submitting} username={username} password={password} onUsername={setUsername} onPassword={setPassword} onSubmit={login} />}
-    </>
+    <div className="auth-screen">
+      <div className="auth-flip-scene">
+        <div className={'auth-flip-card' + (cardFlipped ? ' is-flipped' : '')} data-phase={flipPhase} onTransitionEnd={handleFlipTransitionEnd}>
+          <section className="auth-card auth-face auth-face-front" aria-hidden={!frontActive} inert={!frontActive ? '' : undefined}>
+            <AuthBrand />
+            <TurnstileChallenge error={frontActive ? error : ''} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} successVisible={flipPhase === 'success-feedback'} />
+          </section>
+          <form className="auth-card auth-face auth-face-back" aria-hidden={!backActive} inert={!backActive ? '' : undefined} onSubmit={login}>
+            <AuthBrand />
+            <CredentialsLogin error={backActive ? error : ''} submitting={submitting} username={username} password={password} onUsername={setUsername} onPassword={setPassword} onSubmit={login} usernameRef={usernameRef} backActive={backActive} />
+          </form>
+        </div>
+      </div>
+    </div>
   );
 }
 function NotePreviewPage({ noteId }) {
