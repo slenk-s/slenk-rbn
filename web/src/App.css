@@ -1972,6 +1972,7 @@ button:hover { transform: translateY(-1px); }
     linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4338ca 100%);
 }
 .auth-flip-scene {
+  flex: 0 1 400px;
   width: 400px;
   max-width: 100%;
   min-height: 430px;

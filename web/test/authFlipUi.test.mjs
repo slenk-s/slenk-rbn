@@ -18,8 +18,8 @@ test('auth flip UI renders one two-sided scene with shared branding', () => {
 test('auth flip UI isolates inactive faces and exposes success feedback', () => {
   assert.match(source, /aria-hidden=\{!frontActive\}/);
   assert.match(source, /aria-hidden=\{!backActive\}/);
-  assert.match(source, /inert=\{!frontActive/);
-  assert.match(source, /inert=\{!backActive/);
+  assert.match(source, /inert=\{!frontActive\}/);
+  assert.match(source, /inert=\{!backActive\}/);
   assert.match(source, /aria-live="polite"/);
   assert.match(source, /验证成功/);
   assert.match(source, /auth-success-check[^\n]*✓/);
@@ -35,6 +35,7 @@ test('auth flip UI transfers focus after the back face becomes active', () => {
 
 test('auth flip CSS provides perspective, backface isolation, and a left 700ms turn', () => {
   assert.match(css, /\.auth-flip-scene[\s\S]*?perspective\s*:/);
+  assert.match(css, /\.auth-flip-scene[\s\S]*?flex\s*:\s*0\s+1\s+400px/);
   assert.match(css, /\.auth-flip-card[\s\S]*?transform-style\s*:\s*preserve-3d/);
   assert.match(css, /\.auth-face[\s\S]*?backface-visibility\s*:\s*hidden/);
   assert.match(css, /\.auth-face-back[\s\S]*?rotateY\(180deg\)/);

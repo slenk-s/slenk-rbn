@@ -2037,11 +2037,11 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
     <div className="auth-screen">
       <div className="auth-flip-scene">
         <div className={'auth-flip-card' + (cardFlipped ? ' is-flipped' : '')} data-phase={flipPhase} onTransitionEnd={handleFlipTransitionEnd}>
-          <section className="auth-card auth-face auth-face-front" aria-hidden={!frontActive} inert={!frontActive ? '' : undefined}>
+          <section className="auth-card auth-face auth-face-front" aria-hidden={!frontActive} inert={!frontActive}>
             <AuthBrand />
             <TurnstileChallenge error={frontActive ? error : ''} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} successVisible={flipPhase === 'success-feedback'} />
           </section>
-          <form className="auth-card auth-face auth-face-back" aria-hidden={!backActive} inert={!backActive ? '' : undefined} onSubmit={login}>
+          <form className="auth-card auth-face auth-face-back" aria-hidden={!backActive} inert={!backActive} onSubmit={login}>
             <AuthBrand />
             <CredentialsLogin error={backActive ? error : ''} submitting={submitting} username={username} password={password} onUsername={setUsername} onPassword={setPassword} onSubmit={login} usernameRef={usernameRef} backActive={backActive} />
           </form>
