@@ -1910,6 +1910,7 @@ function CredentialsLogin({ error, submitting, username, password, onUsername, o
   );
 }
 function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
+  const isFlipDemo = import.meta.env.DEV && new URLSearchParams(window.location.search).has('auth-flip-demo');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -2018,6 +2019,14 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
   }, []);
 
   useEffect(() => {
+    if (!isFlipDemo) return undefined;
+    const timer = setTimeout(() => {
+      if (flipRef.current.challengeSucceeded((phase) => setFlipPhase(phase))) setFlipPhase(flipRef.current.phase());
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [isFlipDemo]);
+
+  useEffect(() => {
     if (stage === 'challenge' && flow.token() !== null) {
       invalidate('', true);
       return;
@@ -2063,7 +2072,7 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
         <div className={'auth-flip-card' + (cardFlipped ? ' is-flipped' : '')} data-phase={flipPhase} onTransitionEnd={handleFlipTransitionEnd}>
           <section className="auth-card auth-face auth-face-front" aria-hidden={!frontActive} inert={!frontActive}>
             <AuthBrand />
-            <TurnstileChallenge error={frontActive ? error : ''} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} retryButtonRef={retryButtonRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} successVisible={flipPhase === 'success-feedback'} />
+            {isFlipDemo ? <div className="auth-success auth-demo-success" role="status" aria-live="polite"><span className="auth-success-check">✓</span><span>验证成功</span></div> : <TurnstileChallenge error={frontActive ? error : ''} onBeginChallenge={flow.beginChallenge} onComplete={completeChallenge} onInvalidate={invalidate} widgetIdRef={widgetIdRef} retryButtonRef={retryButtonRef} renderAttempt={renderAttempt} retryWidget={rerenderWidget} successVisible={flipPhase === 'success-feedback'} />}
           </section>
           <form className="auth-card auth-face auth-face-back" aria-hidden={!backActive} inert={!backActive} onSubmit={login}>
             <AuthBrand />

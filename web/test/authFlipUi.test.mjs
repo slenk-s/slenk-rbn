@@ -27,6 +27,11 @@ test('auth flip UI isolates inactive faces and exposes success feedback', () => 
   assert.match(source, /authFlipViewState\(flipPhase\)/);
   assert.match(source, /moveFocusToChallenge/);
   assert.match(source, /selectTurnstileSize/);
+  assert.match(source, /import\.meta\.env\.DEV/);
+  assert.match(source, /URLSearchParams\(window\.location\.search\)/);
+  assert.match(source, /has\('auth-flip-demo'\)/);
+  assert.match(source, /\{isFlipDemo \? <div className="auth-success/);
+  assert.match(source, / : <TurnstileChallenge/);
 });
 
 test('auth flip UI transfers focus after the back face becomes active', () => {
