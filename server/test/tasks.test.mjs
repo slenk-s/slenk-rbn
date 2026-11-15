@@ -69,3 +69,31 @@ test('enqueueTask marks the task failed when the queue rejects', async (t) => {
   assert.equal(task.label, '标题生成1');
 });
 
+test('updateTask inserts an orphan task row when insertMeta is given', async (t) => {
+  // 迁移前入队的旧任务在 MySQL 无行：worker 带 insertMeta 时，命中 0 行要补插，结果可见。
+  const userId = await createTestUser();
+  t.after(() => dropTestUser(userId));
+  const updated = await updateTask(userId, 'orphan_1', { status: 'done', result: { image: '/api/media/x' } }, {
+    type: 'image',
+    payload: { prompt: 'orphan prompt', providerId: 'prov_orphan' },
+    providerId: 'prov_orphan',
+    tab: 'ai-image'
+  });
+  assert.equal(updated.status, 'done');
+  assert.deepEqual(updated.result, { image: '/api/media/x' });
+  assert.equal(updated.type, 'image');
+  assert.equal(updated.providerId, 'prov_orphan');
+  assert.equal(updated.tab, 'ai-image');
+  assert.equal(updated.userId, userId);
+  assert.deepEqual(updated.payload, { prompt: 'orphan prompt', providerId: 'prov_orphan' });
+});
+
+test('updateTask without insertMeta leaves a missing row missing', async (t) => {
+  // 不带 insertMeta：保持原行为（不补插）——普通路径不受影响。
+  const userId = await createTestUser();
+  t.after(() => dropTestUser(userId));
+  const res = await updateTask(userId, 'ghost_1', { status: 'failed', error: 'boom' });
+  assert.equal(res, null);
+  assert.equal(await getTask(userId, 'ghost_1'), null);
+});
+

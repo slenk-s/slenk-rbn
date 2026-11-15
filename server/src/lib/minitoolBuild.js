@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { ZipArchive } from 'archiver';
 import sharp from 'sharp';
 import { paths } from '../paths.js';
+import { getMedia } from '../store.js';
 import { safeRemoteImageFetch } from './safeRemoteImage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -139,6 +140,12 @@ export async function readImageBuffer(value, index, signal, {
     const res = await fetchRemote(value, { signal: combinedFetchSignal(signal, 30000) });
     if (!res.ok) { await res.body?.cancel?.().catch(() => {}); throw new Error(`第 ${index + 1} 张图片下载失败（HTTP ${res.status}）`); }
     return readBoundedBody(res, maxBytes, signal);
+  }
+  if (value.startsWith('/api/media/')) {
+    // 生成结果媒体在 MySQL BLOB：按 /api/media/<id> 读库回原图，不依赖本地缓存文件。
+    const row = await getMedia(value.replace('/api/media/', ''));
+    if (!row) throw new Error(`第 ${index + 1} 张图片媒体不存在：${value}`);
+    return Buffer.from(row.data);
   }
   const base = value.startsWith('/notes-images/') ? notesImagesDir : value.startsWith('/videos/') ? paths.videosDir : paths.uploadsDir;
   const p = path.resolve(base, path.basename(value));

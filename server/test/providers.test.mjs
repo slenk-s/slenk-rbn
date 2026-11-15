@@ -54,8 +54,8 @@ test('getActiveProvider prefers the user setting then falls back by mode', async
   assert.equal(byMode.mode, 'text');
 
   await query(
-    `insert into slenk_notes_user_settings (user_id, active_image_provider_id) values ($1, $2)
-     on conflict (user_id) do update set active_image_provider_id = excluded.active_image_provider_id`,
+    `insert into slenk_notes_user_settings (user_id, active_image_provider_id) values (?, ?)
+     on duplicate key update active_image_provider_id = values(active_image_provider_id)`,
     [userId, imageProvider.id]
   );
   const bySetting = await getActiveProvider('image', userId);

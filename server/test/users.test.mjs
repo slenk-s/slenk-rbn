@@ -12,7 +12,7 @@ test('ensureAdmin creates the admin account once', async () => {
   const admin = await findUserByUsername('admin');
   assert.ok(admin);
   assert.equal(admin.isAdmin, true);
-  const { rows } = await query("select count(*)::int as n from slenk_notes_users where username = 'admin'");
+  const { rows } = await query("select count(*) as n from slenk_notes_users where username = 'admin'");
   assert.equal(rows[0].n, 1);
 });
 
@@ -84,7 +84,7 @@ test('deleteUser removes the user and cascades their content', async (t) => {
   await deleteUser(id);
   t.after(() => dropTestUser(id));
   assert.equal(await findUserById(id), null);
-  const { rows } = await query('select 1 from slenk_notes_notes where id = $1', [note.id]);
+  const { rows } = await query('select 1 from slenk_notes_notes where id = ?', [note.id]);
   assert.equal(rows.length, 0, 'the note should be gone with its owner');
 });
 

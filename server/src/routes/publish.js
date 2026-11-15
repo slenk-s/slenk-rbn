@@ -49,7 +49,7 @@ const runNodeAsync = createAsyncProcessRunner();
 
 function invalid(message = '发布参数无效') { throw Object.assign(new Error(message), { code: 'PUBLISH_VALIDATION' }); }
 function canonicalTag(value) { return value.trim().replace(/^#+/, '').trim(); }
-function allowedImage(value) { return /^https?:\/\//i.test(value) || /^\/(uploads|notes-images|videos)\/[A-Za-z0-9._~!$&'()+,;=@%-]+$/.test(value); }
+function allowedImage(value) { return /^https?:\/\//i.test(value) || /^\/(uploads|notes-images|videos)\/[A-Za-z0-9._~!$&'()+,;=@%-]+$/.test(value) || /^\/api\/media\/[A-Za-z0-9-]+$/.test(value); }
 
 export function canonicalizeMiniToolPublishRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid();
