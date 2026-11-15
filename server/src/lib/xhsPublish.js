@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { paths } from '../paths.js';
+import { getMedia } from '../store.js';
 import { sniffImageFormat } from './imageFormat.js';
 
 const PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
@@ -22,7 +23,12 @@ function humanDelay(min = 300, max = 800) { return sleep(min + Math.random() * (
 async function localizeImage(value, index, taskId) {
   if (!value) return null;
   let buf = null;
-  if (/^https?:\/\//i.test(value)) {
+  if (value.startsWith('/api/media/')) {
+    // 生成结果媒体在 MySQL BLOB：按 /api/media/<id> 读库回原图，不依赖本地缓存文件。
+    const row = await getMedia(value.replace('/api/media/', ''));
+    if (!row) throw new Error(`第 ${index + 1} 张图片媒体不存在：${value}`);
+    buf = row.data;
+  } else if (/^https?:\/\//i.test(value)) {
     const res = await fetch(value, { signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`第 ${index + 1} 张图片下载失败（HTTP ${res.status}）`);
     buf = Buffer.from(await res.arrayBuffer());

@@ -358,7 +358,7 @@ async function runChat(payload, provider) {
   return { text: normalizeTextContent(reply), raw: data };
 }
 
-async function extractImageAsset(data, id, index) {
+async function extractImageAsset(data, id, index, userId) {
   const imageField = data.data?.[0]?.url || data.data?.[0]?.b64_json || data.images?.[0] || data.url || data.output?.image || data.b64_json;
   if (!imageField) return null;
   let buffer;
@@ -379,7 +379,7 @@ async function extractImageAsset(data, id, index) {
   fs.writeFileSync(out, capped.buf);
   const local = `/videos/${path.basename(out)}`;
   // 同步上传云存储：url 优先用公网地址（换机/丢本地文件后仍可用），上传失败回退本地路径。
-  const cloud = await uploadResultAsset(out, path.basename(out), capped.mime);
+  const cloud = await uploadResultAsset(out, path.basename(out), capped.mime, { taskId: id, userId });
   return { local, url: cloud || local };
 }
 
@@ -434,7 +434,7 @@ async function sizeFromReference(buf) {
   }
 }
 
-async function runImage(payload, provider, id) {
+async function runImage(payload, provider, id, userId) {
   const prompt = payload.prompt || '';
   const count = Math.max(1, Math.min(4, Number(payload.count) || 1));
   // 尺寸交给模型的必须是合法值（32 的倍数 / 比例 ≤3:1），画布选项才真正生效。
@@ -493,7 +493,7 @@ async function runImage(payload, provider, id) {
     return { data };
   };
   const pushAsset = async (data, index, refIndex) => {
-    const asset = await extractImageAsset(data, id, index);
+    const asset = await extractImageAsset(data, id, index, userId);
     if (asset) {
       images.push(asset.url);
       localImages.push(asset.local);
@@ -668,7 +668,7 @@ function renderOneVideo(input, output, payload, id) {
 // 多张图片：同一任务内逐张出片，videos/localVideos 按输入顺序回填，前端结果区并列展示。
 // 每张是独立的 ffmpeg 编码（不同输出文件），用有界并发池并行，避免多图任务串行放大墙钟时间。
 // 默认 2 路（ffmpeg 是 CPU 密集，过高反而争抢核），可用 env VIDEO_CONCURRENCY 调 1–4。
-async function makeVideos(payload, id) {
+async function makeVideos(payload, id, userId) {
   const urls = (payload.mediaUrls || []).filter(Boolean);
   if (!urls.length) throw new Error('图片素材缺失，请先上传实况视频图片。');
   const concurrency = Math.max(1, Math.min(4, Number(process.env.VIDEO_CONCURRENCY) || 2));
@@ -678,7 +678,7 @@ async function makeVideos(payload, id) {
     const out = path.join(videoDir, multi ? `${id}-${i + 1}.mp4` : `${id}.mp4`);
     await renderOneVideo(input, out, payload, multi ? `${id}#${i + 1}` : id);
     const local = `/videos/${path.basename(out)}`;
-    const cloud = await uploadResultAsset(out, path.basename(out), 'video/mp4');
+    const cloud = await uploadResultAsset(out, path.basename(out), 'video/mp4', { taskId: id, userId });
     return { video: cloud || local, localVideo: local, localPath: out };
   });
   return {
@@ -690,27 +690,29 @@ async function makeVideos(payload, id) {
 
 new Worker('ai-tasks', async (job) => {
   const { id, payload, userId } = job.data;
+  // 迁移前入队的旧任务在 MySQL 无行：带上 job 元数据，让 updateTask 在命中 0 行时补插，结果可见。
+  const insertMeta = { type: job.name, payload, providerId: payload?.providerId ?? null };
   try {
     if (job.name === 'rewrite') {
       const provider = await resolveProvider(payload, 'text', userId);
       const result = await runChat(payload, provider);
-      await updateTask(userId, id, { status: 'done', result: { ...result, providerId: provider.id, providerName: provider.name } });
+      await updateTask(userId, id, { status: 'done', result: { ...result, providerId: provider.id, providerName: provider.name } }, insertMeta);
       return result;
     }
     if (job.name === 'image') {
       const provider = await resolveProvider(payload, 'image', userId);
-      const result = await runImage(payload, provider, id);
+      const result = await runImage(payload, provider, id, userId);
       const resultForStore = {
         ...result,
         raw: { created: result.raw?.created, usage: result.raw?.usage, data: result.raw?.data?.map(item => ({ has_url: !!item?.url, has_b64: !!item?.b64_json })) },
         providerId: provider.id,
         providerName: provider.name
       };
-      await updateTask(userId, id, { status: 'done', result: resultForStore });
+      await updateTask(userId, id, { status: 'done', result: resultForStore }, insertMeta);
       return result;
     }
     if (job.name === 'video') {
-      const { videos, localVideos, localPaths } = await makeVideos(payload, id);
+      const { videos, localVideos, localPaths } = await makeVideos(payload, id, userId);
       const duration = parseDuration(payload);
       const options = {
         canvasSize: payload.canvasSize,
@@ -731,13 +733,13 @@ new Worker('ai-tasks', async (job) => {
         raw: { ffmpeg: 'done', mediaUrls: payload.mediaUrls || [] }
       };
       console.log('[worker] video updateTask before', JSON.stringify({ jobId: id, status: 'done', videoResult }));
-      await updateTask(userId, id, { status: 'done', result: videoResult });
+      await updateTask(userId, id, { status: 'done', result: videoResult }, insertMeta);
       console.log('[worker] video updateTask after', JSON.stringify({ jobId: id, status: 'done', videoResult }));
       return videoResult;
     }
     throw new Error('unknown_job');
   } catch (err) {
-    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) });
+    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) }, insertMeta);
     throw err;
   }
 }, {
@@ -754,10 +756,11 @@ new Worker('ai-tasks', async (job) => {
 new Worker('xhs-publish', async (job) => {
   const { id, payload, userId } = job.data;
   // result 只在有阶段说明时更新；传 undefined 也会被 updateTask 当成有效字段写库。
+  const insertMeta = { type: job.name, payload, providerId: payload?.providerId ?? null };
   const report = (status, message) => {
     const patch = { status };
     if (message) patch.result = { stageMessage: message };
-    return updateTask(userId, id, patch);
+    return updateTask(userId, id, patch, insertMeta);
   };
   try {
     const result = await publishNoteToXhs(payload, { onStatus: report });
@@ -766,11 +769,11 @@ new Worker('xhs-publish', async (job) => {
     await updateTask(userId, id, {
       status: 'done',
       result: { ...result, outcomeText }
-    });
+    }, insertMeta);
     return result;
   } catch (err) {
     console.error('[worker] xhs-publish failed', JSON.stringify({ jobId: id, message: err?.message }));
-    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'xhs_publish_error' }) });
+    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'xhs_publish_error' }) }, insertMeta);
     throw err;
   }
 }, {

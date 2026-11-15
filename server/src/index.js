@@ -16,6 +16,7 @@ import { router as aiRoutes } from './routes/ai.js';
 import { router as providerRoutes } from './routes/providers.js';
 import { router as noteRoutes } from './routes/notes.js';
 import { router as downloadRoutes } from './routes/download.js';
+import { router as mediaRoutes } from './routes/media.js';
 import { router as publishRoutes } from './routes/publish.js';
 import { router as redappAuthRoutes, accountsRouter as redappAccountsRoutes } from './routes/redappAuth.js';
 
@@ -74,6 +75,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/providers', providerRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/download', downloadRoutes);
+app.use('/api/media', mediaRoutes);
 app.use('/api/redapp/auth', redappAuthRoutes);
 app.use('/api/redapp', redappAccountsRoutes);
 app.use('/api/publish', publishRoutes);

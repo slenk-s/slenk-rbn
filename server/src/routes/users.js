@@ -24,7 +24,7 @@ router.post('/', async (req, res, next) => {
     const created = await createUser({ username, passwordHash: bcrypt.hashSync(password, 10), isAdmin: Boolean(req.body?.isAdmin) });
     res.status(201).json({ user: { id: created.id, username: created.username, isAdmin: created.isAdmin, createdAt: created.createdAt }, users: await listUsers() });
   } catch (err) {
-    if (err?.code === '23505') return res.status(409).json({ error: 'username_taken' });
+    if (err?.errno === 1062 || err?.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'username_taken' });
     next(err);
   }
 });

@@ -369,7 +369,10 @@ function SmartImg({ sources, alt, className, onClick, draggable, onDragStart, on
 // 而服务端 fetch 正常（curl 同源验证过），代理一层后展示稳定。
 function proxiedInline(url) { return API + '/api/download?inline=1&url=' + encodeURIComponent(url); }
 // 结果图三来源：本地副本（最快）→ 代理云端（最稳）→ 直连云端（最后兜底）。
+// 站内 API 媒体（/api/media/…）与页面同源，直达即可；走 /api/download 代理反而会 400（该路由只认外链/本地 fs 路径）。
 function resultImageSources(cloudUrl, localPath) {
+  const u = String(cloudUrl || '');
+  if (u.startsWith('/api/')) return [localPath ? API + localPath : null, API + u];
   return [localPath ? API + localPath : null, cloudUrl ? proxiedInline(cloudUrl) : null, cloudUrl || null];
 }
 // 笔记图片的来源链：本地缓存优先，云端走代理，直连兜底。
