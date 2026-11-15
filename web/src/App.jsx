@@ -1752,7 +1752,7 @@ function Workspace({ token }) {
   
   return (
     <div className="app">
-      <header className="topbar"><div className="brand"><div className="logo">S</div><div><h1>Slenk Notes</h1></div></div><div className="top-actions"><div className="top-models"><span className="model-chip text">文本 {providers.find(p => p.id === (activeTextProviderId || activeProviderId))?.textModel || '未选择'}</span><span className="model-chip image">生图 {providers.find(p => p.id === (activeImageProviderId || activeProviderId))?.imageModel || '未选择'}</span><span className="model-chip page">当前 {selectedModelName || '未选择'}</span></div><span className="top-user" title="当前登录用户"><b>{me?.username || ""}</b>{me?.isAdmin ? <em>管理员</em> : null}</span><button className="btn-secondary" onClick={refresh}>刷新任务</button><button className="btn-danger" onClick={() => { localStorage.clear(); location.reload(); }}>退出</button></div></header>
+      <header className="topbar"><div className="brand"><img className="logo" src="/logo.ico" alt="Slenk Notes" /><div><h1>Slenk Notes</h1></div></div><div className="top-actions"><div className="top-models"><span className="model-chip text">文本 {providers.find(p => p.id === (activeTextProviderId || activeProviderId))?.textModel || '未选择'}</span><span className="model-chip image">生图 {providers.find(p => p.id === (activeImageProviderId || activeProviderId))?.imageModel || '未选择'}</span><span className="model-chip page">当前 {selectedModelName || '未选择'}</span></div><span className="top-user" title="当前登录用户"><b>{me?.username || ""}</b>{me?.isAdmin ? <em>管理员</em> : null}</span><button className="btn-secondary" onClick={refresh}>刷新任务</button><button className="btn-danger" onClick={() => { localStorage.clear(); location.reload(); }}>退出</button></div></header>
       <div className="layout">
         <aside className="sidebar"><div className="sidebar-nav"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
@@ -1829,14 +1829,21 @@ function Workspace({ token }) {
     </div>
   );
 }
-const TURNSTILE_SITEKEY = '0x4AAAAAAF-KfPS4yQCRHsCg';
+// 前端人机验证的公开 sitekey（非机密，0x 开头）。由构建/运行时注入：
+// 开发在 web/.env 设 VITE_TURNSTILE_SITEKEY，部署时注入同一变量。
+const TURNSTILE_SITEKEY = import.meta.env.VITE_TURNSTILE_SITEKEY;
+// Turnstile sitekey 必以 0x 开头，字符集为 URL-safe 字母表（base64 类，含大小写与
+// 数字，非纯十六进制——如 0x4AAAAAA... 含 G/q/r 等）。缺失/占位符/无效值时直接
+// 显式报配置错误，而不是渲染出空白 widget 再被 Cloudflare 以 300030 拒掉（fail-closed）。
+const TURNSTILE_SITEKEY_VALID = typeof TURNSTILE_SITEKEY === 'string' && /^0x[A-Za-z0-9_-]{8,}$/.test(TURNSTILE_SITEKEY);
 function AuthBrand() {
-  return <div className="auth-brand"><div className="logo">S</div><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
+  return <div className="auth-brand"><img className="logo" src="/logo.ico" alt="Slenk Notes" /><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
 }
 function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, retryButtonRef, renderAttempt, retryWidget, successVisible }) {
   const turnstileRef = useRef(null);
 
   useEffect(() => {
+    if (!TURNSTILE_SITEKEY_VALID) return; // 配置无效：不加载也不渲染，JSX 已显示配置错误
     let cancelled = false;
     let cleanupScript = null;
     function render() {
@@ -1878,7 +1885,9 @@ function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate,
   return (
     <>
       <div className="auth-turnstile-slot" aria-hidden={successVisible}>
-        <div ref={turnstileRef}></div>
+        {TURNSTILE_SITEKEY_VALID
+          ? <div ref={turnstileRef}></div>
+          : <p className="auth-error" role="alert">人机验证未配置：缺少有效的 VITE_TURNSTILE_SITEKEY（需以 0x 开头的 sitekey）。请在 web/.env 配置字面 sitekey 后重启前端。</p>}
       </div>
       {successVisible && <div className="auth-success" role="status" aria-live="polite"><span className="auth-success-check">✓</span><span>验证成功</span></div>}
       {error && <><p className="auth-error" aria-live="polite">{error}</p><button ref={retryButtonRef} className="btn-secondary" type="button" onClick={retryWidget}>重新加载验证</button></>}
