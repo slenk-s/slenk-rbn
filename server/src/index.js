@@ -19,6 +19,7 @@ import { router as downloadRoutes } from './routes/download.js';
 import { router as mediaRoutes } from './routes/media.js';
 import { router as publishRoutes } from './routes/publish.js';
 import { router as redappAuthRoutes, accountsRouter as redappAccountsRoutes } from './routes/redappAuth.js';
+import { router as settingsRoutes } from './routes/settings.js';
 
 await ensureAdmin();
 startNotesImagesJanitor();
@@ -79,6 +80,7 @@ app.use('/api/media', mediaRoutes);
 app.use('/api/redapp/auth', redappAuthRoutes);
 app.use('/api/redapp', redappAccountsRoutes);
 app.use('/api/publish', publishRoutes);
+app.use('/api/settings', settingsRoutes);
 
 const webDist = path.resolve(__dirname, '../../web/dist');
 if (fs.existsSync(webDist)) {
