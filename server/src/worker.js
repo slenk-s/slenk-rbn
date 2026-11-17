@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { Worker } from 'bullmq';
+import { Worker, UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
@@ -14,6 +14,7 @@ import { uploadResultAsset } from './cloudStorage.js';
 import { capImageSize } from './lib/imageFormat.js';
 import { publishNoteToXhs } from './lib/xhsPublish.js';
 import { mapConcurrent } from './lib/concurrency.js';
+import { ProxyAgent } from 'undici';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -63,6 +64,15 @@ async function resolveProvider(payload, mode, userId) {
   return provider;
 }
 
+// 图像请求代理：境外 AI 中转站直连在本机间歇断连，可经本地代理（如 Clash 127.0.0.1:7897）转发。
+// 优先级：SLENK_IMAGE_PROXY > HTTPS_PROXY > HTTP_PROXY；留空则直连。
+const IMAGE_PROXY_URL = process.env.SLENK_IMAGE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '';
+let imageProxyAgent = null;
+if (IMAGE_PROXY_URL) {
+  imageProxyAgent = new ProxyAgent(IMAGE_PROXY_URL);
+  console.log(`[worker] image proxy enabled: ${IMAGE_PROXY_URL}`);
+}
+
 function providerRequest(provider, pathname, body, { formData, timeoutMs } = {}) {
   if (!provider.baseUrl) throw new Error('供应商 baseUrl 为空');
   if (!provider.apiKey) throw new Error('供应商 API Key 为空');
@@ -77,17 +87,34 @@ function providerRequest(provider, pathname, body, { formData, timeoutMs } = {})
     payload = JSON.stringify(body);
   }
   const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
-  return fetch(url, { method: 'POST', headers, body: payload, signal });
+  return fetch(url, { method: 'POST', headers, body: payload, signal, dispatcher: imageProxyAgent || undefined });
 }
 
 // 中转站文档建议 timeout >= 300s：单次生成通常 120s，复杂 4K + high 可达 180–240s。
 const IMAGE_REQUEST_TIMEOUT_MS = 300 * 1000;
 // 429 限流与网关 5xx 做指数退避重试（文档建议）；其他 4xx（如 contentFilter）直接报错。
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
-const RETRY_DELAYS_MS = [5000, 20000, 60000];
+// 默认退避 5s→10s→20s→40s→80s→120s（约 4.75 分钟），应对间歇性网络断连；
+// 可用 IMAGE_REQUEST_RETRY_DELAYS_MS（逗号分隔毫秒）覆盖。
+function parseRetryDelays(raw) {
+  if (!raw) return null;
+  const list = String(raw).split(',').map(s => Number(s.trim())).filter(n => Number.isFinite(n) && n >= 0);
+  return list.length ? list : null;
+}
+const RETRY_DELAYS_MS = parseRetryDelays(process.env.IMAGE_REQUEST_RETRY_DELAYS_MS) || [5000, 10000, 20000, 40000, 80000, 120000];
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 区分可重试/不可重试错误：网络抖动、供应商 429/5xx、超时自动重试；
+// 输入缺失/供应商配置/content filter 等重试无意义，抛 UnrecoverableError 立即失败。
+function isRetryableError(err) {
+  if (err?.retryable === true) return true;
+  const status = err?.status || err?.response?.status;
+  if (status) return status === 429 || status >= 500;
+  const msg = String(err?.message || '');
+  return /fetch failed|network error|ECONNRESET|ECONNABORTED|ENOTFOUND|ETIMEDOUT|socket hang up|abort|超时/i.test(msg);
 }
 
 // 图像请求统一入口：超时 + 退避重试。body 为 JSON 对象，或传 parts 走 multipart。
@@ -110,7 +137,7 @@ async function imageRequest(provider, pathname, { body, parts } = {}) {
       res = await providerRequest(provider, pathname, body, { formData, timeoutMs: IMAGE_REQUEST_TIMEOUT_MS });
     } catch (err) {
       if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-        throw new Error(`生成超时（>${IMAGE_REQUEST_TIMEOUT_MS / 1000}s），中转站可能仍在排队，请稍后重试`);
+        throw Object.assign(new Error(`生成超时（>${IMAGE_REQUEST_TIMEOUT_MS / 1000}s），中转站可能仍在排队，请稍后重试`), { retryable: true });
       }
       if (attempt >= RETRY_DELAYS_MS.length) throw err;
       console.warn(`[worker] image request network error, retry ${attempt + 1} in ${RETRY_DELAYS_MS[attempt]}ms:`, err.message);
@@ -739,8 +766,18 @@ new Worker('ai-tasks', async (job) => {
     }
     throw new Error('unknown_job');
   } catch (err) {
-    await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error' }) }, insertMeta);
-    throw err;
+    const retryable = isRetryableError(err);
+    const maxAttempts = job.opts?.attempts || 1;
+    if (retryable && (job.attemptsMade + 1) < maxAttempts) {
+      console.warn(`[worker] job ${id} will retry (${job.attemptsMade + 1}/${maxAttempts}): ${err.message}`);
+      // 保持 queued：前端继续轮询，重试成功后再置 done/failed。
+      await updateTask(userId, id, { status: 'queued' }, insertMeta);
+    } else {
+      console.error('[worker] job failed', JSON.stringify({ jobId: id, message: err?.message, attempts: job.attemptsMade + 1 }));
+      await updateTask(userId, id, { status: 'failed', error: JSON.stringify({ error: err.message, code: err.code || 'worker_error', attempts: job.attemptsMade + 1 }) }, insertMeta);
+    }
+    // 可重试抛普通 Error 交给 BullMQ（未达上限重试，达上限标记失败）；不可重试抛 UnrecoverableError 立即失败。
+    throw retryable ? err : new UnrecoverableError(err.message);
   }
 }, {
     connection: redis,

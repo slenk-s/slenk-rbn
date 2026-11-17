@@ -1,6 +1,7 @@
 import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +59,9 @@ fs.mkdirSync(videosDir, { recursive: true });
 fs.mkdirSync(notesImagesDir, { recursive: true });
 
 const app = express();
+// gzip 压缩文本响应（JSON API + 静态 JS/CSS）：公网经 cloudflared 隧道，静态资源 ~463KB 可缩至 ~140KB。
+// 默认仅压缩可压缩类型且 >1KB；SSE 无，图片/视频/下载流不受影响（compression 按 content-type 过滤）。
+app.use(compression());
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
 // Unauthenticated identity endpoint for the Windows launcher: lets it distinguish

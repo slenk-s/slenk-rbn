@@ -65,7 +65,15 @@ export async function enqueueTask(type, payload, userId, tab) {
     updatedAt: now
   });
   try {
-    await queue.add(type, { id, payload: taskPayload, userId }, { removeOnComplete: 100, removeOnFail: 100 });
+    // BullMQ 层失败重试：网络抖动/供应商 429/5xx 自动重试（指数退避），
+    // 输入或配置类错误由 worker 抛 UnrecoverableError 立即失败，不重试。
+    // 次数/退避可用 env 覆盖：JOB_ATTEMPTS（默认 4 次）、JOB_BACKOFF_MS（默认 8s，倍增至 8/16/32/64s）。
+    await queue.add(type, { id, payload: taskPayload, userId }, {
+      removeOnComplete: 100,
+      removeOnFail: 100,
+      attempts: Math.max(1, Number(process.env.JOB_ATTEMPTS || 4)),
+      backoff: { type: 'exponential', delay: Math.max(1000, Number(process.env.JOB_BACKOFF_MS || 8000)) }
+    });
     return { id, status: 'queued' };
   } catch (err) {
     const queueError = Object.assign(new Error(err.message || 'queue_error'), { code: 'redis_queue_error', cause: err });

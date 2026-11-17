@@ -66,7 +66,12 @@ if ($ping) {
   Write-Ok 'Redis already running'
 } elseif ($redis) {
   Write-Host '  Starting redis-server ...'
-  Start-Process -FilePath $redis.Server -ArgumentList '--port','6379' -WindowStyle Hidden
+  # AOF 持久化（appendfsync everysec）：Redis 崩溃/重启后 BullMQ 队列不丢（官方推荐配置）。
+  # 持久化文件写入 storage\redis，避免 RDB/AOF 散落在仓库根目录。
+  $redisDataDir = Join-Path $root 'storage\redis'
+  if (-not (Test-Path $redisDataDir)) { New-Item -ItemType Directory -Path $redisDataDir -Force | Out-Null }
+  $redisArgs = @('--port','6379','--appendonly','yes','--appendfsync','everysec','--dir',('"' + $redisDataDir + '"'))
+  Start-Process -FilePath $redis.Server -ArgumentList $redisArgs -WindowStyle Hidden
   $deadline = (Get-Date).AddSeconds(10)
   do {
     Start-Sleep -Milliseconds 500

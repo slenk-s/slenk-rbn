@@ -53,6 +53,12 @@ const GROUPS = [
   ] }
 ];
 const TABS = [{ id: 'dashboard', label: '仪表盘', icon: '◈', section: '设置' }, ...GROUPS.flatMap(g => g.tabs.map(t => ({ ...t, section: g.label })))];
+// 功能页代号 <-> URL 路径：'/note-rewrite' -> 'note-rewrite'，未知路径返回 null（调用方回退默认页），根路径 -> 'dashboard'。
+function tabIdFromPathname(pathname) {
+  const seg = String(pathname || '').replace(/^\/+|\/+$/g, '');
+  if (!seg) return 'dashboard';
+  return TABS.some(t => t.id === seg) ? seg : null;
+}
 const TYPE_TO_TAB = { rewrite: 'note-rewrite', image: 'replace-image', video: 'live-video' };
 const TAB_TO_TYPE = Object.fromEntries(Object.entries(TYPE_TO_TAB).map(([type, tab]) => [tab, type]));
 const TEXT_TABS = new Set(['note-rewrite']);
@@ -1650,7 +1656,27 @@ const MemoNoteRewriteWorkspace = memo(NoteRewriteWorkspace);
 
 
 function Workspace({ token }) {
-  const [active, setActive] = useState('dashboard');
+  const [active, setActive] = useState(() => tabIdFromPathname(window.location.pathname) || 'dashboard');
+  // 功能页切换：更新 active 并同步 URL 为 /<功能页代号>（如 /note-rewrite）。
+  const goTab = useCallback((id) => {
+    setActive(id);
+    window.history.pushState({}, '', '/' + id);
+  }, []);
+  // URL <-> 功能页：浏览器前进/后退时恢复对应页。
+  useEffect(() => {
+    const onPop = () => {
+      const id = tabIdFromPathname(window.location.pathname);
+      if (id) setActive(id);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  // 进入时若 URL 不是功能页代号（如 /login 残留、/），改写为当前页代号。
+  useEffect(() => {
+    if (tabIdFromPathname(window.location.pathname) !== active) {
+      window.history.replaceState({}, '', '/' + active);
+    }
+  }, [active]);
   const [lastToolTab, setLastToolTab] = useState('replace-image');
   // 页签表单状态（text/提示词/文件/画布/运镜等 12 组）已抽到 useTabFormState，
   // 派生值与 setter 名字与原局部变量一致，下方 JSX 与 handler 零改动。
@@ -1743,8 +1769,8 @@ function Workspace({ token }) {
     const added = addFileToTab('live-video', { url: file.url, name: file.name || '笔记图片' });
     setStatus(added ? '已传送到实况视频的图片输入区。' : '这张图已在实况视频输入区。');
   }, [addFileToTab]);
-  const openAccountManager = useCallback(() => setActive('dashboard'), []);
-  function viewTask(taskId) { setSelectedTaskId(taskId); const task = tasks.find(t => t.id === taskId); const targetTab = task ? (task.tab || TYPE_TO_TAB[task.type] || lastToolTab) : lastToolTab; clearedTabs.current.delete(targetTab); setActive(targetTab); setLastToolTab(targetTab); }
+  const openAccountManager = useCallback(() => goTab('dashboard'), []);
+  function viewTask(taskId) { setSelectedTaskId(taskId); const task = tasks.find(t => t.id === taskId); const targetTab = task ? (task.tab || TYPE_TO_TAB[task.type] || lastToolTab) : lastToolTab; clearedTabs.current.delete(targetTab); goTab(targetTab); setLastToolTab(targetTab); }
   function openTaskDetail(taskId) { setTaskDetailId(taskId); }
   async function uploadMany(list) {
     if (!list?.length) return;
@@ -1821,8 +1847,8 @@ function Workspace({ token }) {
       <header className="topbar"><div className="brand"><img className="logo" src="/logo.ico" alt="Slenk Notes" /><div><h1>Slenk Notes</h1></div></div><div className="top-actions"><div className="top-models"><span className="model-chip text">文本 {providers.find(p => p.id === (activeTextProviderId || activeProviderId))?.textModel || '未选择'}</span><span className="model-chip image">生图 {providers.find(p => p.id === (activeImageProviderId || activeProviderId))?.imageModel || '未选择'}</span><span className="model-chip page">当前 {selectedModelName || '未选择'}</span></div><span className="top-user" title="当前登录用户"><b>{me?.username || ""}</b>{me?.isAdmin ? <em>管理员</em> : null}</span><button className="btn-secondary" onClick={refresh}>刷新任务</button><button className="btn-danger" onClick={() => { localStorage.clear(); location.reload(); }}>退出</button></div></header>
       <div className="layout">
         <aside className="sidebar"><div className="sidebar-nav"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
-          <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => setActive('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
-          {GROUPS.map(group => <div key={group.id} className="tab-group"><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { setActive(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
+          <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => goTab('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
+          {GROUPS.map(group => <div key={group.id} className="tab-group"><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { goTab(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
           </div>
           {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{taskGroups.map(g => (
             <li key={g.key} className="task-group">
@@ -2120,7 +2146,8 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
         token: data.token,
         persist: token => localStorage.setItem('token', token)
       });
-      location.reload();
+      // 登录成功跳到默认功能页（而非停在 /login），URL 变为 /dashboard。
+      location.replace('/dashboard');
     } catch (err) {
       if (!flow.isCurrentLogin(request)) return;
       invalidate(err.message, true);
