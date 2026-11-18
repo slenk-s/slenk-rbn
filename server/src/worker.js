@@ -14,7 +14,7 @@ import { uploadResultAsset } from './cloudStorage.js';
 import { capImageSize } from './lib/imageFormat.js';
 import { publishNoteToXhs } from './lib/xhsPublish.js';
 import { mapConcurrent } from './lib/concurrency.js';
-import { requestWithImageRetry } from './lib/imageResponseRetry.js';
+import { requestWithImageRetry, requestWithTextRetry } from './lib/imageResponseRetry.js';
 // Node 内置 fetch/FormData 与项目安装的 undici 版本不同，混用会让代理请求报
 // invalid onRequestStart method，multipart 也会被序列化成空对象；三者必须来自同一版本。
 import { fetch, FormData, ProxyAgent } from 'undici';
@@ -131,13 +131,13 @@ function networkErrorDetails(err) {
 }
 
 // 只保留响应结构和字符串长度，用于定位空图/字段变化，不泄露 base64、签名 URL 或提示词。
-function describeImageResponse(value, depth = 0) {
+function describeProviderResponse(value, depth = 0) {
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') return { type: /^https?:\/\//i.test(value) ? 'url' : 'string', length: value.length };
   if (depth >= 3) return Array.isArray(value) ? { type: 'array', length: value.length } : { type: typeof value };
-  if (Array.isArray(value)) return value.slice(0, 4).map(item => describeImageResponse(item, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, 4).map(item => describeProviderResponse(item, depth + 1));
   if (typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).slice(0, 30).map(([key, item]) => [key, describeImageResponse(item, depth + 1)]));
+    return Object.fromEntries(Object.entries(value).slice(0, 30).map(([key, item]) => [key, describeProviderResponse(item, depth + 1)]));
   }
   return { type: typeof value };
 }
@@ -407,7 +407,7 @@ function normalizeTextContent(content) {
   return content || '';
 }
 
-async function runChat(payload, provider) {
+async function runChat(payload, provider, id) {
   const text = `${payload.prompt || ''}\n\n${payload.source || ''}`.trim();
   const referenceImages = []; // 文本生成不传参考图，避免请求体过大
   // 带参考图时走内容块数组，纯文本任务保持字符串，兼容只吃字符串的供应商。
@@ -415,12 +415,22 @@ async function runChat(payload, provider) {
     ? [{ type: 'text', text }, ...referenceImages.map(url => ({ type: 'image_url', image_url: { url } }))]
     : text;
   const messages = [{ role: 'user', content }];
-  console.log('[worker] chat request', JSON.stringify({ model: payload.model || provider.textModel, images: referenceImages.length, promptChars: text.length }));
-  const res = await providerRequest(provider, '/chat/completions', { model: payload.model || provider.textModel, messages });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) { console.error('chat api error', res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_chat_error'); }
+  console.log('[worker] chat request', JSON.stringify({ taskId: id, model: payload.model || provider.textModel, images: referenceImages.length, promptChars: text.length }));
+  const data = await requestWithTextRetry(async () => {
+    const res = await providerRequest(provider, '/chat/completions', { model: payload.model || provider.textModel, messages });
+    const data = await res.json().catch(() => ({}));
+    console.log('[worker] chat response', JSON.stringify({ taskId: id, status: res.status, body: describeProviderResponse(data) }));
+    if (!res.ok) { console.error('chat api error', res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_chat_error'); }
+    return data;
+  }, {
+    retries: 2,
+    delayMs: 5000,
+    onRetry: (attempt, emptyData) => console.warn('[worker] chat response empty, retry', JSON.stringify({ taskId: id, retry: attempt, body: describeProviderResponse(emptyData) }))
+  });
   const reply = data.choices?.[0]?.message?.content || data.output?.text || data.message || data.text || '';
-  return { text: normalizeTextContent(reply), raw: data };
+  const resultText = normalizeTextContent(reply);
+  if (!String(resultText || '').trim()) throw Object.assign(new Error('AI 没有返回文本'), { code: 'ai_chat_empty' });
+  return { text: resultText, raw: data };
 }
 
 async function extractImageAsset(data, id, index, userId) {
@@ -554,7 +564,7 @@ async function runImage(payload, provider, id, userId) {
         res = await imageRequest(provider, pathname, { body, taskId: id });
       }
       const data = await res.json().catch(() => ({}));
-      console.log('[worker] image response', JSON.stringify({ taskId: id, path: pathname, status: res.status, body: describeImageResponse(data) }));
+      console.log('[worker] image response', JSON.stringify({ taskId: id, path: pathname, status: res.status, body: describeProviderResponse(data) }));
       if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
       // 中转站（litellm）会把上游 400 包进 HTTP 200 的 body：error 字段存在同样按失败抛出。
       if (data?.error) { console.error('image api soft error', pathname, JSON.stringify(data.error)); errorFromApi(data, res, 'ai_image_error'); }
@@ -562,7 +572,7 @@ async function runImage(payload, provider, id, userId) {
     }, {
       retries: 2,
       delayMs: 5000,
-      onRetry: (attempt, emptyData) => console.warn('[worker] image response empty, retry', JSON.stringify({ taskId: id, path: pathname, retry: attempt, body: describeImageResponse(emptyData) }))
+      onRetry: (attempt, emptyData) => console.warn('[worker] image response empty, retry', JSON.stringify({ taskId: id, path: pathname, retry: attempt, body: describeProviderResponse(emptyData) }))
     });
     return { data };
   };
@@ -769,7 +779,7 @@ new Worker('ai-tasks', async (job) => {
   try {
     if (job.name === 'rewrite') {
       const provider = await resolveProvider(payload, 'text', userId);
-      const result = await runChat(payload, provider);
+      const result = await runChat(payload, provider, id);
       await updateTask(userId, id, { status: 'done', result: { ...result, providerId: provider.id, providerName: provider.name } }, insertMeta);
       return result;
     }
