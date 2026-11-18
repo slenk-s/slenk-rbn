@@ -14,7 +14,10 @@ import { uploadResultAsset } from './cloudStorage.js';
 import { capImageSize } from './lib/imageFormat.js';
 import { publishNoteToXhs } from './lib/xhsPublish.js';
 import { mapConcurrent } from './lib/concurrency.js';
-import { ProxyAgent } from 'undici';
+import { requestWithImageRetry } from './lib/imageResponseRetry.js';
+// Node 内置 fetch/FormData 与项目安装的 undici 版本不同，混用会让代理请求报
+// invalid onRequestStart method，multipart 也会被序列化成空对象；三者必须来自同一版本。
+import { fetch, FormData, ProxyAgent } from 'undici';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -107,6 +110,38 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// 网络错误只记录诊断字段，避免把请求头、API Key 或图片内容写进日志。
+function networkErrorDetails(err) {
+  const cause = err?.cause;
+  return {
+    name: err?.name,
+    message: err?.message,
+    code: err?.code,
+    cause: cause ? {
+      name: cause.name,
+      message: cause.message,
+      code: cause.code,
+      errno: cause.errno,
+      syscall: cause.syscall,
+      hostname: cause.hostname,
+      host: cause.host,
+      port: cause.port
+    } : null
+  };
+}
+
+// 只保留响应结构和字符串长度，用于定位空图/字段变化，不泄露 base64、签名 URL 或提示词。
+function describeImageResponse(value, depth = 0) {
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return { type: /^https?:\/\//i.test(value) ? 'url' : 'string', length: value.length };
+  if (depth >= 3) return Array.isArray(value) ? { type: 'array', length: value.length } : { type: typeof value };
+  if (Array.isArray(value)) return value.slice(0, 4).map(item => describeImageResponse(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).slice(0, 30).map(([key, item]) => [key, describeImageResponse(item, depth + 1)]));
+  }
+  return { type: typeof value };
+}
+
 // 区分可重试/不可重试错误：网络抖动、供应商 429/5xx、超时自动重试；
 // 输入缺失/供应商配置/content filter 等重试无意义，抛 UnrecoverableError 立即失败。
 function isRetryableError(err) {
@@ -118,7 +153,7 @@ function isRetryableError(err) {
 }
 
 // 图像请求统一入口：超时 + 退避重试。body 为 JSON 对象，或传 parts 走 multipart。
-async function imageRequest(provider, pathname, { body, parts } = {}) {
+async function imageRequest(provider, pathname, { body, parts, taskId } = {}) {
   let formData = null;
   if (parts) {
     formData = new FormData();
@@ -139,13 +174,16 @@ async function imageRequest(provider, pathname, { body, parts } = {}) {
       if (err.name === 'TimeoutError' || err.name === 'AbortError') {
         throw Object.assign(new Error(`生成超时（>${IMAGE_REQUEST_TIMEOUT_MS / 1000}s），中转站可能仍在排队，请稍后重试`), { retryable: true });
       }
-      if (attempt >= RETRY_DELAYS_MS.length) throw err;
-      console.warn(`[worker] image request network error, retry ${attempt + 1} in ${RETRY_DELAYS_MS[attempt]}ms:`, err.message);
+      if (attempt >= RETRY_DELAYS_MS.length) {
+        console.error('[worker] image request network failed', JSON.stringify({ taskId, path: pathname, attempts: attempt + 1, error: networkErrorDetails(err) }));
+        throw err;
+      }
+      console.warn('[worker] image request network error', JSON.stringify({ taskId, path: pathname, retry: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt], error: networkErrorDetails(err) }));
       await sleep(RETRY_DELAYS_MS[attempt]);
       continue;
     }
     if (!RETRYABLE_STATUS.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
-    console.warn(`[worker] image request HTTP ${res.status}, retry ${attempt + 1} in ${RETRY_DELAYS_MS[attempt]}ms`);
+    console.warn('[worker] image request HTTP retry', JSON.stringify({ taskId, path: pathname, status: res.status, retry: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt] }));
     await sleep(RETRY_DELAYS_MS[attempt]);
   }
 }
@@ -502,21 +540,30 @@ async function runImage(payload, provider, id, userId) {
   const requestOne = async (i, n = 1) => {
     const refIndex = perReference ? (i % referenceCount) : -1;
     const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n, size: await requestSize(refIndex) };
-    let res;
-    if (useFormApi) {
-      const partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
-      // 中转站文档只列出 model/prompt/n/size 等字段，watermark 这类 SenseNova 扩展不带。
-      res = await imageRequest(provider, pathname, { body, parts: partsForThis.length ? partsForThis : null });
-    } else {
-      const refsForThis = refIndex >= 0 ? [referenceImages[refIndex]] : referenceImages;
-      body.watermark = false;
-      if (refsForThis.length) body.images = refsForThis.map(image_url => ({ image_url }));
-      res = await imageRequest(provider, pathname, { body });
-    }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
-    // 中转站（litellm）会把上游 400 包进 HTTP 200 的 body：error 字段存在同样按失败抛出。
-    if (data?.error) { console.error('image api soft error', pathname, JSON.stringify(data.error)); errorFromApi(data, res, 'ai_image_error'); }
+    // 中转站偶发 HTTP 200 但 data 为空；这不同于 4xx/网络错误，做小范围重试避免任务直接失败。
+    const data = await requestWithImageRetry(async () => {
+      let res;
+      if (useFormApi) {
+        const partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
+        // 中转站文档只列出 model/prompt/n/size 等字段，watermark 这类 SenseNova 扩展不带。
+        res = await imageRequest(provider, pathname, { body, parts: partsForThis.length ? partsForThis : null, taskId: id });
+      } else {
+        const refsForThis = refIndex >= 0 ? [referenceImages[refIndex]] : referenceImages;
+        body.watermark = false;
+        if (refsForThis.length) body.images = refsForThis.map(image_url => ({ image_url }));
+        res = await imageRequest(provider, pathname, { body, taskId: id });
+      }
+      const data = await res.json().catch(() => ({}));
+      console.log('[worker] image response', JSON.stringify({ taskId: id, path: pathname, status: res.status, body: describeImageResponse(data) }));
+      if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
+      // 中转站（litellm）会把上游 400 包进 HTTP 200 的 body：error 字段存在同样按失败抛出。
+      if (data?.error) { console.error('image api soft error', pathname, JSON.stringify(data.error)); errorFromApi(data, res, 'ai_image_error'); }
+      return data;
+    }, {
+      retries: 2,
+      delayMs: 5000,
+      onRetry: (attempt, emptyData) => console.warn('[worker] image response empty, retry', JSON.stringify({ taskId: id, path: pathname, retry: attempt, body: describeImageResponse(emptyData) }))
+    });
     return { data };
   };
   const pushAsset = async (data, index, refIndex) => {
