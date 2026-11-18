@@ -102,3 +102,11 @@ app.use((err, req, res, next) => {
 
 const port = Number(process.env.PORT || 3001);
 app.listen(port, () => console.log(`server listening on ${port}`));
+
+// 本地 JSON 模式下，启动后从 TiDB 拉取共享的供应商/用户数据并与本地合并（异步、失败不影响启动）。
+// 这样换机/清空本地后仪表盘不再空白；变更仍走 store.local 的推送镜像，双向在启动时收敛。
+if (process.env.SLENK_DATA_BACKEND !== 'mysql') {
+  import('./syncTiDB.js')
+    .then(m => m.pullProvidersUsersFromTiDB())
+    .catch(err => console.error('[tidb-sync] 启动拉取失败：', err.message));
+}

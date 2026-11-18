@@ -13,17 +13,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 import { paths } from './paths.js';
+import { mergeProviders, mergeUsers } from './lib/cloudSyncMerge.js';
 
 const TIDB_PG_URL = process.env.TIDB_PG_URL;
 
 const TABLE = 'slenk_cloud_sync';
 
+function localTableFile(name) {
+  return path.join(paths.dataDir, 'local', `${name}.json`);
+}
+
 function loadLocalTable(name) {
   try {
-    return JSON.parse(fs.readFileSync(path.join(paths.dataDir, 'local', `${name}.json`), 'utf8'));
+    return JSON.parse(fs.readFileSync(localTableFile(name), 'utf8'));
   } catch {
     return [];
   }
+}
+
+function saveLocalTable(name, rows) {
+  fs.writeFileSync(localTableFile(name), JSON.stringify(rows));
+}
+
+// 内容比较按 id 排序后序列化，行顺序差异不算变更。
+function tableSignature(rows) {
+  return JSON.stringify([...rows].sort((a, b) => String(a.id).localeCompare(String(b.id))));
 }
 
 let syncing = false;
@@ -91,4 +105,42 @@ export function scheduleSyncProvidersUsers(delay = 1500) {
   if (!TIDB_PG_URL) return;
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => { timer = null; void syncProvidersUsersToTiDB(); }, delay);
+}
+
+// 启动时从 TiDB 拉取共享的供应商/用户数据并与本地合并：
+// 新机器/清空的本地能从云端补全（之前只有本地→云端的单向推送，第二台机器仪表盘是空的）。
+// 合并规则（lib/cloudSyncMerge.js）：供应商按 updated_at 新者胜，用户冲突保本地，
+// 任一端独有的行都保留（云端删除不向下传播）。合并结果有变化时写回本地并推回云端收敛。
+export async function pullProvidersUsersFromTiDB() {
+  if (!TIDB_PG_URL) return { ok: false, skipped: true, reason: 'TIDB_PG_URL not set' };
+  const client = new pg.Client({ connectionString: TIDB_PG_URL, connectionTimeoutMillis: 15000 });
+  try {
+    await client.connect();
+    await ensureTable(client);
+    const { rows } = await client.query(`SELECT kind, data FROM ${TABLE} WHERE kind IN ('provider', 'user')`);
+    const cloudProviders = rows.filter(r => r.kind === 'provider').map(r => r.data);
+    const cloudUsers = rows.filter(r => r.kind === 'user').map(r => r.data);
+
+    const localProviders = loadLocalTable('providers');
+    const localUsers = loadLocalTable('users');
+    const mergedProviders = mergeProviders(localProviders, cloudProviders);
+    const mergedUsers = mergeUsers(localUsers, cloudUsers);
+
+    const changed = tableSignature(mergedProviders) !== tableSignature(localProviders)
+      || tableSignature(mergedUsers) !== tableSignature(localUsers);
+    if (changed) {
+      saveLocalTable('providers', mergedProviders);
+      saveLocalTable('users', mergedUsers);
+      // 推回云端，让双向差异收敛到合并结果。
+      await mirrorKind(client, 'provider', mergedProviders);
+      await mirrorKind(client, 'user', mergedUsers);
+    }
+    console.log(`[tidb-sync] 启动拉取完成：provider 本地 ${localProviders.length} → 合并 ${mergedProviders.length}，user 本地 ${localUsers.length} → 合并 ${mergedUsers.length}${changed ? '（已写回）' : '（无变化）'}`);
+    return { ok: true, changed, providers: mergedProviders.length, users: mergedUsers.length };
+  } catch (e) {
+    console.error('[tidb-sync] pull failed:', e.message);
+    return { ok: false, error: e.message };
+  } finally {
+    await client.end().catch(() => {});
+  }
 }
