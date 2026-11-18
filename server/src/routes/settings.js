@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import { verify, requireAdmin } from '../auth.js';
 import { getEffectiveDb, getDbConfigPath, testConnection, getPool, invalidateDbConfigCache } from '../db.js';
 
-// 本地存储模式（SLENK_DATA_BACKEND=local）：无 MySQL 连接，连接管理接口不适用。
-const isLocalBackend = process.env.SLENK_DATA_BACKEND === 'local';
+// 本地存储模式（默认；SLENK_DATA_BACKEND 未设置或 =local）：无 MySQL 连接，连接管理接口不适用。
+const isLocalBackend = process.env.SLENK_DATA_BACKEND !== 'mysql';
 
 export const router = Router();
 router.use(verify);
