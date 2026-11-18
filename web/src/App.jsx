@@ -588,6 +588,7 @@ const DB_EMPTY = { host: '', port: '3306', user: '', password: '', database: '' 
 function DatabaseSettingsCard({ token }) {
   const [form, setForm] = useState(DB_EMPTY);
   const [source, setSource] = useState('env');
+  const [storage, setStorage] = useState('mysql');
   const [passwordSet, setPasswordSet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -596,6 +597,7 @@ function DatabaseSettingsCard({ token }) {
     setBusy(true);
     try {
       const data = await api('/api/settings/db', { token });
+      setStorage(data.storage || 'mysql');
       setForm({ host: data.host || '', port: String(data.port ?? 3306), user: data.user || '', password: '', database: data.database || '' });
       setSource(data.source || 'env');
       setPasswordSet(Boolean(data.passwordSet));
@@ -620,6 +622,18 @@ function DatabaseSettingsCard({ token }) {
       setStatus('已保存，server 与 worker 将自动重连。'); setStatusErr(false);
     } catch (err) { setStatus(DB_ERROR_TEXT[err.message] || '保存失败：' + err.message); setStatusErr(true); }
     finally { setBusy(false); }
+  }
+  if (storage === 'local') {
+    return (
+      <section className="card provider-manager db-manager">
+        <div className="section-head"><div><h3>数据库连接</h3><p>当前为本地存储模式（SLENK_DATA_BACKEND=local），不使用 MySQL。</p></div><span className="pill">本地</span></div>
+        <div className="db-local-info">
+          <p><b>数据位置</b>：业务数据（用户/供应商/任务/笔记/媒体）存于本机 <code>storage/local/</code> JSON 文件，媒体为独立文件。</p>
+          <p><b>云端同步</b>：供应商与用户数据镜像到 TiDB Cloud（<code>slenk_cloud_sync</code>），通过 <code>TIDB_PG_URL</code> 连接。</p>
+          <p className="db-status ok">此模式下 MySQL 连接配置不适用。</p>
+        </div>
+      </section>
+    );
   }
   return (
     <section className="card provider-manager db-manager">

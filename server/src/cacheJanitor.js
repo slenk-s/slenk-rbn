@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { query } from './db.js';
+import { getAllNotesImagesForJanitor, getAllTasksPayloadForJanitor } from './store.js';
 import { paths } from './paths.js';
 
 const notesImagesDir = path.join(paths.dataDir, 'notes-images');
@@ -15,14 +15,15 @@ const CACHE_FILE_RE = /^[0-9a-f]{32}\.(?:jpe?g|png|webp|gif|avif|heic|heif)$/i;
 const REF_RE = /\/notes-images\/([A-Za-z0-9._-]+)/g;
 
 // 引用来源：已存笔记的 images 与任务 payload（任务结果页/参考图可能还在用缓存图）。
+// 经 store 辅助读取（MySQL 与本地 JSON 后端都提供），不直接依赖 db.js。
 async function collectReferencedFilenames() {
   const refs = new Set();
-  const [notes, tasks] = await Promise.all([
-    query('select images from slenk_notes_notes'),
-    query('select payload from slenk_notes_tasks')
+  const [noteImages, taskPayloads] = await Promise.all([
+    getAllNotesImagesForJanitor(),
+    getAllTasksPayloadForJanitor()
   ]);
-  for (const row of [...notes.rows, ...tasks.rows]) {
-    const text = JSON.stringify(row);
+  for (const item of [...noteImages, ...taskPayloads]) {
+    const text = JSON.stringify(item);
     for (const m of text.matchAll(REF_RE)) refs.add(m[1]);
   }
   return refs;

@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import { verify, requireAdmin } from '../auth.js';
 import { getEffectiveDb, getDbConfigPath, testConnection, getPool, invalidateDbConfigCache } from '../db.js';
 
+// 本地存储模式（SLENK_DATA_BACKEND=local）：无 MySQL 连接，连接管理接口不适用。
+const isLocalBackend = process.env.SLENK_DATA_BACKEND === 'local';
+
 export const router = Router();
 router.use(verify);
 router.use(requireAdmin);
@@ -19,9 +22,10 @@ export function validateBody(body) {
   return { config: { host, port, user, password: String(body?.password ?? ''), database } };
 }
 
-// GET 当前有效连接（绝不返回密码）。
+// GET 当前有效连接（绝不返回密码）。本地模式返回 local 标记，前端据此隐藏表单。
 router.get('/db', (req, res, next) => {
   try {
+    if (isLocalBackend) return res.json({ storage: 'local', source: 'local' });
     const { config, source } = getEffectiveDb();
     res.json({
       host: config.host,
@@ -37,6 +41,7 @@ router.get('/db', (req, res, next) => {
 // POST 测试连接：校验后建一次性池 SELECT 1，不落盘；密码留空=用当前。
 router.post('/db/test', async (req, res, next) => {
   try {
+    if (isLocalBackend) return res.status(400).json({ error: 'local_storage' });
     const v = validateBody(req.body);
     if (v.error) return res.status(400).json({ error: v.error });
     const current = getEffectiveDb().config;
@@ -51,6 +56,7 @@ router.post('/db/test', async (req, res, next) => {
 // 已运行中的 server/worker 各自在下次 DB 访问时自动换池（无重启）。
 router.post('/db', async (req, res, next) => {
   try {
+    if (isLocalBackend) return res.status(400).json({ error: 'local_storage' });
     const v = validateBody(req.body);
     if (v.error) return res.status(400).json({ error: v.error });
     const current = getEffectiveDb().config;
@@ -67,6 +73,7 @@ router.post('/db', async (req, res, next) => {
 // DELETE 重置：删 db.json，回退 .env。
 router.delete('/db', (req, res, next) => {
   try {
+    if (isLocalBackend) return res.status(400).json({ error: 'local_storage' });
     const file = getDbConfigPath();
     if (fs.existsSync(file)) fs.unlinkSync(file);
     invalidateDbConfigCache();
