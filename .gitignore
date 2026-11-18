@@ -4,7 +4,8 @@ uploads/
 queue/
 storage/
 server/storage/
-tools/
+tools/*
+!tools/*.ps1
 .codex-tmp/
 .codex/
 *.local
