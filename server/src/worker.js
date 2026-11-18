@@ -15,6 +15,7 @@ import { capImageSize } from './lib/imageFormat.js';
 import { publishNoteToXhs } from './lib/xhsPublish.js';
 import { mapConcurrent } from './lib/concurrency.js';
 import { requestWithImageRetry, requestWithTextRetry } from './lib/imageResponseRetry.js';
+import { resolveImageQuality, isInvalidImageRejection, normalizeReferenceBuffer } from './lib/imageRequestOptions.js';
 // Node 内置 fetch/FormData 与项目安装的 undici 版本不同，混用会让代理请求报
 // invalid onRequestStart method，multipart 也会被序列化成空对象；三者必须来自同一版本。
 import { fetch, FormData, ProxyAgent } from 'undici';
@@ -215,77 +216,33 @@ function dataUrlFromBuffer(buf, fallbackMime) {
   return 'data:' + mime + ';base64,' + buf.toString('base64');
 }
 
-// 供应商对参考图的硬性限制：PNG/JPEG/WebP、≤10MB、边长落在 [256,4096]、宽高比 ≤2:1。
-// 超限的图（手机长截图最常见，如 1440x3168 = 2.2:1）会被直接拒收，
-// 所以在本地先规范化再提交；合规的图原样返回，不做任何重编码。
-const REF_MAX_EDGE = 4096;
-const REF_MIN_EDGE = 256;
-const REF_MAX_RATIO = 2;
-const REF_MAX_BYTES = 10 * 1024 * 1024;
-const REF_FORMATS = new Set(['png', 'jpeg', 'webp']);
-
-async function normalizeReferenceBuffer(buf) {
-  const meta = await sharp(buf, { failOn: 'none' }).metadata();
-  if (!meta?.width || !meta?.height) return null;
-  // EXIF orientation 5-8 会让解码后的宽高互换，判定前要按实际显示方向取尺寸。
-  const swapped = Number(meta.orientation) >= 5;
-  const width = swapped ? meta.height : meta.width;
-  const height = swapped ? meta.width : meta.height;
-  const ratio = Math.max(width, height) / Math.min(width, height);
-  const needsResize = Math.max(width, height) > REF_MAX_EDGE || Math.min(width, height) < REF_MIN_EDGE;
-  const needsCrop = ratio > REF_MAX_RATIO;
-  // 始终重编码为 PNG：jpeg 参考图会被 Azure 通道偶发拒收（Invalid image file or mode），
-  // PNG 剥掉 EXIF/ICC 后兼容性最好。保留透明度，不 flatten。
-  if (!needsResize && !needsCrop) {
-    try { return await sharp(buf, { failOn: 'none' }).rotate().png().toBuffer(); } catch { return null; }
-  }
-
-  let scale = 1;
-  if (Math.max(width, height) > REF_MAX_EDGE) scale = REF_MAX_EDGE / Math.max(width, height);
-  else if (Math.min(width, height) < REF_MIN_EDGE) scale = REF_MIN_EDGE / Math.min(width, height);
-  const scaledWidth = Math.max(1, Math.round(width * scale));
-  const scaledHeight = Math.max(1, Math.round(height * scale));
-
-  // sharp 的 extract 作用在 resize 之后的图上，所以缩放与裁切分两步做，避免顺序歧义。
-  let stage = await sharp(buf, { failOn: 'none' }).rotate().toBuffer();
-  let stageWidth = width;
-  let stageHeight = height;
-  if (scale !== 1) {
-    stage = await sharp(stage).resize(scaledWidth, scaledHeight, { fit: 'fill' }).png().toBuffer();
-    stageWidth = scaledWidth;
-    stageHeight = scaledHeight;
-  }
-
-  let image = sharp(stage);
-  if (Math.max(stageWidth, stageHeight) / Math.min(stageWidth, stageHeight) > REF_MAX_RATIO) {
-    // 居中裁到 2:1：横向过长裁宽度，纵向过长裁高度，画面保持饱满，不引入原图之外的内容。
-    if (stageWidth >= stageHeight) {
-      const targetWidth = Math.max(REF_MIN_EDGE, Math.round(stageHeight * REF_MAX_RATIO));
-      image = image.extract({ left: Math.round((stageWidth - targetWidth) / 2), top: 0, width: targetWidth, height: stageHeight });
-    } else {
-      const targetHeight = Math.max(REF_MIN_EDGE, Math.round(stageWidth * REF_MAX_RATIO));
-      image = image.extract({ left: 0, top: Math.round((stageHeight - targetHeight) / 2), width: stageWidth, height: targetHeight });
-    }
-  }
-
-  const output = await image.png().toBuffer();
-  // PNG 对超大图可能超 10MB：兜底压回 jpeg。
-  if (output.length > REF_MAX_BYTES) {
-    return sharp(output).flatten({ background: '#ffffff' }).jpeg({ quality: 80 }).toBuffer();
-  }
-  return output;
-}
-
-// 参考图规范化后包一层：data URL 模式包成 Data URL，multipart 模式直接拿 buffer。
+// 参考图规范化（尺寸/比例/格式修正与合规原图透传）在 lib/imageRequestOptions.js，
+// 透传（normalized === buf 零拷贝）时打 passthrough 标记：若被供应商以
+// 「Invalid image」拒收，runImage 会把它重编码成 PNG 重发一次。
 async function referencePart(buf, fallbackMime) {
   const normalized = await normalizeReferenceBuffer(buf).catch(err => {
     console.warn('[worker] reference normalize skipped:', err.message);
     return null;
   });
   if (!normalized) return { buf, mime: sniffImageMime(buf) || fallbackMime || 'image/png' };
-  console.log('[worker] reference normalized', JSON.stringify({ bytesIn: buf.length, bytesOut: normalized.length }));
-  // 归一化产物现在是 PNG（偶尔兜回 jpeg），mime 按实际内容嗅探，别硬编码。
-  return { buf: normalized, mime: sniffImageMime(normalized) || 'image/png' };
+  if (normalized !== buf) {
+    console.log('[worker] reference normalized', JSON.stringify({ bytesIn: buf.length, bytesOut: normalized.length }));
+    return { buf: normalized, mime: sniffImageMime(normalized) || 'image/png' };
+  }
+  return { buf, mime: sniffImageMime(buf) || fallbackMime || 'image/png', passthrough: true };
+}
+
+// 透传参考图被供应商以「Invalid image」拒收时的回退：重编码为 PNG（剥 EXIF/ICC）再发一次。
+async function reencodePassthroughParts(parts) {
+  return Promise.all(parts.map(async p => {
+    if (!p.passthrough) return p;
+    try {
+      const png = await sharp(p.buf, { failOn: 'none' }).rotate().png().toBuffer();
+      return { buf: png, mime: 'image/png' };
+    } catch {
+      return p;
+    }
+  }));
 }
 
 async function referenceDataUrl(buf, fallbackMime) {
@@ -515,6 +472,8 @@ async function runImage(payload, provider, id, userId) {
   // 尺寸交给模型的必须是合法值（32 的倍数 / 比例 ≤3:1），画布选项才真正生效。
   const size = normalizeImageSize(payload.canvasSize);
   const model = payload.model || provider.imageModel;
+  // 出图质量：默认 medium（实测比供应商默认 high 快约 1/4），payload.quality / SLENK_IMAGE_QUALITY 可覆盖。
+  const quality = resolveImageQuality(payload);
   // form 模式（GPT-image 中转站）：编辑接口只收 multipart 文件，响应始终是 b64_json。
   const useFormApi = provider.imageApi === 'form';
   const referenceImages = useFormApi ? [] : await loadReferenceDataUrls(payload);
@@ -545,25 +504,36 @@ async function runImage(payload, provider, id, userId) {
     }
     return refSizeCache.get(idx);
   }
-  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests, batch: canBatch ? count : 1, concurrency: requestConcurrency }));
+  console.log('[worker] image request', JSON.stringify({ path: pathname, model, size, quality: useFormApi ? quality : undefined, api: useFormApi ? 'form' : 'json', references: referenceCount, perReference, requests, batch: canBatch ? count : 1, concurrency: requestConcurrency }));
   // 单次请求：n 传入批量张数时一次拿回 n 张（/images/generations），否则 n=1（/images/edits）。
   const requestOne = async (i, n = 1) => {
     const refIndex = perReference ? (i % referenceCount) : -1;
     const body = { model, prompt: splitPrompts ? splitPrompts[refIndex] : prompt, n, size: await requestSize(refIndex) };
+    // 中转站文档只列出 model/prompt/n/size 等字段，watermark 这类 SenseNova 扩展不带；quality 实测被接受。
+    if (useFormApi) body.quality = quality;
     // 中转站偶发 HTTP 200 但 data 为空；这不同于 4xx/网络错误，做小范围重试避免任务直接失败。
     const data = await requestWithImageRetry(async () => {
       let res;
+      let data;
       if (useFormApi) {
-        const partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
-        // 中转站文档只列出 model/prompt/n/size 等字段，watermark 这类 SenseNova 扩展不带。
+        let partsForThis = refIndex >= 0 ? [referenceParts[refIndex]] : referenceParts;
         res = await imageRequest(provider, pathname, { body, parts: partsForThis.length ? partsForThis : null, taskId: id });
+        data = await res.json().catch(() => ({}));
+        // 合规参考图默认透传原字节（jpeg 不再放大约 10 倍重编码成 png）；
+        // Azure 通道偶发拒收 jpeg 时回退：重编码成 PNG 重发一次，兼容性不回归。
+        if (!res.ok && partsForThis.some(p => p.passthrough) && isInvalidImageRejection(res.status, data)) {
+          console.warn('[worker] reference passthrough rejected, re-encode to PNG and resend', JSON.stringify({ taskId: id, status: res.status }));
+          partsForThis = await reencodePassthroughParts(partsForThis);
+          res = await imageRequest(provider, pathname, { body, parts: partsForThis, taskId: id });
+          data = await res.json().catch(() => ({}));
+        }
       } else {
         const refsForThis = refIndex >= 0 ? [referenceImages[refIndex]] : referenceImages;
         body.watermark = false;
         if (refsForThis.length) body.images = refsForThis.map(image_url => ({ image_url }));
         res = await imageRequest(provider, pathname, { body, taskId: id });
+        data = await res.json().catch(() => ({}));
       }
-      const data = await res.json().catch(() => ({}));
       console.log('[worker] image response', JSON.stringify({ taskId: id, path: pathname, status: res.status, body: describeProviderResponse(data) }));
       if (!res.ok) { console.error('image api error', pathname, res.status, res.url, JSON.stringify(data)); errorFromApi(data, res, 'ai_image_error'); }
       // 中转站（litellm）会把上游 400 包进 HTTP 200 的 body：error 字段存在同样按失败抛出。
