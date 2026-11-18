@@ -2172,6 +2172,7 @@ function Auth({ flow, pathname, navigate, registerLeaveLogin }) {
 
   return (
     <div className="auth-screen">
+      <div className="auth-bg" aria-hidden="true"><div className="auth-bg-band" /></div>
       <div className="auth-flip-scene">
         <div className={'auth-flip-card' + (cardFlipped ? ' is-flipped' : '')} data-phase={flipPhase} onTransitionEnd={handleFlipTransitionEnd}>
           <section className="auth-card auth-face auth-face-front" aria-hidden={!frontActive} inert={!frontActive}>
