@@ -2,7 +2,7 @@
 
 把 Slenk Notes 搬到一台全新电脑，需要的东西如下。
 
-## 必装（3 个）
+## 必装与可选
 
 | 软件 | 用途 | 说明 |
 |---|---|---|
@@ -14,7 +14,7 @@
 ## 不用装
 
 - **PostgreSQL** —— 生产库已从 Supabase（pg）迁到本机 MySQL，不需要；`SUPABASE_*` 仅测试库用
-- **FFmpeg** —— worker 内置 `ffmpeg-static` 兜底，实况视频开箱可用（除非你想用自己的 FFmpeg，再配 `FFMPEG_PATH`）
+- **FFmpeg** —— worker 按 `.env` 的 `FFMPEG_PATH` → `E:/FFmpeg/ffmpeg.exe` → 内置 `ffmpeg-static` 依次查找，实况视频开箱可用（想用别的 FFmpeg 再改 `FFMPEG_PATH`）
 - **cloudflared** —— 仅当需要 `https://236963.xyz` 公网访问；只在本机用不需要
 
 ## 需要从旧电脑拷贝的（不在 git 里）
@@ -76,4 +76,5 @@ npm run dev:web          # 可选：前端开发模式，http://localhost:5173
 ## 注意
 
 - 一键启动 `start-slenk-notes.bat`（或 `start-slenk-notes.ps1`）会自动探测 Node 与 Redis 的位置（`E:\Redis` 8.10.3 / `F:\Node`，及旧路径 `D:\slenk\YLan\Redis`），无需手动改路径。
-- 首次登录：admin / 123456（本机 MySQL，先建表/迁数据，账号与旧机器一致；登录后建议改密）。
+- 首次登录：admin / 123456（本地 JSON 模式首次启动自动创建；MySQL 模式需先建表/迁数据。登录后建议改密）。
+- 多图任务不需要额外配置：上传接口单次最多 9 张、单文件 ≤ 25MB；行为与自检步骤见 `RUN.md`「多图任务自检」。

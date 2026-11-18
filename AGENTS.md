@@ -39,6 +39,28 @@ discoverable by both Codex and Claude Code:
 - Do not invent API contracts; read the references under each skill's
   `references/` before acting.
 
+## Multi-image tasks (read before touching)
+
+Feature pages submit `image` / `video` / `rewrite` tasks with a `tab`; the
+worker runs them from the shared `ai-tasks` queue. Keep these invariants:
+
+- `server/src/lib/referenceImages.js` caps references: 9 in per-reference mode
+  (`MAX_PER_REFERENCE_IMAGES`), and 2 when composing one image
+  (`MAX_REFERENCE_IMAGES`; excess is truncated with a worker-log warning only,
+  the task still succeeds).
+- Image tasks: `perReference !== false` with more than one reference means one
+  `/images/edits` request per reference (outputs = references × `count`, with
+  `imageReferences`); otherwise all references go into a single request and
+  output = `count` (1–4). Uploads are capped at 9 files, 25MB each.
+- Video tasks: one MP4 per input image, `videos` / `localVideos` in input
+  order. `VIDEO_CONCURRENCY` and `IMAGE_REQUEST_CONCURRENCY` are clamped 1–4.
+- Note-rewrite text generation deliberately sends no reference images
+  (`referenceImages = []` in `server/src/worker.js`); per-image regeneration
+  submits one `purpose: 'noteImage'` image task per image.
+- Note download (商品下载) caches parsed XHS images under `storage/notes-images`
+  (width 1080, concurrency 4, 25s budget) and downloads through
+  `/api/download`, which only accepts absolute http(s) URLs.
+
 ## XHS account authorization (per-user, multi-account)
 
 Each Slenk user binds **multiple** XHS accounts; users are fully isolated and

@@ -3,10 +3,11 @@
 ## 当前实现
 - 前端：React + Vite
 - 后端：Express
-- 账号：MySQL 中的用户账号（首次初始化会创建 `admin / 123456`，登录后建议修改）
+- 功能页：仪表盘 + 5 个任务页（AI 生图 / 替换生图 / 实况视频 / 笔记改写 / 商品下载），均支持多图输入，见下文「功能页与多图任务」
+- 账号：本地 JSON 或 MySQL 中的用户账号（默认本地模式；首次初始化会创建 `admin / 123456`，登录后建议修改）
 - AI：类似 `cc-switch` 的可切换供应商管理，不写死 SenseNova
 - 队列：Redis + BullMQ（失败自动重试，`server/src/worker.js` 的 `isRetryableError` 区分网络/超时可重试与输入/配置类不可重试）
-- 文件存储：本地自定义路径 `STORAGE_PATH`；生成媒体存 MySQL BLOB（`slenk_notes_media`，`/api/media/:id` 读回）
+- 文件存储：上传/视频/笔记图缓存存本地 `STORAGE_PATH`；生成媒体在 MySQL 模式入 `slenk_notes_media` BLOB（`/api/media/:id` 读回），本地模式存 `storage/local/media/` 文件
 - 视频：本地 FFmpeg 算法运镜
 - 数据层：默认本地 JSON（`storage/local/`，不用 MySQL）；设 `SLENK_DATA_BACKEND=mysql` 切回 MySQL。见下文「数据层」两节；本地模式下供应商/用户数据镜像到 TiDB Cloud
 - HTTP：文本响应 gzip 压缩（compression 中间件）；生产经 cloudflared 隧道（`protocol: http2`，避开本机 QUIC/UDP 7844 断连波动）
@@ -17,15 +18,15 @@ Redis 使用 `E:\Redis`（8.10.3，`redis-windows/redis-windows` fork 的 msys2 
 - 检测：`redis-cli.exe -p 6379 ping` 应返回 `PONG`
 - 旧版回滚：`E:\Redis-5.0.14.bak`（旧二进制）与 `storage/redis-5.0.14.bak`（旧 AOF 数据）
 
-FFmpeg 使用项目内置 `ffmpeg-static`（`server/node_modules/ffmpeg-static/ffmpeg.exe`）：
-- 配置：`.env` 中 `FFMPEG_PATH` / `FFMPEG_FFPROBE_PATH` 指向该 exe
+FFmpeg 解析顺序（`server/src/worker.js`）：`.env` 的 `FFMPEG_PATH` → `E:/FFmpeg/ffmpeg.exe` → 项目内置 `server/node_modules/ffmpeg-static/ffmpeg.exe`：
+- 本机 `.env` 指向 `E:/FFmpeg/ffmpeg.exe`；新机器没装 FFmpeg 时删掉该项（或改成内置路径）即可回退 `ffmpeg-static`
 - 也可自备 FFmpeg 并改 `.env` 指向自定义路径
 
-项目 `.env` 已配置：
+本机 `.env` 相关配置：
 ```env
 REDIS_URL=redis://localhost:6379
-FFMPEG_PATH=./server/node_modules/ffmpeg-static/ffmpeg.exe
-FFMPEG_FFPROBE_PATH=./server/node_modules/ffmpeg-static/ffmpeg.exe
+FFMPEG_PATH=E:/FFmpeg/ffmpeg.exe
+FFMPEG_FFPROBE_PATH=E:/FFmpeg/ffprobe.exe
 ```
 
 ## AI 供应商管理
@@ -38,6 +39,46 @@ FFMPEG_FFPROBE_PATH=./server/node_modules/ffmpeg-static/ffmpeg.exe
 - 生图供应商可选「生图接口」形态：
   - `OpenAI JSON 兼容`（默认）：图生图走 JSON + Data URL（SenseNova 等）。
   - `GPT-image 中转站（multipart 编辑）`：文生图走 `/images/generations` JSON；图生图走 `/images/edits` 的 multipart/form-data（单图字段 `image`，多图 `image[]`）；响应按 `b64_json` 解析；请求超时 300s，429/5xx 自动指数退避重试。模型填 `turing/gpt-image-2`、`turing/gpt-image-2.5-flare`（快）或 `turing/gpt-image-2.5-sunburst`（画质）。
+
+## 功能页与多图任务
+
+工作区共 6 个页面：仪表盘（无任务）和 5 个任务页。任务统一进 Redis 队列 `ai-tasks`，记录 `type`（`image` / `video` / `rewrite`）和 `tab`，结果回显到提交时的页面。所有上传入口单次最多 **9 个文件**（`multer` 的 `upload.array('file', 9)` 与前端同样限制），单文件 ≤ 25MB。
+
+| 页面 | 任务类型 | 多图行为 |
+| --- | --- | --- |
+| AI 生图 | `image` | 多参考图生成，可选「合成一张」或「按参考图一一对应」，每图输出 1–4 张 |
+| 替换生图 | `image` | 多参考图替换，默认按参考图一一对应，结果标注「对应参考图 N」 |
+| 实况视频 | `video` | 每张输入图各出一条 MP4，顺序与输入一致 |
+| 笔记改写 | `rewrite` / `image` | 多图配文 + 逐张重新生成配图 |
+| 商品下载 | — | 解析笔记/商品链接，多图缓存与逐张下载 |
+
+### 生图：两种参考图模式
+
+- **按参考图一一对应**（`perReference: true`，默认）：每张参考图单独请求一次 `/images/edits`，总输出 = 参考图数 × 每图张数（`count`）。结果字段 `imageReferences: [1,2,3,…]` 记录每张输出对应的参考图号，页面标注「对应参考图 N」。参考图上限 **9 张**（`server/src/lib/referenceImages.js` 的 `MAX_PER_REFERENCE_IMAGES`）。
+- **合成一张**（取消勾选，`perReference: false`）：所有参考图放进同一次请求（OpenAI JSON 模式为多个 Data URL；GPT-image 中转站为 multipart `image[]`），总输出 = `count`。服务端最多接收 **2 张**参考图（`MAX_REFERENCE_IMAGES`），超出的部分会被截断，只在 worker 日志（`logs/worker.err.log`）打印「参考图超过 2 张上限…」，前端目前不做提示。
+
+其他约定：
+- 每图输出数量 `count` 为 1–4（默认 1）；画布 `auto` 跟随参考图原始比例，固定画布（如 `1080x1440`）严格按画布出图。
+- 出图质量 `quality`：`medium`（页面显示「快速出图」，默认）或 `high`（「高清出图」）。
+- 同一任务内的生图请求并发由 `IMAGE_REQUEST_CONCURRENCY` 控制（默认 2，上限 4）。
+
+### 实况视频：多图多片
+
+- 一张输入图生成一段视频，结果 `videos` / `localVideos` 按输入顺序一一对应（`localVideoPath` 是第一条的本地路径），页面按「视频 1 / 视频 2 / …」展示，可逐条预览、下载。
+- 时长 1–8 秒（前端当前以固定时长提交）；运镜效果、强度、频率在页面选项区调整。
+- FFmpeg 并发由 `VIDEO_CONCURRENCY` 控制（1–4，默认 2；FFmpeg 吃 CPU，过高反而互相争抢）。
+
+### 笔记改写：多图配文与逐张配图
+
+- 图片管理最多 9 张，第一张为封面，可拖动排序；发布时最多带 9 张图。
+- **文本生成（标题/正文/标签）不会把参考图发给模型**（`server/src/worker.js` 里 `referenceImages = [] // 文本生成不传参考图`），只用文字素材；图片仅用于预览和配图生成，这样可避免多图把请求体撑大。
+- 「重新生成配图」按图逐张提交 `purpose: 'noteImage'` 的 `image` 任务（每张 1 个参考图、`perReference: true`、`count: 1`），前端并行上限默认 2，可在图片管理旁调整为 1–9。
+
+### 商品下载：链接解析与多图下载
+
+- 粘贴小红书笔记链接或商品链接，`POST /api/notes/parse` 解析标题、正文、标签和图片；商品链接走商品详情接口取商品图。
+- 解析出的图片缓存到 `storage/notes-images/`（缩到宽 1080 的 JPEG；并发 4、总预算 25s，个别图失败不阻塞整体解析），页面显示「商品图片 1/2/3…」。
+- 单图下载走 `GET /api/download?url=…`，只接受绝对 `http(s)` URL（前端会自动把相对路径拼成 `API + path`）；HEIC 图自动回退取 JPEG 变体。
 
 ## 数据层（本机 MySQL，`SLENK_DATA_BACKEND=mysql`）
 
@@ -88,7 +129,7 @@ FFMPEG_FFPROBE_PATH=./server/node_modules/ffmpeg-static/ffmpeg.exe
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/auth`（每用户每小红书账号一个凭证子目录，可用 `SLENK_XHS_AUTH_ROOT` 覆盖）
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/local`（`SLENK_DATA_BACKEND=local` 时的 JSON 表文件与媒体文件）
 
-视频生成通过本地 FFmpeg 处理，默认优先使用 `E:/FFmpeg/ffmpeg.exe`；如果不存在，则回退到项目内置 `ffmpeg-static`。
+视频生成通过本地 FFmpeg 处理，解析顺序见上文「本地依赖位置」。
 
 ## 内置 Skill（小红书小工具）
 

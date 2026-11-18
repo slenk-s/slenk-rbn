@@ -1,16 +1,7 @@
-# React + Vite
+# Slenk Notes Web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + Vite 前端：工作区、功能页（AI 生图 / 替换生图 / 实况视频 / 笔记改写 / 商品下载）和任务结果展示。
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+- 开发：`npm --prefix web run dev`（Vite，默认 `http://localhost:5173`；`/api`、`/uploads`、`/videos`、`/notes-images` 代理到 3001）
+- 构建：`npm --prefix web run build`，产物由 server 在 `http://localhost:3001/` 提供
+- 安装、启动和功能页/多图任务行为见根目录 `README.md`、`RUN.md`
