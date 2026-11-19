@@ -8,7 +8,7 @@
 把当前「本机多进程运行」的 Slenk Notes 部署到阿里云 ECS（实例 `i-f8zcp6vvis4q14qp0z5q`，地域
 cn-heyuan，Windows Server），实现：
 
-- **随时随地远程访问**：任何设备通过 HTTPS 打开工作台。
+- **随时随地远程访问**：任何设备通过 HTTPS 打开 Slenk Notes。
 - **多人使用**：沿用现有 users 表登录体系，多账号 XHS 隔离不在本期范围（见
   `2026-11-12-xhs-multi-account-user-isolation-design.md`）。
 - **24 小时运行**：API 与 worker 作为 Windows 服务常驻，开机自启、崩溃自拉起，不依赖 RDP 会话。

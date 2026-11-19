@@ -1,4 +1,4 @@
-# 原创笔记图工作台复刻版
+# Slenk Notes
 
 ## 当前实现
 - 前端：React + Vite

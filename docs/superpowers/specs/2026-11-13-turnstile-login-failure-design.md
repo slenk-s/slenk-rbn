@@ -39,7 +39,7 @@
 2. Turnstile 成功回调收到 fresh token 后，使用 History API 切换到 `/login` 并渲染账号密码表单；token 只保存在当前 React 内存中，不写入 URL、localStorage 或 sessionStorage。
 3. `/login` 只有在当前内存中存在 fresh token 时才可显示。刷新 `/login` 或直接访问 `/login` 时没有 token，自动替换回 `/`。
 4. 最终登录请求携带该 token，由后端 Siteverify 兑换一次。密码错误、验证失败、token 过期或控件报错时，清空 token、重置控件并返回 `/`，用户必须重新验证。
-5. 登录成功后保持现有保存 JWT 并进入工作台的行为。
+5. 登录成功后保持现有保存 JWT 并进入 Slenk Notes 的行为。
 
 这样既满足“验证后跳转进入登录界面”，又避免把单次 Turnstile token 暴露到持久化浏览器存储，也避免在跳转前提前兑换导致最终登录时重放失败。
 

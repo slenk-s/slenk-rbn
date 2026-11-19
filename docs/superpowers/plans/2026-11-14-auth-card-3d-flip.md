@@ -13,7 +13,7 @@
 - Flip only after the current-generation real Turnstile callback succeeds; a custom box click must never substitute for verification.
 - Keep the Turnstile token in React memory only; never write it to URL, localStorage, sessionStorage, or cookies.
 - Keep server Siteverify, `action === "login"`, hostname allowlist, single-use token handling, redacted diagnostics, and generic `403 forbidden` unchanged.
-- Front and back both render the same S icon, `Slenk Notes`, and `原创笔记图工作台` header.
+- Front and back both render the same S icon and `Slenk Notes` header.
 - Show `✓ 验证成功` for 450ms before a 700ms `rotateY(-180deg)` left flip.
 - Hidden/inactive faces must be non-focusable and unavailable to assistive technology.
 - Back, expiration, widget errors, login rejection, timeout, abort, and persistence failure clear token and credentials and return to a fresh challenge face.

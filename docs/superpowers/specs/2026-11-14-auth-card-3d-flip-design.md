@@ -21,7 +21,7 @@
 - 场景负责 `perspective`，不参与翻转。
 - 内部卡片负责 `transform-style: preserve-3d` 和 Y 轴旋转。
 - 正反两面绝对重叠，尺寸一致，使用柔和玻璃质感：高透明白色渐变、轻微模糊、内高光、细边框与深层阴影。
-- 两面均渲染相同的顶部品牌信息：S 图标、`Slenk Notes`、`原创笔记图工作台`。
+- 两面均渲染相同的顶部品牌信息：S 图标与 `Slenk Notes`。
 - 两面设置 `backface-visibility: hidden`；背面初始为 `rotateY(180deg)`。
 
 ### 正面
