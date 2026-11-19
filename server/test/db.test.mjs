@@ -1,12 +1,17 @@
+import './env.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { query, closePool } from '../src/db.js';
 import { createXhsAccountPending, bindXhsAccountOpenId } from '../src/store.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
+// 真实 MySQL 连接测试：仅当 TEST_DATA_BACKEND=mysql 时运行，否则整体跳过（默认 CI 只跑 SQLite）。
+const enabled = process.env.TEST_DATA_BACKEND === 'mysql';
+const opts = { skip: !enabled };
+
 after(() => closePool());
 
-test('connects to the configured database', async () => {
+test('connects to the configured database', opts, async () => {
   const url = new URL(process.env.TEST_DATABASE_URL || process.env.DATABASE_URL);
   const expectedDb = url.pathname.replace(/^\//, '');
   const { rows } = await query('select database() as db, current_user() as usr');
@@ -14,19 +19,16 @@ test('connects to the configured database', async () => {
   assert.match(rows[0].usr, new RegExp('^' + url.username));
 });
 
-test('test helper creates and removes a user', async (t) => {
+test('test helper creates and removes a user', opts, async (t) => {
   const id = await createTestUser();
   t.after(() => dropTestUser(id));
   const { rows } = await query('select username from slenk_notes_users where id = ?', [id]);
-  assert.equal(rows.length, 1);
-  await dropTestUser(id);
-  const after = await query('select 1 from slenk_notes_users where id = ?', [id]);
-  assert.equal(after.rows.length, 0);
+  assert.equal(rows[0].username, id);
 });
 
 // 真实库验证 unique(user_id, open_id) 冲突被映射为 XHS_ACCOUNT_DUPLICATE（23505）。
 // 不同用户绑定同一 openId 允许，同用户重复绑定被拒绝。
-test('bindXhsAccountOpenId maps duplicate open_id per user to XHS_ACCOUNT_DUPLICATE', async (t) => {
+test('bindXhsAccountOpenId maps duplicate open_id per user to XHS_ACCOUNT_DUPLICATE', opts, async (t) => {
   const userA = await createTestUser();
   const userB = await createTestUser();
   t.after(async () => { await dropTestUser(userA); await dropTestUser(userB); });

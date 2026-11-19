@@ -1,14 +1,15 @@
-import { test, after } from 'node:test';
+import './env.mjs';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { closePool } from '../src/db.js';
-import { insertMedia, getMedia } from '../src/store.js';
+import { insertMedia, getMedia, closeStore, initStore } from '../src/store.js';
 import { uploadResultAsset } from '../src/cloudStorage.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
-after(() => closePool());
+before(() => initStore());
+after(() => closeStore());
 
 test('media round-trips a buffer through slenk_notes_media', async (t) => {
   const userId = await createTestUser();

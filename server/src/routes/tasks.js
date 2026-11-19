@@ -15,6 +15,9 @@ export const queue = new Queue('ai-tasks', { connection: conn });
 
 // 队列共享上面这个连接，queue.close() 关不掉它；测试需要自己断开，否则进程退不出去。
 export async function closeQueue() {
+  // BullMQ 构造时即对共享连接发起 connect；若在连接 ready 前就关闭，in-flight 的
+  // 初始化会被拒绝并触发未捕获 'error'。先让初始化 settle（成功或失败都吞掉）再关闭。
+  await queue.waitUntilReady().catch(() => {});
   await Promise.allSettled([queue.close(), conn.quit()]);
 }
 

@@ -1,10 +1,11 @@
-import { test, after } from 'node:test';
+import './env.mjs';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { query, closePool } from '../src/db.js';
-import { listProviders, addProvider, updateProvider, deleteProvider, getActiveProvider, getProviderUnmaskedById } from '../src/store.js';
+import { listProviders, addProvider, updateProvider, deleteProvider, getActiveProvider, getProviderUnmaskedById, setActiveProvider, closeStore, initStore } from '../src/store.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
-after(() => closePool());
+before(() => initStore());
+after(() => closeStore());
 
 test('providers round-trip and mask api keys in list output', async (t) => {
   const created = await addProvider({
@@ -53,11 +54,7 @@ test('getActiveProvider prefers the user setting then falls back by mode', async
   assert.ok(byMode, 'expected the mode fallback to return a provider');
   assert.equal(byMode.mode, 'text');
 
-  await query(
-    `insert into slenk_notes_user_settings (user_id, active_image_provider_id) values (?, ?)
-     on duplicate key update active_image_provider_id = values(active_image_provider_id)`,
-    [userId, imageProvider.id]
-  );
+  await setActiveProvider(imageProvider.id, 'image', userId);
   const bySetting = await getActiveProvider('image', userId);
   assert.equal(bySetting.id, imageProvider.id);
 });

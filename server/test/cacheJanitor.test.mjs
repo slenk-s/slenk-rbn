@@ -1,14 +1,15 @@
-import { test, after } from 'node:test';
+import './env.mjs';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { closePool } from '../src/db.js';
-import { saveNote, addTask } from '../src/store.js';
+import { saveNote, addTask, closeStore, initStore } from '../src/store.js';
 import { cleanOrphanedNotesImages } from '../src/cacheJanitor.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
-after(() => closePool());
+before(() => initStore());
+after(() => closeStore());
 
 const OLD = Date.now() - 48 * 3600 * 1000; // 超过 24h 宽限期
 

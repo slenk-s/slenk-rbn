@@ -1,3 +1,4 @@
+import './env.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,6 +10,10 @@ import { sign } from '../src/auth.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
 after(() => closePool());
+
+// MySQL 连接依赖的用例：仅当 TEST_DATA_BACKEND=mysql 时运行，否则跳过（默认 CI 只跑 SQLite）。
+const enabled = process.env.TEST_DATA_BACKEND === 'mysql';
+const opts = { skip: !enabled };
 
 test('parseDbConfigFromUrl handles a name host and default port', () => {
   const a = parseDbConfigFromUrl('mysql://slenk:pw@slenk:3306/slenk_notes');
@@ -56,7 +61,7 @@ test('tests never read db.json: getEffectiveDb always resolves from env', () => 
   }
 });
 
-test('testConnection succeeds against the test DB and fails fast against a closed port', async () => {
+test('testConnection succeeds against the test DB and fails fast against a closed port', opts, async () => {
   const { config } = getEffectiveDb();
   const ok = await testConnection(config);
   assert.equal(ok.ok, true);
@@ -65,7 +70,7 @@ test('testConnection succeeds against the test DB and fails fast against a close
   assert.ok(bad.error);
 });
 
-test('GET /api/settings/db returns passwordSet but never the password', async (t) => {
+test('GET /api/settings/db returns passwordSet but never the password', opts, async (t) => {
   const admin = await createTestUser(true);
   t.after(() => dropTestUser(admin));
   const token = sign({ id: admin, username: admin });
@@ -90,7 +95,7 @@ test('GET /api/settings/db returns passwordSet but never the password', async (t
   }
 });
 
-test('GET /api/settings/db is admin-gated', async (t) => {
+test('GET /api/settings/db is admin-gated', opts, async (t) => {
   const user = await createTestUser(false);
   t.after(() => dropTestUser(user));
   const token = sign({ id: user, username: user });

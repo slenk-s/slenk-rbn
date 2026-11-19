@@ -1,12 +1,13 @@
-import { test, after } from 'node:test';
+import './env.mjs';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { closePool } from '../src/db.js';
-import { addTask, listTasks, getTask, updateTask, deleteTask } from '../src/store.js';
+import { addTask, listTasks, getTask, updateTask, deleteTask, closeStore, initStore } from '../src/store.js';
 import { enqueueTask, queue, closeQueue } from '../src/routes/tasks.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
 // 引入 routes/tasks.js 会连上 Redis 起 BullMQ 队列；不显式断开的话 node --test 永远退不出来。
-after(() => Promise.allSettled([closePool(), closeQueue()]));
+before(() => initStore());
+after(() => Promise.allSettled([closeStore(), closeQueue()]));
 
 function seed(userId, id) {
   return addTask({

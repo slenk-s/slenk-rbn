@@ -1,10 +1,11 @@
-import { test, after } from 'node:test';
+import './env.mjs';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { query, closePool } from '../src/db.js';
-import { ensureAdmin, findUserByUsername, findUserById, createUser, updateUser, deleteUser, listUsers, getActiveProviderIds, setActiveProvider, saveNote, addTask } from '../src/store.js';
+import { ensureAdmin, findUserByUsername, findUserById, createUser, updateUser, deleteUser, listUsers, getActiveProviderIds, setActiveProvider, saveNote, addTask, getNote, closeStore, initStore } from '../src/store.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
-after(() => closePool());
+before(() => initStore());
+after(() => closeStore());
 
 test('ensureAdmin creates the admin account once', async () => {
   await ensureAdmin();
@@ -12,8 +13,8 @@ test('ensureAdmin creates the admin account once', async () => {
   const admin = await findUserByUsername('admin');
   assert.ok(admin);
   assert.equal(admin.isAdmin, true);
-  const { rows } = await query("select count(*) as n from slenk_notes_users where username = 'admin'");
-  assert.equal(rows[0].n, 1);
+  const adminRows = (await listUsers()).filter(u => u.username === 'admin');
+  assert.equal(adminRows.length, 1);
 });
 
 test('findUserById returns null for an unknown id', async () => {
@@ -84,8 +85,7 @@ test('deleteUser removes the user and cascades their content', async (t) => {
   await deleteUser(id);
   t.after(() => dropTestUser(id));
   assert.equal(await findUserById(id), null);
-  const { rows } = await query('select 1 from slenk_notes_notes where id = ?', [note.id]);
-  assert.equal(rows.length, 0, 'the note should be gone with its owner');
+  assert.equal(await getNote(note.id), null, 'the note should be gone with its owner');
 });
 
 test('deleteUser returns false for an unknown id', async () => {

@@ -1,16 +1,17 @@
-import { test, after } from 'node:test';
+import './env.mjs';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { closePool } from '../src/db.js';
-import { saveNote, getNote } from '../src/store.js';
+import { saveNote, getNote, closeStore, initStore } from '../src/store.js';
 import { cacheRemoteImage, cacheImageUrls } from '../src/routes/notes.js';
 import { closeQueue } from '../src/routes/tasks.js';
 import { createTestUser, dropTestUser } from './helpers.mjs';
 
-after(() => Promise.allSettled([closePool(), closeQueue()]));
+before(() => initStore());
+after(() => Promise.allSettled([closeStore(), closeQueue()]));
 
 // 真实缓存目录是 storage/notes-images，测试只在临时目录里造文件。
 function tempDir(t) {
