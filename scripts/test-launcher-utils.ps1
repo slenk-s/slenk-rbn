@@ -52,7 +52,9 @@ try {
 # Stopper must match only this repository's server/worker command lines.
 $repo = 'C:\repo\Slenk Notes'
 Assert (Test-SlenkProcessCommandLine -CommandLine 'node "C:\repo\Slenk Notes\server\src\worker.js"' -RootPath $repo) 'Own worker should match'
+Assert (Test-SlenkProcessCommandLine -CommandLine 'node "C:\repo\Slenk Notes\web\node_modules\vite\bin\vite.js"' -RootPath $repo) 'Own Vite dev server should match'
 Assert (-not (Test-SlenkProcessCommandLine -CommandLine 'node C:\other\server\src\worker.js' -RootPath $repo)) 'Other project worker must not match'
+Assert (-not (Test-SlenkProcessCommandLine -CommandLine 'node C:\other\web\node_modules\vite\bin\vite.js' -RootPath $repo)) 'Other project Vite must not match'
 
 # HTTP identity payload must match the expected app marker.
 Assert (Test-SlenkHealthPayload -Json '{"ok":true,"app":"slenk-notes"}') 'Valid Slenk health payload was rejected'
