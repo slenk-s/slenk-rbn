@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb, closeDb, withRetry, transaction, parseJson, toJson } from './lib/sqlite.js';
 import { writeMediaFile, readMediaFile, removeMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
 import { paths } from './paths.js';
+import { scheduleSyncProvidersUsers } from './syncTiDB.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_FILE = path.resolve(__dirname, '../scripts/schema.sqlite.sql');
@@ -52,6 +53,14 @@ export async function initStore() {
 
 export async function closeStore() {
   closeDb();
+}
+
+// 供应商/用户变更后防抖推送 TiDB（未配置 TIDB_PG_URL 时为空操作）。
+function queueSync() {
+  scheduleSyncProvidersUsers(1500, async () => {
+    const rows = await exportSyncRows();
+    return { providers: rows.providers, users: rows.users };
+  });
 }
 
 // ---- 本地 JSON 一次性迁移 ----
@@ -204,6 +213,7 @@ export async function createUser({ username, passwordHash, isAdmin = false }) {
       .run(id, String(username).trim(), String(passwordHash), isAdmin ? 1 : 0);
     db.prepare('insert into slenk_notes_user_settings (user_id) values (?) on conflict (user_id) do nothing').run(id);
   });
+  queueSync();
   return findUserById(id);
 }
 
@@ -229,6 +239,7 @@ export async function updateUser(id, patch = {}) {
   if ('passwordHash' in patch) { fields.push('password_hash = ?'); values.push(patch.passwordHash); }
   if ('isAdmin' in patch) { fields.push('is_admin = ?'); values.push(patch.isAdmin ? 1 : 0); }
   if (fields.length) run(`update slenk_notes_users set ${fields.join(', ')} where id = ?`, ...values, id);
+  queueSync();
   return findUserById(id);
 }
 
@@ -236,6 +247,7 @@ export async function deleteUser(id) {
   const mediaIds = all('select id from slenk_notes_media where user_id = ?', id).map(r => r.id);
   const info = run('delete from slenk_notes_users where id = ?', id);
   removeMediaFiles(mediaIds);
+  queueSync();
   return info.changes > 0;
 }
 
@@ -337,6 +349,7 @@ export async function addProvider(input) {
     p.id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode,
     p.textModel, p.imageModel, p.imageApi, p.notes, p.active ? 1 : 0
   );
+  queueSync();
   return getProviderById(p.id);
 }
 
@@ -353,6 +366,7 @@ export async function updateProvider(id, input) {
     p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode,
     p.textModel, p.imageModel, p.imageApi, p.notes, p.active ? 1 : 0, id
   );
+  queueSync();
   return getProviderById(id);
 }
 
@@ -367,6 +381,7 @@ export async function deleteProvider(id) {
            active_image_provider_id = case when active_image_provider_id = ? then null else active_image_provider_id end`
       ).run(id, id, id);
     }
+    queueSync();
     return info.changes > 0;
   });
 }

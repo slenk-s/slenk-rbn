@@ -104,10 +104,27 @@ app.use((err, req, res, next) => {
 const port = Number(process.env.PORT || 3001);
 app.listen(port, () => console.log(`server listening on ${port}`));
 
-// 本地 JSON 模式下，启动后从 TiDB 拉取共享的供应商/用户数据并与本地合并（异步、失败不影响启动）。
-// 这样换机/清空本地后仪表盘不再空白；变更仍走 store.local 的推送镜像，双向在启动时收敛。
+// SQLite 后端：启动后从 TiDB 拉取共享的供应商/用户数据并与本地合并（异步、失败不影响启动）。
+// 这样换机/清空本地后仪表盘不再空白；变更仍走 store 的推送镜像，双向在启动时收敛。
 if (process.env.SLENK_DATA_BACKEND !== 'mysql') {
   import('./syncTiDB.js')
-    .then(m => m.pullProvidersUsersFromTiDB())
+    .then(async (m) => {
+      const cloud = await m.fetchCloudProvidersUsers();
+      if (!cloud.ok) return;
+      const [{ exportSyncRows, importSyncRows }, { mergeProviders, mergeUsers }] = await Promise.all([
+        import('./store.js'),
+        import('./lib/cloudSyncMerge.js')
+      ]);
+      const local = await exportSyncRows();
+      const mergedProviders = mergeProviders(local.providers, cloud.providers);
+      const mergedUsers = mergeUsers(local.users, cloud.users);
+      const sig = rows => JSON.stringify([...rows].sort((a, b) => String(a.id).localeCompare(String(b.id))));
+      const changed = sig(mergedProviders) !== sig(local.providers) || sig(mergedUsers) !== sig(local.users);
+      if (changed) {
+        await importSyncRows({ providers: mergedProviders, users: mergedUsers });
+        await m.pushProvidersUsers(mergedProviders, mergedUsers);
+      }
+      console.log(`[tidb-sync] 启动拉取完成：provider 本地 ${local.providers.length} → 合并 ${mergedProviders.length}，user 本地 ${local.users.length} → 合并 ${mergedUsers.length}${changed ? '（已写回）' : '（无变化）'}`);
+    })
     .catch(err => console.error('[tidb-sync] 启动拉取失败：', err.message));
 }

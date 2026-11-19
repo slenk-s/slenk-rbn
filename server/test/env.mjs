@@ -12,6 +12,7 @@ process.env.TEST_DATA_BACKEND = backend;
 process.env.STORAGE_PATH = dir;
 process.env.SQLITE_PATH = path.join(dir, 'test.sqlite');
 process.env.MEDIA_DIR = path.join(dir, 'media');
+process.env.TIDB_PG_URL = '';
 
 export const testDir = dir;
 
