@@ -17,5 +17,7 @@ export const paths = {
   root,
   dataDir,
   uploadsDir: resolveDir(process.env.UPLOADS_PATH, path.join(dataDir, 'uploads')),
-  videosDir: resolveDir(process.env.VIDEO_OUT_PATH, path.join(dataDir, 'videos'))
+  videosDir: resolveDir(process.env.VIDEO_OUT_PATH, path.join(dataDir, 'videos')),
+  sqlitePath: resolveDir(process.env.SQLITE_PATH, path.join(dataDir, 'slenk.sqlite')),
+  mediaDir: resolveDir(process.env.MEDIA_DIR, path.join(dataDir, 'media'))
 };
