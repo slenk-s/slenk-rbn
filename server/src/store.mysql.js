@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import './loadEnv.js';
 import { query, closePool, withTransaction } from './db.js';
+import { writeMediaFile, readMediaFile, removeMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
 
 function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -87,7 +88,9 @@ async function updateUser(id, patch = {}) {
 }
 
 async function deleteUser(id) {
+  const { rows: media } = await query('select id from slenk_notes_media where user_id = ?', [id]);
   const { rowCount } = await query('delete from slenk_notes_users where id = ?', [id]);
+  removeMediaFiles(media.map(r => r.id));
   return rowCount > 0;
 }
 
@@ -565,30 +568,39 @@ async function listAllXhsAccounts() {
   return groups;
 }
 
-// 生成媒体（Phase 2）：本体存 MySQL LONGBLOB（slenk_notes_media），替代原 Supabase Storage。
-// 任务 result 里的媒体引用是 /api/media/<id>；data 为 Buffer，size_bytes 由调用方按 data.length 写入。
+// 生成媒体（Phase 2）：字节存 <mediaDir>/<id> 文件，本表只存元数据，替代原 Supabase Storage。
+// 任务 result 里的媒体引用是 /api/media/<id>；data 为 Buffer，size_bytes 按 data.length 写入。
 async function insertMedia({ id, taskId, userId, filename, mimeType, data }) {
-  await query(
-    'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, data, size_bytes) values (?, ?, ?, ?, ?, ?, ?)',
-    [id, taskId ?? null, userId, filename, mimeType, data, data.length]
-  );
+  writeMediaFile(id, data);
+  try {
+    await query(
+      'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, size_bytes) values (?, ?, ?, ?, ?, ?)',
+      [id, taskId ?? null, userId, filename, mimeType, data.length]
+    );
+  } catch (err) {
+    // 插行失败（FK / 唯一冲突）时删除已写的文件，不留孤儿。
+    removeMediaFile(id);
+    throw err;
+  }
   return id;
 }
 
 async function getMedia(id) {
   const { rows } = await query(
-    'select id, task_id, user_id, filename, mime_type, data, size_bytes from slenk_notes_media where id = ?',
+    'select id, task_id, user_id, filename, mime_type, size_bytes from slenk_notes_media where id = ?',
     [id]
   );
   if (!rows.length) return null;
   const row = rows[0];
+  const data = readMediaFile(id);
+  if (data == null) return null;
   return {
     id: row.id,
     taskId: row.task_id,
     userId: row.user_id,
     filename: row.filename,
     mimeType: row.mime_type,
-    data: row.data,
+    data,
     sizeBytes: Number(row.size_bytes)
   };
 }

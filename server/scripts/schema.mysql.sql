@@ -121,17 +121,14 @@ create table if not exists slenk_notes_xhs_accounts (
     foreign key (user_id) references slenk_notes_users(id) on delete cascade
 ) engine = InnoDB default charset = utf8mb4;
 
--- 生成媒体（图片/视频）本体：按用户决定“全部存在 MySQL 数据库上”，替代原 Supabase
--- Storage（task-results 桶）。数据以 LONGBLOB 存库，经 /api/media/:id 路由读回（Phase 2 已完成）。
--- cloudStorage.js 已改为读写本表；任务 result JSON 里的媒体引用是 /api/media/<uuid>。
--- 备份/恢复随库走；代价是库体积随媒体增长，需注意容量规划与 max_allowed_packet。
+-- 媒体字节存 <mediaDir>/<id> 文件，本表只存元数据。
+-- 升级路径：先跑 node scripts/migrate-media-files.mjs --drop-column。
 create table if not exists slenk_notes_media (
   id varchar(64) not null,
   task_id varchar(64) null,               -- 所属任务，可空兼容独立媒体
   user_id varchar(64) not null,
   filename varchar(512) not null,         -- 原文件名（下载时用）
   mime_type varchar(128) not null,
-  data longblob not null,                 -- 媒体二进制
   size_bytes bigint not null,
   created_at datetime(3) not null default (UTC_TIMESTAMP(3)),
   primary key (id),

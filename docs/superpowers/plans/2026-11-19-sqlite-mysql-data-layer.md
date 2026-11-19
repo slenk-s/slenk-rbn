@@ -2281,14 +2281,14 @@ Expected: FAIL，`Cannot find module .../scripts/media-janitor.mjs`。
 1) 顶部 import 追加：
 
 ```js
-import { writeMediaFile, readMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
+import { writeMediaFile, readMediaFile, removeMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
 ```
 
 2) `deleteUser`（约 89-92 行）替换为：
 
 ```js
 async function deleteUser(id) {
-  const [media] = await query('select id from slenk_notes_media where user_id = ?', [id]);
+  const { rows: media } = await query('select id from slenk_notes_media where user_id = ?', [id]);
   const { rowCount } = await query('delete from slenk_notes_users where id = ?', [id]);
   removeMediaFiles(media.map(r => r.id));
   return rowCount > 0;
@@ -2300,10 +2300,15 @@ async function deleteUser(id) {
 ```js
 async function insertMedia({ id, taskId, userId, filename, mimeType, data }) {
   writeMediaFile(id, data);
-  await query(
-    'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, size_bytes) values (?, ?, ?, ?, ?, ?)',
-    [id, taskId ?? null, userId, filename, mimeType, data.length]
-  );
+  try {
+    await query(
+      'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, size_bytes) values (?, ?, ?, ?, ?, ?)',
+      [id, taskId ?? null, userId, filename, mimeType, data.length]
+    );
+  } catch (e) {
+    removeMediaFile(id);
+    throw e;
+  }
   return id;
 }
 ```
@@ -2355,7 +2360,7 @@ import { writeMediaFile } from '../src/lib/mediaFiles.js';
 const dropColumn = process.argv.includes('--drop-column');
 
 try {
-  const [cols] = await query(
+  const { rows: cols } = await query(
     `select column_name from information_schema.columns
      where table_schema = database() and table_name = 'slenk_notes_media' and column_name = 'data'`
   );
@@ -2363,7 +2368,7 @@ try {
     console.log('media.data 列不存在，视为已迁移。');
     process.exit(0);
   }
-  const [rows] = await query('select id, data from slenk_notes_media');
+  const { rows } = await query('select id, data from slenk_notes_media');
   let ok = 0;
   let fail = 0;
   for (const row of rows) {
