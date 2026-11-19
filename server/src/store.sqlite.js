@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, closeDb, withRetry, transaction, parseJson, toJson } from './lib/sqlite.js';
-import { removeMediaFiles } from './lib/mediaFiles.js';
+import { writeMediaFile, readMediaFile, removeMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_FILE = path.resolve(__dirname, '../scripts/schema.sqlite.sql');
@@ -16,6 +16,10 @@ function uid(prefix) {
 function all(sql, ...params) { return withRetry(() => openDb().prepare(sql).all(...params)); }
 function get(sql, ...params) { return withRetry(() => openDb().prepare(sql).get(...params)); }
 function run(sql, ...params) { return withRetry(() => openDb().prepare(sql).run(...params)); }
+
+function isDuplicateError(err) {
+  return /UNIQUE constraint failed/i.test(String(err?.message));
+}
 
 function mapUser(row) {
   return {
@@ -431,4 +435,170 @@ export async function updateTask(userId, id, patch, insertMeta) {
     );
   }
   return getTask(userId, id);
+}
+
+// ---- 笔记 ----
+
+function mapNote(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    title: row.title,
+    content: row.content,
+    tags: parseJson(row.tags, []),
+    images: parseJson(row.images, []),
+    createdAt: row.created_at
+  };
+}
+
+export async function saveNote(userId, note = {}) {
+  const id = uid('note');
+  run(
+    'insert into slenk_notes_notes (id, user_id, title, content, tags, images) values (?, ?, ?, ?, ?, ?)',
+    id, userId,
+    String(note.title || ''), String(note.content || ''),
+    toJson(Array.isArray(note.tags) ? note.tags : []),
+    toJson(Array.isArray(note.images) ? note.images : [])
+  );
+  return getNote(id);
+}
+
+// 公开读取：/p/<id> 分享页依赖它，id 是随机串不可枚举。
+export async function getNote(id) {
+  const row = get('select * from slenk_notes_notes where id = ?', id);
+  return row ? mapNote(row) : null;
+}
+
+// ---- XHS 账号（user_id 强制隔离） ----
+
+function mapXhsAccount(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    credentialDir: row.credential_dir,
+    openId: row.open_id,
+    nickname: row.nickname,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+export async function listXhsAccounts(userId) {
+  return all('select * from slenk_notes_xhs_accounts where user_id = ? order by created_at desc', userId)
+    .map(mapXhsAccount);
+}
+
+export async function getXhsAccount(userId, id) {
+  const row = get('select * from slenk_notes_xhs_accounts where user_id = ? and id = ?', userId, id);
+  return row ? mapXhsAccount(row) : null;
+}
+
+export async function createXhsAccountPending(userId, { id, credentialDir }) {
+  run('insert into slenk_notes_xhs_accounts (id, user_id, credential_dir) values (?, ?, ?)', id, userId, credentialDir);
+  return getXhsAccount(userId, id);
+}
+
+// 扫码成功回填 open_id；unique(user_id, open_id) 冲突映射为 XHS_ACCOUNT_DUPLICATE。
+export async function bindXhsAccountOpenId(userId, id, { openId, nickname } = {}) {
+  try {
+    run(
+      `update slenk_notes_xhs_accounts set open_id = ?, nickname = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       where user_id = ? and id = ?`,
+      openId ?? null, nickname ?? '', userId, id
+    );
+    return getXhsAccount(userId, id);
+  } catch (error) {
+    if (isDuplicateError(error)) {
+      const mapped = new Error('XHS 账号已绑定');
+      mapped.code = 'XHS_ACCOUNT_DUPLICATE';
+      throw mapped;
+    }
+    throw error;
+  }
+}
+
+export async function findXhsAccountByOpenId(userId, openId) {
+  const row = get('select * from slenk_notes_xhs_accounts where user_id = ? and open_id = ?', userId, openId);
+  return row ? mapXhsAccount(row) : null;
+}
+
+// 返回被删行（含 credential_dir）供上层清理磁盘凭证目录；不存在或跨用户返回 null。
+export async function deleteXhsAccount(userId, id) {
+  const row = get('select * from slenk_notes_xhs_accounts where user_id = ? and id = ?', userId, id);
+  if (!row) return null;
+  run('delete from slenk_notes_xhs_accounts where user_id = ? and id = ?', userId, id);
+  return mapXhsAccount(row);
+}
+
+export async function updateXhsAccountNickname(userId, id, nickname) {
+  run(
+    `update slenk_notes_xhs_accounts set nickname = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     where user_id = ? and id = ?`,
+    nickname, userId, id
+  );
+  return getXhsAccount(userId, id);
+}
+
+// 管理员只读：按 user 分组返回 [{ userId, accounts }]。
+export async function listAllXhsAccounts() {
+  const rows = all('select * from slenk_notes_xhs_accounts order by user_id, created_at desc');
+  const groups = [];
+  const byUser = new Map();
+  for (const row of rows) {
+    const account = mapXhsAccount(row);
+    if (!byUser.has(row.user_id)) {
+      const group = { userId: row.user_id, accounts: [] };
+      byUser.set(row.user_id, group);
+      groups.push(group);
+    }
+    byUser.get(row.user_id).accounts.push(account);
+  }
+  return groups;
+}
+
+// ---- 媒体（数据库存元数据，字节在 <mediaDir>/<id>） ----
+
+export async function insertMedia({ id, taskId, userId, filename, mimeType, data }) {
+  writeMediaFile(id, data);
+  try {
+    run(
+      'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, size_bytes) values (?, ?, ?, ?, ?, ?)',
+      id, taskId ?? null, userId, filename, mimeType, data.length
+    );
+  } catch (err) {
+    // 插行失败（FK / 唯一冲突）时删除已写的文件，不留孤儿。
+    removeMediaFile(id);
+    throw err;
+  }
+  return id;
+}
+
+export async function getMedia(id) {
+  const row = get('select id, task_id, user_id, filename, mime_type, size_bytes from slenk_notes_media where id = ?', id);
+  if (!row) return null;
+  const data = readMediaFile(id);
+  if (data == null) return null;
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    userId: row.user_id,
+    filename: row.filename,
+    mimeType: row.mime_type,
+    data,
+    sizeBytes: Number(row.size_bytes)
+  };
+}
+
+// cacheJanitor 用：全量笔记 images 与任务 payload（供孤儿缓存清理引用扫描）。
+export async function getAllNotesImagesForJanitor() {
+  return all('select images from slenk_notes_notes').map(r => parseJson(r.images, []));
+}
+
+export async function getAllTasksPayloadForJanitor() {
+  return all('select payload from slenk_notes_tasks').map(r => parseJson(r.payload, null));
+}
+
+// 巡检脚本用：全量媒体 id，供与文件目录对比。
+export async function listMediaIds() {
+  return all('select id from slenk_notes_media').map(r => r.id);
 }
