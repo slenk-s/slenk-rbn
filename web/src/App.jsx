@@ -1954,7 +1954,7 @@ const TURNSTILE_SITEKEY = import.meta.env.VITE_TURNSTILE_SITEKEY;
 // 显式报配置错误，而不是渲染出空白 widget 再被 Cloudflare 以 300030 拒掉（fail-closed）。
 const TURNSTILE_SITEKEY_VALID = typeof TURNSTILE_SITEKEY === 'string' && /^0x[A-Za-z0-9_-]{8,}$/.test(TURNSTILE_SITEKEY);
 function AuthBrand() {
-  return <div className="auth-brand"><img className="logo" src="/logo.ico" alt="Slenk Notes" /><h1>Slenk Notes</h1><p>原创笔记图工作台</p></div>;
+  return <div className="auth-brand"><img className="logo" src="/logo.ico" alt="Slenk Notes" /><h1>Slenk Notes</h1></div>;
 }
 function TurnstileChallenge({ error, onBeginChallenge, onComplete, onInvalidate, widgetIdRef, retryButtonRef, renderAttempt, retryWidget, successVisible }) {
   const turnstileRef = useRef(null);

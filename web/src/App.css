@@ -2437,12 +2437,6 @@ button, .btn-primary, .btn-secondary, .btn-danger {
   color: var(--text-h);
   letter-spacing: -0.02em;
 }
-.auth-brand p {
-  margin: 0;
-  font-size: 13px;
-  /* 卡片是半透明玻璃，副标题用更深的灰以保证可读性 */
-  color: #4d4859;
-}
 .auth-card label {
   display: flex;
   flex-direction: column;
