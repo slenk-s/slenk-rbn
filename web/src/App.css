@@ -1035,20 +1035,21 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 .card.tool-panel.layout-video-focused .text-input-split > .prompt-section + .prompt-section {
   margin-top: 0;
 }
-/* 视频选项工具条：独占标题行下的一整行，控件自适应换行。 */
+/* 视频选项工具条：与标题同一行（同 AI 生图页），空间不足时再换行。
+   meta-chips 不再撑满整行（否则会把选项挤到第二行），改由选项自身靠右。 */
+.layout-video-focused .title-row .meta-chips {
+  flex: 0 0 auto;
+}
 .layout-video-focused .title-row .title-options-video {
-  /* order 靠后：提交/重置已抽为悬浮按钮，工具条独占第二行。 */
-  order: 10;
-  flex: 1 1 100%;
+  flex: 0 1 auto;
+  margin-left: auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
-  padding: 12px 0 0;
-  margin-top: 6px;
+  padding: 0;
   background: transparent;
   border: 0;
-  border-top: 1px solid var(--border);
   border-radius: 0;
 }
 .layout-video-focused .title-options-video select {
@@ -3469,6 +3470,8 @@ button, .btn-primary, .btn-secondary, .btn-danger {
   .layout-replace-image .title-row .title-options { flex: 1 1 100%; }
   .layout-replace-image .title-row .title-options select { max-width: 100%; }
   .layout-replace-image .title-row .title-actions { margin-left: 0; }
+  /* 窄屏：视频选项整行铺开，标题独占一行，控件在下方自动换行。 */
+  .layout-video-focused .title-row .title-options-video { flex: 1 1 100%; }
   .panel-row:not(.panel-row-result) > .panel-cell + .panel-cell {
     border-left: 0;
     border-top: 1px solid var(--border);
