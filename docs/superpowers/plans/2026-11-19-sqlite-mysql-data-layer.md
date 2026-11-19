@@ -969,14 +969,15 @@ function displayTaskLabel(row) {
 }
 
 function mapTask(row) {
+  const payload = parseJson(row.payload, null);
   return {
     id: row.id,
     userId: row.user_id,
     username: row.username || null,
     type: row.type,
-    label: displayTaskLabel(row),
+    label: displayTaskLabel({ ...row, payload }),
     status: row.status,
-    payload: parseJson(row.payload, null),
+    payload,
     providerId: row.provider_id,
     tab: row.tab,
     result: parseJson(row.result, null),
@@ -1064,6 +1065,10 @@ export async function getTaskById(id) {
     id
   );
   return row ? mapTask(row) : null;
+}
+
+export async function deleteTask(userId, id) {
+  return run('delete from slenk_notes_tasks where user_id = ? and id = ?', userId, id).changes > 0;
 }
 
 export async function deleteTaskById(id) {
