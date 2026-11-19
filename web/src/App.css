@@ -564,7 +564,7 @@ button, input, textarea, select {
   font-size: 13px;
 }
 
-/* Text input area: single default-prompt block */
+/* Text input split: default prompt + user prompt */
 .text-input-split {
   display: grid;
   grid-template-rows: auto auto;
@@ -640,6 +640,19 @@ button, input, textarea, select {
   border-color: var(--accent-border);
   background: #fff;
   box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* 二级提示词：同一套灰底，左侧 2px 琥珀线区分层级（不用整块上色）。 */
+.prompt-secondary {
+  background: #fbfaf7;
+  border-color: #e9e3d7;
+  box-shadow: inset 2px 0 0 #c9a25e;
+}
+.prompt-secondary:focus {
+  outline: none;
+  border-color: #d8c39c;
+  background: #fffdf9;
+  box-shadow: inset 2px 0 0 #c9a25e, 0 0 0 3px rgba(201, 162, 94, 0.14);
 }
 
 .prompt-section textarea {
@@ -1034,11 +1047,12 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 .layout-video-focused .panel-row:not(.panel-row-result) > .cell-upload {
   order: -1;
 }
-/* 实况视频文本输入区：仅默认提示词一个区块，占满整行。
+/* 实况视频文本输入区：默认提示词与用户提示词并排一行。
+   本页无二级提示词（SECONDARY_PROMPT_TABS 不含 live-video），只有两个区块；
    用 4 个类压过 .card.tool-panel .cell-body 的 display:flex（同替换生图的做法）。 */
 .card.tool-panel.layout-video-focused .text-input-split {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, 1fr);
   grid-template-rows: auto;
   gap: 20px;
   align-content: stretch;
@@ -1113,8 +1127,8 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 }
 .card.tool-panel.layout-replace-image .text-input-split {
   display: grid;
-  /* 仅默认提示词一个区块，占满整行。 */
-  grid-template-columns: 1fr;
+  /* 默认 / 二级 / 用户 三个提示词区块并排。 */
+  grid-template-columns: repeat(3, 1fr);
   grid-template-rows: auto;
   gap: 20px;
   align-content: stretch;
