@@ -882,6 +882,8 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 }
 .layout-replace-image .float-actions button,
 .layout-video-focused .float-actions button {
+  height: 38px;
+  min-width: 60px;
   box-shadow: 0 10px 26px rgba(20, 22, 26, .22);
 }
 .layout-replace-image .float-actions .btn-secondary,
@@ -1035,13 +1037,13 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 }
 /* 视频选项工具条：独占标题行下的一整行，控件自适应换行。 */
 .layout-video-focused .title-row .title-options-video {
-  /* order 靠后：让 模型/提交/重置 按钮留在第一行标题旁，工具条独占第二行。 */
+  /* order 靠后：提交/重置已抽为悬浮按钮，工具条独占第二行。 */
   order: 10;
   flex: 1 1 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: 8px 12px;
   padding: 12px 0 0;
   margin-top: 6px;
   background: transparent;
@@ -1060,7 +1062,7 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 .layout-video-focused .title-options-video .range-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 0 1 auto;
   min-width: 0;
 }
@@ -1068,7 +1070,7 @@ button, .btn-primary, .btn-secondary, .btn-danger {
   white-space: nowrap;
 }
 .layout-video-focused .title-options-video .range-item input[type="range"] {
-  width: 110px;
+  width: 92px;
   flex: 0 0 auto;
 }
 .layout-video-focused .title-options-video .duration-options {
