@@ -2,18 +2,20 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import os from 'node:os';
 import { Worker, UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import sharp from 'sharp';
-import { updateTask, getProviderUnmaskedById, getActiveProvider } from './store.js';
+import { updateTask, getProviderUnmaskedById, getActiveProvider, getMedia } from './store.js';
 import { paths } from './paths.js';
 import { collectReferenceImages } from './lib/referenceImages.js';
 import { uploadResultAsset } from './cloudStorage.js';
 import { capImageSize } from './lib/imageFormat.js';
 import { publishNoteToXhs } from './lib/xhsPublish.js';
 import { mapConcurrent } from './lib/concurrency.js';
+import { parseMediaId, mediaExtension } from './lib/mediaInput.js';
 import { requestWithImageRetry, requestWithTextRetry } from './lib/imageResponseRetry.js';
 import { resolveImageQuality, isInvalidImageRejection, normalizeReferenceBuffer } from './lib/imageRequestOptions.js';
 // Node 内置 fetch/FormData 与项目安装的 undici 版本不同，混用会让代理请求报
@@ -58,6 +60,8 @@ const redis = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { l
 const uploadDir = paths.uploadsDir;
 const videoDir = paths.videosDir;
 const notesImagesDir = path.join(paths.dataDir, 'notes-images');
+// /api/media/<id> 的字节存在媒体表里，ffmpeg 只吃本地文件，故按需落到系统临时目录。
+const mediaTempDir = path.join(os.tmpdir(), 'slenk-media-input');
 fs.mkdirSync(videoDir, { recursive: true });
 
 async function resolveProvider(payload, mode, userId) {
@@ -258,6 +262,14 @@ async function readImageSource(value) {
     const match = raw.match(/^data:([^;,]*);base64,(.*)$/is);
     if (!match) return null;
     return { buf: Buffer.from(match[2].replace(/\s/g, ''), 'base64'), fallbackMime: match[1] };
+  }
+  // AI 生成结果存在媒体表（/api/media/<id>），不在 uploads 目录；先按媒体 id 直接读回字节。
+  const mediaId = parseMediaId(raw);
+  if (mediaId) {
+    const row = await getMedia(mediaId);
+    if (row) return { buf: row.data, fallbackMime: row.mimeType || '' };
+    // 本机没有该媒体：绝对地址继续走下面的网络拉取；相对地址视为素材已失效。
+    if (!/^https?:\/\//i.test(raw)) return null;
   }
   if (/^\/(?:notes-images|uploads|videos)\//i.test(raw)) {
     // 智能识别已把远端图片缓存到本地；这里直接读缓存，不再回源，也避免前端走代理预览。
@@ -600,11 +612,25 @@ async function runImage(payload, provider, id, userId) {
   return result;
 }
 
-function resolveUploadUrl(value) {
+// ffmpeg 只吃本地文件：/api/media/<id> 的字节从媒体表取出落到临时目录，任务结束由调用方清理。
+async function resolveUploadUrl(value, tempFiles) {
   if (!value) return '';
   if (value.startsWith('/uploads/')) return path.resolve(uploadDir, path.basename(value));
   // 笔记缓存图（从笔记改写传过来的）在 notes-images 目录，之前会被错解析到 uploads 导致素材缺失。
   if (value.startsWith('/notes-images/')) return path.resolve(notesImagesDir, path.basename(value));
+  // 生成结果图（按图重生成后替换的图）是 /api/media/<id>，不能当成 uploads 里的文件去找。
+  const mediaId = parseMediaId(value);
+  if (mediaId) {
+    const row = await getMedia(mediaId);
+    if (row) {
+      const file = path.join(mediaTempDir, mediaId + mediaExtension(row.mimeType, row.filename));
+      fs.mkdirSync(mediaTempDir, { recursive: true });
+      fs.writeFileSync(file, row.data);
+      if (tempFiles) tempFiles.add(file);
+      return file;
+    }
+    if (!/^https?:\/\//i.test(value)) throw new Error('图片素材已失效（媒体记录不存在），请重新生成后再传入。');
+  }
   if (/^https?:\/\//i.test(value)) return value;
   return path.resolve(uploadDir, path.basename(value));
 }
@@ -726,20 +752,28 @@ async function makeVideos(payload, id, userId) {
   const urls = (payload.mediaUrls || []).filter(Boolean);
   if (!urls.length) throw new Error('图片素材缺失，请先上传实况视频图片。');
   const concurrency = Math.max(1, Math.min(4, Number(process.env.VIDEO_CONCURRENCY) || 2));
-  const results = await mapConcurrent(urls, concurrency, async (url, i) => {
-    const input = resolveUploadUrl(url);
-    const multi = urls.length > 1;
-    const out = path.join(videoDir, multi ? `${id}-${i + 1}.mp4` : `${id}.mp4`);
-    await renderOneVideo(input, out, payload, multi ? `${id}#${i + 1}` : id);
-    const local = `/videos/${path.basename(out)}`;
-    const cloud = await uploadResultAsset(out, path.basename(out), 'video/mp4', { taskId: id, userId });
-    return { video: cloud || local, localVideo: local, localPath: out };
-  });
-  return {
-    videos: results.map(r => r.video),
-    localVideos: results.map(r => r.localVideo),
-    localPaths: results.map(r => r.localPath)
-  };
+  // /api/media 输入会落成临时文件，任务结束（成功或失败）统一清理，避免临时目录堆积。
+  const tempFiles = new Set();
+  try {
+    const results = await mapConcurrent(urls, concurrency, async (url, i) => {
+      const input = await resolveUploadUrl(url, tempFiles);
+      const multi = urls.length > 1;
+      const out = path.join(videoDir, multi ? `${id}-${i + 1}.mp4` : `${id}.mp4`);
+      await renderOneVideo(input, out, payload, multi ? `${id}#${i + 1}` : id);
+      const local = `/videos/${path.basename(out)}`;
+      const cloud = await uploadResultAsset(out, path.basename(out), 'video/mp4', { taskId: id, userId });
+      return { video: cloud || local, localVideo: local, localPath: out };
+    });
+    return {
+      videos: results.map(r => r.video),
+      localVideos: results.map(r => r.localVideo),
+      localPaths: results.map(r => r.localPath)
+    };
+  } finally {
+    for (const file of tempFiles) {
+      try { fs.rmSync(file, { force: true }); } catch {}
+    }
+  }
 }
 
 new Worker('ai-tasks', async (job) => {
