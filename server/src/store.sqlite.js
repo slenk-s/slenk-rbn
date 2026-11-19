@@ -252,3 +252,183 @@ export async function getActiveProvider(mode, userId) {
   );
   return row ? mapProvider(row) : null;
 }
+
+function typeLabel(type) {
+  if (type === 'image') return 'AI生图';
+  if (type === 'video') return '实况视频';
+  if (type === 'rewrite') return '文案改写';
+  if (type === 'publish') return '小红书发布';
+  return String(type || '任务');
+}
+
+function taskName(type, payload) {
+  const purpose = payload && payload.purpose;
+  if (purpose === 'title') return '标题生成';
+  if (purpose === 'content') return '正文生成';
+  if (purpose === 'tags') return '话题标签生成';
+  if (purpose === 'noteImage') return '配图生成';
+  return typeLabel(type);
+}
+
+function displayTaskLabel(row) {
+  const label = row.label || '';
+  if (!/^(Text|Image|Video|Task)\d+$/i.test(label)) return label;
+  const suffix = String(label).replace(/^[^\d]+/i, '');
+  return `${taskName(row.type, row.payload)}${suffix || ''}`;
+}
+
+function mapTask(row) {
+  const payload = parseJson(row.payload, null);
+  return {
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || null,
+    type: row.type,
+    label: displayTaskLabel({ ...row, payload }),
+    status: row.status,
+    payload,
+    providerId: row.provider_id,
+    tab: row.tab,
+    result: parseJson(row.result, null),
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapTaskListRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    username: row.username || null,
+    type: row.type,
+    label: displayTaskLabel({ ...row, payload: { purpose: row.purpose } }),
+    status: row.status,
+    tab: row.tab,
+    providerId: row.provider_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    error: row.error,
+    noteId: row.note_id || null,
+    noteTitle: row.note_title || null
+  };
+}
+
+export async function addTask(task) {
+  run(
+    `insert into slenk_notes_tasks (id, user_id, type, label, status, payload, provider_id, tab, result, error)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    task.id, task.userId, task.type, task.label ?? null, task.status ?? 'queued',
+    toJson(task.payload), task.providerId ?? null, task.tab ?? null,
+    toJson(task.result), task.error ?? null
+  );
+  return getTaskById(task.id);
+}
+
+export async function listTasks(userId, limit = 100) {
+  return all(
+    'select * from slenk_notes_tasks where user_id = ? order by created_at desc limit ?',
+    userId, limit
+  ).map(mapTask);
+}
+
+export async function getTask(userId, id) {
+  const row = get('select * from slenk_notes_tasks where user_id = ? and id = ?', userId, id);
+  return row ? mapTask(row) : null;
+}
+
+export async function countTasksByType(userId, type, tab) {
+  const row = get(
+    `select count(*) as n from slenk_notes_tasks
+     where user_id = ? and type = ?
+       and (? <> 'image' or coalesce(tab, '') = coalesce(?, ''))`,
+    userId, type, type, tab ?? null
+  );
+  return Number(row?.n ?? 0);
+}
+
+export async function listAllTasks(limit = 200) {
+  return all(
+    `select t.id, t.user_id, u.username, t.type, t.label, t.status, t.tab,
+            t.provider_id, t.created_at, t.updated_at, t.error, t.payload
+     from slenk_notes_tasks t
+     left join slenk_notes_users u on u.id = t.user_id
+     order by t.created_at desc limit ?`,
+    limit
+  ).map(row => {
+    const payload = parseJson(row.payload, {}) || {};
+    return mapTaskListRow({
+      ...row,
+      purpose: payload.purpose,
+      note_id: payload.noteId ?? null,
+      note_title: payload.noteTitle ?? null
+    });
+  });
+}
+
+export async function getTaskById(id) {
+  const row = get(
+    `select t.*, u.username from slenk_notes_tasks t
+     left join slenk_notes_users u on u.id = t.user_id
+     where t.id = ?`,
+    id
+  );
+  return row ? mapTask(row) : null;
+}
+
+export async function deleteTask(userId, id) {
+  return run('delete from slenk_notes_tasks where user_id = ? and id = ?', userId, id).changes > 0;
+}
+
+export async function deleteTaskById(id) {
+  return run('delete from slenk_notes_tasks where id = ?', id).changes > 0;
+}
+
+export async function deleteTasksByIds(ids, userId, isAdmin) {
+  if (!Array.isArray(ids) || !ids.length) return 0;
+  const placeholders = ids.map(() => '?').join(', ');
+  if (isAdmin) {
+    return run(`delete from slenk_notes_tasks where id in (${placeholders})`, ...ids).changes;
+  }
+  return run(
+    `delete from slenk_notes_tasks where id in (${placeholders}) and user_id = ?`,
+    ...ids, userId
+  ).changes;
+}
+
+export async function updateTask(userId, id, patch, insertMeta) {
+  const fields = [];
+  const values = [];
+  if ('status' in patch) { fields.push('status = ?'); values.push(patch.status); }
+  if ('result' in patch) { fields.push('result = ?'); values.push(toJson(patch.result)); }
+  if ('error' in patch) { fields.push('error = ?'); values.push(patch.error); }
+  if ('label' in patch) { fields.push('label = ?'); values.push(patch.label); }
+  if (!fields.length) return getTask(userId, id);
+  const changed = run(
+    `update slenk_notes_tasks set ${fields.join(', ')}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     where id = ? and user_id = ?`,
+    ...values, id, userId
+  ).changes;
+  // 迁移前入队、但库里没有对应行的旧任务：UPDATE 命中 0 行，状态会被静默丢弃。
+  // worker 处理这类任务时带上 insertMeta（type/payload/providerId/tab/label，取自 job），
+  // 命中 0 行就补插一行，让任务结果在 UI 任务列表可见，而不是无声消失。
+  if (changed === 0 && insertMeta) {
+    const cols = ['id', 'user_id', 'type', 'status', 'label'];
+    const vals = [id, userId, insertMeta.type ?? 'task', patch.status ?? 'queued', patch.label ?? insertMeta.label ?? null];
+    if (insertMeta.payload !== undefined) { cols.push('payload'); vals.push(toJson(insertMeta.payload)); }
+    if (insertMeta.providerId !== undefined) { cols.push('provider_id'); vals.push(insertMeta.providerId); }
+    if (insertMeta.tab !== undefined) { cols.push('tab'); vals.push(insertMeta.tab); }
+    if ('result' in patch) { cols.push('result'); vals.push(toJson(patch.result)); }
+    if ('error' in patch) { cols.push('error'); vals.push(patch.error); }
+    // 重复键分支同样应用 patch（行恰好存在但值未变的极端情况）。
+    const dupeCols = cols.slice(4);
+    run(
+      `insert into slenk_notes_tasks (${cols.join(', ')})
+       values (${cols.map(() => '?').join(', ')})
+       on conflict (id) do update set ${dupeCols.map(c => `${c} = excluded.${c}`).join(', ')},
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+      ...vals
+    );
+  }
+  return getTask(userId, id);
+}
