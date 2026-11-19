@@ -131,3 +131,124 @@ export async function setActiveProvider(providerId, mode, userId) {
     userId, providerId
   );
 }
+
+const PROVIDER_COLUMNS = `id, name, provider_type, app_type, base_url, api_key, mode,
+  text_model, image_model, image_api, notes, is_active, created_at, updated_at`;
+
+function mapProvider(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    providerType: row.provider_type,
+    appType: row.app_type,
+    baseUrl: row.base_url,
+    apiKey: row.api_key,
+    mode: row.mode,
+    textModel: row.text_model,
+    imageModel: row.image_model,
+    imageApi: row.image_api,
+    notes: row.notes,
+    active: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function maskApiKey(apiKey) {
+  if (!apiKey) return '';
+  const s = String(apiKey);
+  if (s.length <= 8) return '*'.repeat(Math.max(4, s.length));
+  return `${s.slice(0, 4)}${'*'.repeat(Math.max(4, s.length - 8))}${s.slice(-4)}`;
+}
+
+function withMaskedKey(provider) {
+  return provider ? { ...provider, apiKey: maskApiKey(provider.apiKey) } : null;
+}
+
+function providerValues(input = {}, id) {
+  return {
+    id: id || uid('prov'),
+    name: String(input.name || 'Custom Provider').trim() || 'Custom Provider',
+    providerType: String(input.providerType || 'openai-compatible').trim() || 'openai-compatible',
+    appType: String(input.appType || 'openai').trim() || 'openai',
+    baseUrl: String(input.baseUrl || '').trim().replace(/\/$/, ''),
+    apiKey: String(input.apiKey || '').trim(),
+    mode: String(input.mode || 'image').trim() || 'image',
+    textModel: String(input.textModel || '').trim(),
+    imageModel: String(input.imageModel || '').trim(),
+    imageApi: input.imageApi === 'form' ? 'form' : 'json',
+    notes: String(input.notes || ''),
+    active: Boolean(input.active)
+  };
+}
+
+export async function listProviders() {
+  return all(`select ${PROVIDER_COLUMNS} from slenk_notes_providers order by created_at, id`)
+    .map(r => withMaskedKey(mapProvider(r)));
+}
+
+export async function getProviderById(id) {
+  const row = get(`select ${PROVIDER_COLUMNS} from slenk_notes_providers where id = ?`, id);
+  return row ? withMaskedKey(mapProvider(row)) : null;
+}
+
+export async function getProviderUnmaskedById(id) {
+  const row = get(`select ${PROVIDER_COLUMNS} from slenk_notes_providers where id = ?`, id);
+  return row ? mapProvider(row) : null;
+}
+
+export async function addProvider(input) {
+  const p = providerValues(input);
+  run(
+    `insert into slenk_notes_providers
+       (id, name, provider_type, app_type, base_url, api_key, mode, text_model, image_model, image_api, notes, is_active)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    p.id, p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode,
+    p.textModel, p.imageModel, p.imageApi, p.notes, p.active ? 1 : 0
+  );
+  return getProviderById(p.id);
+}
+
+export async function updateProvider(id, input) {
+  const existing = await getProviderUnmaskedById(id);
+  if (!existing) return null;
+  const p = providerValues({ ...existing, ...input, id }, id);
+  if (!p.apiKey || p.apiKey === maskApiKey(existing.apiKey)) p.apiKey = existing.apiKey;
+  run(
+    `update slenk_notes_providers set name = ?, provider_type = ?, app_type = ?, base_url = ?,
+       api_key = ?, mode = ?, text_model = ?, image_model = ?, image_api = ?, notes = ?,
+       is_active = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     where id = ?`,
+    p.name, p.providerType, p.appType, p.baseUrl, p.apiKey, p.mode,
+    p.textModel, p.imageModel, p.imageApi, p.notes, p.active ? 1 : 0, id
+  );
+  return getProviderById(id);
+}
+
+export async function deleteProvider(id) {
+  return transaction(db => {
+    const info = db.prepare('delete from slenk_notes_providers where id = ?').run(id);
+    if (info.changes) {
+      db.prepare(
+        `update slenk_notes_user_settings set
+           active_provider_id = case when active_provider_id = ? then null else active_provider_id end,
+           active_text_provider_id = case when active_text_provider_id = ? then null else active_text_provider_id end,
+           active_image_provider_id = case when active_image_provider_id = ? then null else active_image_provider_id end`
+      ).run(id, id, id);
+    }
+    return info.changes > 0;
+  });
+}
+
+export async function getActiveProvider(mode, userId) {
+  const settings = await getActiveProviderIds(userId);
+  const preferredId = mode === 'text' ? settings.activeTextProviderId
+    : mode === 'image' ? settings.activeImageProviderId
+    : settings.activeProviderId;
+  const row = get(
+    `select ${PROVIDER_COLUMNS} from slenk_notes_providers
+     order by (id = ?) desc, (mode = ?) desc, created_at, id limit 1`,
+    preferredId || '', mode
+  );
+  return row ? mapProvider(row) : null;
+}
