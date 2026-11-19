@@ -8,7 +8,7 @@ import IORedis from 'ioredis';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import sharp from 'sharp';
-import { updateTask, getProviderUnmaskedById, getActiveProvider, getMedia } from './store.js';
+import { initStore, updateTask, getProviderUnmaskedById, getActiveProvider, getMedia } from './store.js';
 import { paths } from './paths.js';
 import { collectReferenceImages } from './lib/referenceImages.js';
 import { uploadResultAsset } from './cloudStorage.js';
@@ -775,6 +775,8 @@ async function makeVideos(payload, id, userId) {
     }
   }
 }
+
+await initStore();
 
 new Worker('ai-tasks', async (job) => {
   const { id, payload, userId } = job.data;

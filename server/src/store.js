@@ -1,14 +1,22 @@
 // store.js — 数据层入口：按 SLENK_DATA_BACKEND 选择后端，导出接口一致。
 //
-//   local（默认，未设置时）→ store.local.js：数据直接存本地 JSON 文件（storage/local/），不用 MySQL
+//   sqlite（默认，未设置时）→ store.sqlite.js：Node 内置 SQLite，默认 <dataDir>/slenk.sqlite
 //   mysql                  → store.mysql.js：业务数据存 MySQL
 //
 // routes / worker / auth / lib 等一律 `import { ... } from './store.js'`，切换后端零改动。
+// 非法后端值启动即抛错，避免静默落到错误数据源。
 import './loadEnv.js';
+import * as sqliteImpl from './store.sqlite.js';
 import * as mysqlImpl from './store.mysql.js';
-import * as localImpl from './store.local.js';
 
-const impl = process.env.SLENK_DATA_BACKEND === 'mysql' ? mysqlImpl : localImpl;
+const backend = process.env.SLENK_DATA_BACKEND || 'sqlite';
+let impl;
+if (backend === 'sqlite') impl = sqliteImpl;
+else if (backend === 'mysql') impl = mysqlImpl;
+else throw new Error(`未知 SLENK_DATA_BACKEND: ${backend}（仅支持 sqlite / mysql）`);
+
+export const initStore = impl.initStore;
+export const closeStore = impl.closeStore;
 
 export const ensureAdmin = impl.ensureAdmin;
 export const findUserByUsername = impl.findUserByUsername;
@@ -44,6 +52,7 @@ export const getNote = impl.getNote;
 
 export const insertMedia = impl.insertMedia;
 export const getMedia = impl.getMedia;
+export const listMediaIds = impl.listMediaIds;
 
 export const listXhsAccounts = impl.listXhsAccounts;
 export const getXhsAccount = impl.getXhsAccount;
@@ -56,3 +65,6 @@ export const listAllXhsAccounts = impl.listAllXhsAccounts;
 
 export const getAllNotesImagesForJanitor = impl.getAllNotesImagesForJanitor;
 export const getAllTasksPayloadForJanitor = impl.getAllTasksPayloadForJanitor;
+
+export const exportSyncRows = impl.exportSyncRows;
+export const importSyncRows = impl.importSyncRows;

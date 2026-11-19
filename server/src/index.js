@@ -5,7 +5,7 @@ import compression from 'compression';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ensureAdmin } from './store.js';
+import { initStore } from './store.js';
 import { paths } from './paths.js';
 import { startNotesImagesJanitor } from './cacheJanitor.js';
 import { janitorMiniToolArtifacts } from './lib/minitoolBuild.js';
@@ -22,7 +22,7 @@ import { router as publishRoutes } from './routes/publish.js';
 import { router as redappAuthRoutes, accountsRouter as redappAccountsRoutes } from './routes/redappAuth.js';
 import { router as settingsRoutes } from './routes/settings.js';
 
-await ensureAdmin();
+await initStore();
 startNotesImagesJanitor();
 // 启动时清理小工具构建残留（仅在此处显式触发，模块 import 不再带副作用）。
 try { janitorMiniToolArtifacts(); } catch { /* 清理失败不阻塞启动 */ }
@@ -97,6 +97,7 @@ app.use('/api', (req, res) => res.status(404).json({ error: 'not_found' }));
 
 app.use((err, req, res, next) => {
   console.error(err);
+  if (err?.code === 'STORAGE_BUSY') return res.status(503).json({ error: 'storage_busy' });
   res.status(500).json({ error: err.message || 'server_error' });
 });
 

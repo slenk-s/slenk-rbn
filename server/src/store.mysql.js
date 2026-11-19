@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import './loadEnv.js';
-import { query, withTransaction } from './db.js';
+import { query, closePool, withTransaction } from './db.js';
 
 function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -669,7 +669,25 @@ async function importSyncRows(rows = {}) {
   });
 }
 
+async function initStore() {
+  await ensureAdmin();
+}
+
+async function closeStore() {
+  await closePool();
+}
+
+async function listMediaIds() {
+  const { rows } = await query('select id from slenk_notes_media');
+  return rows.map(r => r.id);
+}
+
 export {
+  initStore,
+  closeStore,
+  exportSyncRows,
+  importSyncRows,
+  listMediaIds,
   ensureAdmin,
   findUserByUsername,
   findUserById,
@@ -707,7 +725,5 @@ export {
   findXhsAccountByOpenId,
   deleteXhsAccount,
   updateXhsAccountNickname,
-  listAllXhsAccounts,
-  exportSyncRows,
-  importSyncRows
+  listAllXhsAccounts
 };
