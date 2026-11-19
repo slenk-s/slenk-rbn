@@ -2961,7 +2961,8 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 .image-prompt-editor { display: grid; gap: 6px; padding: 0 8px 8px; }
 .image-prompt-editor textarea { width: 100%; min-height: 64px; resize: vertical; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; font-size: 12px; line-height: 1.5; color: var(--text-h); background: #fff; box-sizing: border-box; cursor: text; }
 .image-prompt-editor textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
-.image-prompt-editor button { justify-self: end; }
+/* 提示词下方的「删除 / 提交」同一行，各占一半宽度。 */
+.image-prompt-actions { display: flex; gap: 8px; }
 .prompt-strip { margin: 6px 0; border: 1px solid var(--border); border-radius: 8px; background: #fafafb; overflow: hidden; }
 .prompt-strip-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 12px; border: none; background: transparent; cursor: pointer; font-size: 12px; color: var(--text); text-align: left; }
 .prompt-strip-head b { color: var(--text-h); font-weight: 600; }
@@ -2986,8 +2987,24 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 .image-thumb > img, .image-thumb > video { cursor: grab; }
 .image-thumb > img:active, .image-thumb > video:active { cursor: grabbing; }
 .image-thumb figcaption { display: grid; gap: 6px; padding: 8px; font-size: 12px; color: var(--text); }
-/* 图片卡片的操作按钮竖排，卡片窄时也放得下「下载 / 删除 / 传入」三个按钮。 */
-.image-thumb figcaption div { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+/* 图片卡片顶部「下载 / 传入」同一行，各占一半宽度（视频卡片的「删除」也在这行）。 */
+.image-thumb figcaption div { display: flex; gap: 8px; align-items: center; }
+/* 卡片里的四个操作按钮（下载 / 传入 / 删除 / 提交）统一同一种胶囊样式，均分所在行宽度。 */
+.image-thumb .thumb-action {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-h);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.image-thumb .thumb-action:hover { background: var(--code-bg); border-color: #c9cad1; }
+.image-thumb .thumb-action:disabled { opacity: .5; cursor: not-allowed; }
 .image-thumb figcaption a, .image-thumb figcaption button { color: var(--text-h); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 4px 8px; background: #fff; cursor: pointer; }
 .empty-image { grid-column: 1 / -1; min-height: 120px; display: grid; place-items: center; border: 1px dashed var(--border-strong); border-radius: 10px; color: var(--muted); font-size: 13px; }
 /* 预览面板像左侧功能栏一样 sticky 跟随滚动；内容比视口高时面板内部滚动。 */

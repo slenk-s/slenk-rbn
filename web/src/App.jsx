@@ -1533,10 +1533,12 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
                   : <SmartImg sources={noteImageSources(img)} alt={img.name || '笔记图片'} draggable onDragStart={() => { setDragIndex(index); clearImageSelectionState(); }} onDragEnd={() => setDragIndex(null)} />}
                 <figcaption>
                   <span>{img.name || '图片 ' + (index + 1)}</span>
+                  {/* 顶部只放「下载 / 传入」；「删除」和「提交」移到提示词输入框下方同一行。
+                      视频没有提示词区，删除按钮留在顶部。 */}
                   <div>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button>
-                    <button onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>
-                    {!img.isVideo && onSendToVideo && <button type="button" className="thumb-send-video" title="把这张图送到实况视频页的图片输入区" onClick={(e) => { e.stopPropagation(); onSendToVideo({ url: img.cachedUrl || img.url, name: img.name || ('图片 ' + (index + 1)) }); }}>传入</button>}
+                    <button type="button" className="thumb-action" onClick={(e) => { e.stopPropagation(); downloadFile(img, img.name || ('图片 ' + (index + 1)), img.isVideo ? 'video' : 'image'); }}>下载</button>
+                    {!img.isVideo && onSendToVideo && <button type="button" className="thumb-action thumb-send-video" title="把这张图送到实况视频页的图片输入区" onClick={(e) => { e.stopPropagation(); onSendToVideo({ url: img.cachedUrl || img.url, name: img.name || ('图片 ' + (index + 1)) }); }}>传入</button>}
+                    {img.isVideo && <button type="button" className="thumb-action" onClick={e => { e.stopPropagation(); setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>}
                   </div>
                 </figcaption>
                 {!img.isVideo && (
@@ -1546,9 +1548,12 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
                       placeholder="可选：填写此图专属提示词；留空则使用上方默认提示词"
                       onChange={e => setImages(prev => prev.map((item, i) => i === index ? { ...item, prompt: e.target.value } : item))}
                     />
-                    <button type="button" className="btn-secondary" disabled={regeneratingIds.has(img.id)} onClick={() => regenerateImage(index)}>
-                      {regeneratingIds.has(img.id) ? '生成中…' : '提交'}
-                    </button>
+                    <div className="image-prompt-actions">
+                      <button type="button" className="thumb-action" onClick={() => { setImages(images.filter((_, idx) => idx !== index)); clearImageSelectionState(); }}>删除</button>
+                      <button type="button" className="thumb-action" disabled={regeneratingIds.has(img.id)} onClick={() => regenerateImage(index)}>
+                        {regeneratingIds.has(img.id) ? '生成中…' : '提交'}
+                      </button>
+                    </div>
                   </div>
                 )}
               </figure>
