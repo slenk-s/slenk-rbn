@@ -1671,15 +1671,17 @@ export async function importSyncRows(rows = {}) {
 
 - [ ] **Step 4: 实现 MySQL 同步行函数**
 
-在 `server/src/store.mysql.js` 的 export 块之前追加：
+把顶部 import 改为 `import { query, withTransaction } from './db.js';`（事务用 withTransaction），
+并在 `server/src/store.mysql.js` 的 export 块之前追加（并把 `exportSyncRows`/`importSyncRows` 加进 export 块）：
 
 ```js
 // ---- TiDB 同步行（与 SQLite 适配器形状一致） ----
 
 async function exportSyncRows() {
-  const [users] = await query('select * from slenk_notes_users');
-  const [providers] = await query('select * from slenk_notes_providers');
-  const [userSettings] = await query('select * from slenk_notes_user_settings');
+  // db.js 的 query() 返回 { rows, rowCount, fields }（对象），不能用数组解构。
+  const { rows: users } = await query('select * from slenk_notes_users');
+  const { rows: providers } = await query('select * from slenk_notes_providers');
+  const { rows: userSettings } = await query('select * from slenk_notes_user_settings');
   return {
     users: users.map(r => ({
       id: r.id, username: r.username, password_hash: r.password_hash,
@@ -1701,9 +1703,8 @@ async function exportSyncRows() {
 }
 
 async function importSyncRows(rows = {}) {
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
+  // store.mysql.js 只有 query 导入；事务用 db.js 的 withTransaction（begin/commit/rollback/release）。
+  return withTransaction(async (conn) => {
     for (const u of rows.users || []) {
       await conn.query(
         `insert into slenk_notes_users (id, username, password_hash, is_admin, created_at)
@@ -1738,13 +1739,7 @@ async function importSyncRows(rows = {}) {
         [s.user_id, s.active_provider_id ?? null, s.active_text_provider_id ?? null, s.active_image_provider_id ?? null]
       );
     }
-    await conn.commit();
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
+  });
 }
 ```
 
