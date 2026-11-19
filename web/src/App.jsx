@@ -1447,15 +1447,16 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
       setStatus('笔记已保存到本地库，预览链接：' + data.url);
     } catch (err) { setStatus(err.message); }
   }
-  async function browseNote() {
+  async function generateQr() {
     try {
-      setStatus('正在保存笔记...');
+      setStatus('正在生成预览二维码...');
       const res = await fetch(API + '/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ title, content, tags, images }) });
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || '生成失败');
-      setStatus('笔记已保存，正在新标签页打开预览…');
-      // 保存后返回的是 /p/:id 预览页地址，直接打开浏览。
-      window.open(data.url, '_blank', 'noopener');
+      const { default: QRCode } = await import('qrcode');
+      const qrDataUrl = await QRCode.toDataURL(data.url, { width: 320, margin: 2 });
+      setQr({ url: data.url, image: qrDataUrl });
+      setStatus('二维码已生成，手机扫码预览笔记。');
     } catch (err) { setStatus(err.message); }
   }
   function clearNote() { setTitle(''); setContent(''); setTags([]); setImages([]); setLink(''); clearImageSelectionState(); noteIdRef.current = ''; setStatus('已清空。'); }
@@ -1562,7 +1563,7 @@ function NoteRewriteWorkspace({ token, mode = 'rewrite', hidden = false, onSendT
         {!isDownload && (<aside className="preview-panel">
           <div className="preview-head"><h3>预览效果</h3><span>小红书样式</span></div>
           <div className="xhs-preview"><header><div className="avatar"></div><div><b>笔记作者</b><small>{images.length} 张图片</small></div><button className="follow-btn">关注</button></header><div className="preview-images">{images.filter(img => !img.isVideo).length ? images.filter(img => !img.isVideo).map((img, i) => <SmartImg key={i} sources={noteImageSources(img)} alt={'预览图 ' + (i + 1)} />) : <div className="no-image">暂无图片</div>}</div><h4>{title || '笔记标题'}</h4><p>{content || '笔记正文内容将显示在这里。'}</p><div className="topic-tags">{tags.map((t, i) => <span key={i}>{'#' + t}</span>)}</div></div>
-          <div className="publish-actions"><button className="btn-primary" onClick={openPublishConfirm}>去发布</button><button className="btn-secondary" onClick={saveNoteDraft}>保存笔记</button><button className="btn-secondary" onClick={browseNote}>浏览笔记</button></div>
+          <div className="publish-actions"><button className="btn-primary" onClick={openPublishConfirm}>去发布</button><button className="btn-secondary" onClick={saveNoteDraft}>保存笔记</button><button className="btn-secondary" onClick={generateQr}>浏览笔记</button></div>
         </aside>)}
       </div>
       <StatusToast text={status} />
