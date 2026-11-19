@@ -56,7 +56,7 @@ test('auth flip CSS provides perspective, backface isolation, and a left 700ms t
 
 test('auth flip CSS uses the selected glass surface and success treatment', () => {
   assert.match(css, /\.auth-face[\s\S]*?linear-gradient/);
-  assert.match(css, /\.auth-face[\s\S]*?backdrop-filter\s*:\s*blur\(18px\)/);
+  assert.match(css, /\.auth-face[\s\S]*?backdrop-filter\s*:\s*blur\(30px\)/);
   assert.match(css, /\.auth-face[\s\S]*?border\s*:/);
   assert.match(css, /\.auth-success[\s\S]*?background/);
   assert.match(css, /\.auth-success-check[\s\S]*?border-radius\s*:\s*50%/);

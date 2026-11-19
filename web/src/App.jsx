@@ -429,8 +429,17 @@ function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   return <pre>{JSON.stringify(result, null, 2)}</pre>;
 }
 function ResultEmptyState({ tabId }) {
-  const hints = { 'ai-image': '🎨 提交后，生成的图片将显示在此区域，支持一键下载。', 'replace-image': '🖼️ 替换版图片将在此展示，可下载与原图对比。', 'live-video': '🎬 运镜视频将在此播放，支持预览和下载。', 'note-rewrite': '📝 改写结果将包含正文、标题和标签，可下载保存。', 'multiply': '◐ 合成结果图片将在此展示，支持下载。', 'layout-tool': '▦ 排版规划结果将在此展示，可作为设计参考。', 'note-download': '📦 整理好的素材包将在此展示，可打包下载。' };
-  return <div className="result-empty-state"><div className="result-empty-icon">{hints[tabId]?.split(' ')[0]}</div><p>{hints[tabId] || '暂无结果。提交任务后会显示在这里。'}</p></div>;
+  const hints = {
+    'ai-image': ['🎨', '提交后，生成的图片将显示在这里，支持一键下载。'],
+    'replace-image': ['🖼️', '替换版图片会显示在这里，可下载后与原图对照。'],
+    'live-video': ['🎬', '运镜视频会在这里播放，支持预览和下载。'],
+    'note-rewrite': ['📝', '改写结果会包含正文、标题和标签，可下载保存。'],
+    'multiply': ['◐', '合成结果图片会显示在这里，支持下载。'],
+    'layout-tool': ['▦', '排版规划结果会显示在这里，可作为设计参考。'],
+    'note-download': ['📦', '整理好的素材包会显示在这里，可打包下载。'],
+  };
+  const [icon, text] = hints[tabId] || ['', '暂无结果，提交任务后会显示在这里。'];
+  return <div className="result-empty-state">{icon && <div className="result-empty-icon" aria-hidden="true">{icon}</div>}<p>{text}</p></div>;
 }
 function ProviderManager({ token, activeProviderId, activeTextProviderId, activeImageProviderId, providers, onProviderChange, setMessage }) {
   const [form, setForm] = useState(EMPTY_PROVIDER);
@@ -678,7 +687,7 @@ function Dashboard({ token, me, activeProviderId, activeTextProviderId, activeIm
   }
   return (
     <section className="dashboard-settings">
-      <section className="card dashboard-hero"><div className="hero-copy"><span className="eyebrow">全站设置区</span><h2>仪表盘</h2><p>集中查看运行状态，并管理 AI 供应商、本地存储、队列与视频 worker。</p></div><div className="hero-stats"><div><b>{providers.length}</b><span>供应商</span></div><div><b>{tasks.length}</b><span>任务</span></div><div><b>Local</b><span>存储</span></div></div></section>
+      <section className="card dashboard-hero"><div className="hero-copy"><h2>仪表盘</h2><p>集中查看运行状态，并管理 AI 供应商、本地存储、队列与视频 worker。</p></div><div className="hero-stats"><div><b>{providers.length}</b><span>供应商</span></div><div><b>{tasks.length}</b><span>任务</span></div><div><b>Local</b><span>存储</span></div></div></section>
       <div className="dashboard-row">
         <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，跨用户共享，自动轮询刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={toggleManage}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div>{manageMode && <div className="task-batch-bar"><label className="task-select-all"><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />全选</label><span className="task-batch-count">{selectedCount ? '已选 ' + selectedCount + ' 个' : '勾选后可批量删除'}</span><button type="button" className={confirmingDelete ? 'task-view-btn task-delete-btn confirm-armed' : 'task-view-btn task-delete-btn'} disabled={!selectedCount} onClick={deleteSelectedTasks}>{confirmingDelete ? '确认删除 ' + selectedCount + ' 个？' : '删除所选'}</button></div>}<ul className="task-list">{tasks.map(t => { const canDelete = me?.isAdmin || t.userId === me?.id; return <li key={t.id} data-status={t.status}><div className="task-status-row">{manageMode && canDelete ? <input type="checkbox" className="task-select" checked={selectedIds.has(t.id)} onChange={() => toggleTaskSelect(t.id)} aria-label={'选择 ' + (t.label || t.type)} /> : null}<b>{t.label || t.type}</b>{t.username ? <span className="task-owner">{t.username}</span> : null}<span>{t.status}</span>{!manageMode && <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>; })}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
         <ProviderManager token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
@@ -1864,7 +1873,7 @@ function Workspace({ token }) {
       <div className="layout">
         <aside className="sidebar"><div className="sidebar-nav"><div className="sidebar-title"><b>工作台</b><span>{TABS.length} 个功能</span></div>
           <nav className="tabs"><button className={active === 'dashboard' ? 'active' : ''} onClick={() => goTab('dashboard')}><span className="tab-icon">◈</span><span className="tab-label">仪表盘</span></button></nav>
-          {GROUPS.map(group => <div key={group.id} className="tab-group"><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { goTab(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
+          {GROUPS.map(group => <div key={group.id} className="tab-group"><div className="tab-group-label">{group.label}</div><nav className="tabs">{group.tabs.map(tab => <button key={tab.id} className={tab.id === active ? 'active' : ''} onClick={() => { goTab(tab.id); setSelectedTaskId(''); }}><span className="tab-icon">{tab.icon}</span><span className="tab-label">{tab.label}</span></button>)}</nav></div>)}
           </div>
           {active !== 'dashboard' && (<div className="sidebar-tasks"><div className="sidebar-tasks-head"><b>任务列表</b><span>{tabTasks.length} 个</span></div><ul className="task-list sidebar-task-list">{taskGroups.map(g => (
             <li key={g.key} className="task-group">
