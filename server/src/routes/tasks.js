@@ -1,14 +1,17 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { nanoid } from 'nanoid';
-import { addTask, getTask, getTaskById, listTasks, countTasksByType, listAllTasks, deleteTask, deleteTaskById, deleteTasksByIds, updateTask, getActiveProvider, findUserById } from '../store.js';
+import { addTask, getTask, getTaskById, listTasks, countTasksByType, listAllTasks, deleteTask, deleteTaskById, deleteTasksByIds, updateTask, getActiveProvider, findUserById, insertMedia, getMedia } from '../store.js';
 import { paths } from '../paths.js';
 import { verify } from '../auth.js';
+import { createLivePhoto } from '../lib/livePhoto.js';
+import { parseMediaId, mediaExtension } from '../lib/mediaInput.js';
 
 const conn = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { lazyConnect: true, maxRetriesPerRequest: null });
 export const queue = new Queue('ai-tasks', { connection: conn });
@@ -189,6 +192,91 @@ router.get('/:id/download', async (req, res, next) => {
     return res.download(target, name);
   } catch (err) {
     next(err);
+  }
+});
+
+// 把站内媒体地址解析成本地文件路径（供 LIVP 转换使用）。
+// 支持 /videos/、/uploads/、/notes-images/、/api/media/（媒体表字节落临时文件）。
+async function resolveLocalMediaPath(value, tempFiles) {
+  const url = String(value || '');
+  if (!url) return null;
+  const mediaId = parseMediaId(url);
+  if (mediaId) {
+    const row = await getMedia(mediaId);
+    if (!row) return null;
+    const ext = mediaExtension(row.mimeType, row.filename) || '.bin';
+    // 与 worker.js 的 mediaTempDir 一致：媒体表字节落系统临时目录，用完即清。
+    const file = path.join(os.tmpdir(), `slenk-livp-${mediaId}${ext}`);
+    fs.writeFileSync(file, row.data);
+    if (tempFiles) tempFiles.add(file);
+    return file;
+  }
+  let baseDir = null;
+  if (url.startsWith('/videos/')) baseDir = paths.videosDir;
+  else if (url.startsWith('/uploads/')) baseDir = paths.uploadsDir;
+  else if (url.startsWith('/notes-images/')) baseDir = path.join(paths.dataDir, 'notes-images');
+  if (baseDir) {
+    const target = path.resolve(baseDir, path.basename(url));
+    // Windows 上 paths.*Dir 可能是正斜杠（环境/配置来源），path.resolve 统一成反斜杠，
+    // 直接 startsWith 会因分隔符不同误判，故两侧都 resolve 规范化后再比较。
+    const base = path.resolve(baseDir);
+    return target.startsWith(base) && fs.existsSync(target) ? target : null;
+  }
+  // 旧任务可能存 Supabase 公网 URL：下载到临时文件供 ffmpeg/sharp 读取。
+  if (/^https?:\/\//i.test(url)) {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const ext = path.extname(new URL(url).pathname) || '.bin';
+    const file = path.join(os.tmpdir(), `slenk-livp-remote-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    fs.writeFileSync(file, Buffer.from(await resp.arrayBuffer()));
+    if (tempFiles) tempFiles.add(file);
+    return file;
+  }
+  return null;
+}
+
+// 生成 Apple 实况照片 .livp：从任务结果取视频、从 payload 取封面图。
+router.post('/:id/livp', async (req, res, next) => {
+  const tempFiles = new Set();
+  try {
+    const item = await getTaskById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'not_found' });
+    if (item.type !== 'video') return res.status(400).json({ error: 'not_video_task' });
+    const parsed = item.result && typeof item.result === 'object' ? item.result : {};
+    const index = Math.max(0, Number(req.body?.index || 0) || 0);
+    // 视频：优先本地缓存路径，其次媒体 URL（/videos/ 或 /api/media/）。
+    const videoUrl = Array.isArray(parsed.localVideos)
+      ? parsed.localVideos[index]
+      : Array.isArray(parsed.videos)
+        ? parsed.videos[index]
+        : parsed.localVideo || parsed.video || '';
+    const coverUrl = Array.isArray(item.payload?.mediaUrls)
+      ? item.payload.mediaUrls[index] || item.payload.mediaUrls[0]
+      : (item.payload?.mediaUrls || [])[0] || '';
+    if (!videoUrl) return res.status(404).json({ error: 'video_missing' });
+    if (!coverUrl) return res.status(400).json({ error: 'cover_missing' });
+    const videoPath = await resolveLocalMediaPath(videoUrl, tempFiles);
+    const coverPath = await resolveLocalMediaPath(coverUrl, tempFiles);
+    if (!videoPath) return res.status(404).json({ error: 'video_file_missing' });
+    if (!coverPath) return res.status(400).json({ error: 'cover_file_missing' });
+    const result = await createLivePhoto(videoPath, coverPath, { taskId: item.id, index });
+    // 生成的 LIVP 存入媒体表，走 /api/media/ 下发（与其它生成结果一致）。
+    const mediaId = await insertMedia({
+      id: nanoid(16),
+      taskId: item.id,
+      userId: item.userId,
+      filename: `${item.id}-${index + 1}.livp`,
+      mimeType: 'application/octet-stream',
+      data: fs.readFileSync(result.path)
+    });
+    try { fs.rmSync(result.path, { force: true }); } catch { /* 忽略 */ }
+    res.json({ url: `/api/media/${mediaId}`, name: `${item.id}-${index + 1}.livp`, size: result.size });
+  } catch (err) {
+    next(err);
+  } finally {
+    for (const file of tempFiles) {
+      try { fs.rmSync(file, { force: true }); } catch { /* 忽略 */ }
+    }
   }
 });
 
