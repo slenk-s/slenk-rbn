@@ -2479,11 +2479,14 @@ git commit -m "feat: MySQL 媒体改文件存储，新增迁移与巡检脚本"
 - Modify: `server/src/syncTiDB.js`
 - Modify: `server/src/store.sqlite.js`
 - Modify: `server/src/index.js`
+- Modify: `server/test/env.mjs`
 - Test: `server/test/syncTiDB.test.mjs`
 
 **Interfaces:**
 - Consumes: Task 6 的 `exportSyncRows` / `importSyncRows`；`lib/cloudSyncMerge.js` 的 `mergeProviders` / `mergeUsers`。
 - Produces: `pushProvidersUsers(providers, users)`、`scheduleSyncProvidersUsers(delay, loadRows)`、`fetchCloudProvidersUsers()`；store.sqlite 变更后自动调度推送。
+
+**注意（控制器决议）：** 本任务 Step 4 让 `store.sqlite.js` 静态 import `syncTiDB.js`，而所有 store 测试文件都经 `store.js → store.sqlite.js` 传递 import 到它。`syncTiDB.js` 在模块加载时捕获 `TIDB_PG_URL`（其 `loadEnv` 会从 `.env` 载入真实值，本机 `.env:37` 已配置）。若不在测试环境强制关掉云端同步，store 测试的 `createUser/deleteUser` 等会经 `queueSync` 在 1500ms 后真的连接并推送数据到生产 TiDB。**决议：在 `server/test/env.mjs` 增加一行 `process.env.TIDB_PG_URL = '';`**（dotenv 不覆盖已设变量，故 `syncTiDB.js` 捕获 `''`，全测试环境对云端同步为 no-op）。同时这使本任务 Step 1 的 skip 测试真正测到「未配置」路径（原测试的 `delete process.env.TIDB_PG_URL` 在静态 import 之后执行，对模块已捕获的值无效，且仅靠它不足以防 store 测试泄漏）。
 
 - [ ] **Step 1: 写失败的测试**
 
