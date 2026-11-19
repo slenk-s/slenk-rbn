@@ -1219,7 +1219,9 @@ button, .btn-primary, .btn-secondary, .btn-danger {
   border-radius: 9px;
   font-size: 12px;
 }
-.layout-replace-image .title-row .title-actions button {
+/* AI 生图 / 替换生图 / 实况视频：悬浮操作区的提交与清空按钮样式统一。 */
+.layout-replace-image .title-row .title-actions button,
+.layout-video-focused .title-row .title-actions button {
   min-height: 36px;
   padding: 8px 12px;
   border-radius: 10px;
