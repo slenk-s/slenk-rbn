@@ -1238,7 +1238,7 @@ Expected: FAIL，`saveNote is not a function`。
 替换 `server/src/store.sqlite.js` 顶部的媒体导入行：
 
 ```js
-import { writeMediaFile, readMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
+import { writeMediaFile, readMediaFile, removeMediaFile, removeMediaFiles } from './lib/mediaFiles.js';
 ```
 
 在 `all/get/run` 辅助之后追加 `isDuplicateError`：
@@ -1375,10 +1375,16 @@ export async function listAllXhsAccounts() {
 
 export async function insertMedia({ id, taskId, userId, filename, mimeType, data }) {
   writeMediaFile(id, data);
-  run(
-    'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, size_bytes) values (?, ?, ?, ?, ?, ?)',
-    id, taskId ?? null, userId, filename, mimeType, data.length
-  );
+  try {
+    run(
+      'insert into slenk_notes_media (id, task_id, user_id, filename, mime_type, size_bytes) values (?, ?, ?, ?, ?, ?)',
+      id, taskId ?? null, userId, filename, mimeType, data.length
+    );
+  } catch (err) {
+    // 插行失败（FK / 唯一冲突）时删除已写的文件，不留孤儿。
+    removeMediaFile(id);
+    throw err;
+  }
   return id;
 }
 
