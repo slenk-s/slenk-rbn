@@ -2986,7 +2986,8 @@ button, .btn-primary, .btn-secondary, .btn-danger {
 .image-thumb > img, .image-thumb > video { cursor: grab; }
 .image-thumb > img:active, .image-thumb > video:active { cursor: grabbing; }
 .image-thumb figcaption { display: grid; gap: 6px; padding: 8px; font-size: 12px; color: var(--text); }
-.image-thumb figcaption div { display: flex; gap: 8px; align-items: center; }
+/* 图片卡片的操作按钮竖排，卡片窄时也放得下「下载 / 删除 / 传入」三个按钮。 */
+.image-thumb figcaption div { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .image-thumb figcaption a, .image-thumb figcaption button { color: var(--text-h); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 4px 8px; background: #fff; cursor: pointer; }
 .empty-image { grid-column: 1 / -1; min-height: 120px; display: grid; place-items: center; border: 1px dashed var(--border-strong); border-radius: 10px; color: var(--muted); font-size: 13px; }
 /* 预览面板像左侧功能栏一样 sticky 跟随滚动；内容比视口高时面板内部滚动。 */
