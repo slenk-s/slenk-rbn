@@ -35,7 +35,7 @@
 两个适配器互不 import，实现同一份函数契约：
 
 - 现有 39 个导出函数（用户、任务、供应商、笔记、媒体、XHS 账号、两个 janitor 扫描函数）
-- 新增 `initStore()`、`closeStore()`、`exportSyncRows()`、`importSyncRows()`
+- 新增 `initStore()`、`closeStore()`、`exportSyncRows()`、`importSyncRows()`、`listMediaIds()`（供巡检脚本对比数据库与文件目录）
 
 媒体字节统一走新模块 `server/src/lib/mediaFiles.js`，两个适配器共用。`getMedia()` 仍返回带 `data: Buffer` 的对象，`routes/media.js` 与 worker 的媒体输入物化逻辑不需要改。
 
@@ -218,7 +218,7 @@ SQLite 适配器在 providers / users 写入成功后调用 `scheduleSyncProvide
 
 | 文件 | 动作 |
 | --- | --- |
-| `server/src/store.js` | 改为 sqlite/mysql 分派，非法值抛错，新增 4 个导出 |
+| `server/src/store.js` | 改为 sqlite/mysql 分派，非法值抛错，新增 5 个导出 |
 | `server/src/store.sqlite.js` | 新增，实现完整契约 |
 | `server/src/store.local.js` | 删除 |
 | `server/src/store.mysql.js` | 媒体读写改文件，用户删除清理媒体文件，新增契约函数 |
