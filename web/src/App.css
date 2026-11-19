@@ -868,6 +868,32 @@ button, .btn-primary, .btn-secondary, .btn-danger {
   border: 1px solid var(--accent);
   box-shadow: none;
 }
+/* 生图/替换生图/实况视频：提交与重置作为悬浮按钮固定在视口右下角，
+   滚动长表单时始终可达；其余页面按钮仍留在工具条内。 */
+.layout-replace-image .float-actions,
+.layout-video-focused .float-actions {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.layout-replace-image .float-actions button,
+.layout-video-focused .float-actions button {
+  box-shadow: 0 10px 26px rgba(20, 22, 26, .22);
+}
+.layout-replace-image .float-actions .btn-secondary,
+.layout-video-focused .float-actions .btn-secondary {
+  background: var(--panel);
+  border-color: var(--border-strong);
+  color: var(--text-h);
+}
+@media (max-width: 600px) {
+  .layout-replace-image .float-actions,
+  .layout-video-focused .float-actions { right: 16px; bottom: 16px; gap: 8px; }
+}
 
 .cell-head {
   display: flex;
