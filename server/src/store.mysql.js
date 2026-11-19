@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import './loadEnv.js';
-import { query } from './db.js';
+import { query, withTransaction } from './db.js';
 
 function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -604,6 +604,71 @@ export async function getAllTasksPayloadForJanitor() {
   return rows.map(r => r.payload);
 }
 
+// ---- TiDB 同步行（与 SQLite 适配器形状一致） ----
+
+async function exportSyncRows() {
+  const { rows: users } = await query('select * from slenk_notes_users');
+  const { rows: providers } = await query('select * from slenk_notes_providers');
+  const { rows: userSettings } = await query('select * from slenk_notes_user_settings');
+  return {
+    users: users.map(r => ({
+      id: r.id, username: r.username, password_hash: r.password_hash,
+      is_admin: Boolean(r.is_admin), created_at: r.created_at
+    })),
+    providers: providers.map(r => ({
+      id: r.id, name: r.name, provider_type: r.provider_type, app_type: r.app_type,
+      base_url: r.base_url, api_key: r.api_key, mode: r.mode,
+      text_model: r.text_model, image_model: r.image_model, image_api: r.image_api,
+      notes: r.notes, is_active: Boolean(r.is_active),
+      created_at: r.created_at, updated_at: r.updated_at
+    })),
+    userSettings: userSettings.map(r => ({
+      user_id: r.user_id, active_provider_id: r.active_provider_id,
+      active_text_provider_id: r.active_text_provider_id,
+      active_image_provider_id: r.active_image_provider_id
+    }))
+  };
+}
+
+async function importSyncRows(rows = {}) {
+  return withTransaction(async (conn) => {
+    for (const u of rows.users || []) {
+      await conn.query(
+        `insert into slenk_notes_users (id, username, password_hash, is_admin, created_at)
+         values (?, ?, ?, ?, ?) on duplicate key update
+           username = values(username), password_hash = values(password_hash), is_admin = values(is_admin)`,
+        [u.id, String(u.username || ''), String(u.password_hash || ''), u.is_admin ? 1 : 0, u.created_at ?? null]
+      );
+    }
+    for (const p of rows.providers || []) {
+      await conn.query(
+        `insert into slenk_notes_providers
+           (id, name, provider_type, app_type, base_url, api_key, mode, text_model, image_model, image_api, notes, is_active, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         on duplicate key update name = values(name), provider_type = values(provider_type),
+           app_type = values(app_type), base_url = values(base_url), api_key = values(api_key),
+           mode = values(mode), text_model = values(text_model), image_model = values(image_model),
+           image_api = values(image_api), notes = values(notes), is_active = values(is_active),
+           updated_at = values(updated_at)`,
+        [p.id, String(p.name || 'Custom Provider'), String(p.provider_type || 'openai-compatible'), String(p.app_type || 'openai'),
+          String(p.base_url || '').replace(/\/$/, ''), String(p.api_key || ''), String(p.mode || 'image'),
+          String(p.text_model || ''), String(p.image_model || ''), p.image_api === 'form' ? 'form' : 'json',
+          String(p.notes || ''), p.is_active ? 1 : 0, p.created_at ?? null, p.updated_at ?? null]
+      );
+    }
+    for (const s of rows.userSettings || []) {
+      await conn.query(
+        `insert into slenk_notes_user_settings (user_id, active_provider_id, active_text_provider_id, active_image_provider_id)
+         values (?, ?, ?, ?) on duplicate key update
+           active_provider_id = values(active_provider_id),
+           active_text_provider_id = values(active_text_provider_id),
+           active_image_provider_id = values(active_image_provider_id)`,
+        [s.user_id, s.active_provider_id ?? null, s.active_text_provider_id ?? null, s.active_image_provider_id ?? null]
+      );
+    }
+  });
+}
+
 export {
   ensureAdmin,
   findUserByUsername,
@@ -642,5 +707,7 @@ export {
   findXhsAccountByOpenId,
   deleteXhsAccount,
   updateXhsAccountNickname,
-  listAllXhsAccounts
+  listAllXhsAccounts,
+  exportSyncRows,
+  importSyncRows
 };
