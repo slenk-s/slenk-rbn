@@ -15,7 +15,7 @@ const CACHE_FILE_RE = /^[0-9a-f]{32}\.(?:jpe?g|png|webp|gif|avif|heic|heif)$/i;
 const REF_RE = /\/notes-images\/([A-Za-z0-9._-]+)/g;
 
 // 引用来源：已存笔记的 images 与任务 payload（任务结果页/参考图可能还在用缓存图）。
-// 经 store 辅助读取（MySQL 与本地 JSON 后端都提供），不直接依赖 db.js。
+// 经 store 辅助读取（MySQL 与 SQLite 后端都提供），不直接依赖 db.js。
 async function collectReferencedFilenames() {
   const refs = new Set();
   const [noteImages, taskPayloads] = await Promise.all([

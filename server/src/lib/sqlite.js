@@ -8,7 +8,9 @@ import { paths } from '../paths.js';
 let connection = null;
 
 export function resolveSqlitePath() {
-  return process.env.SQLITE_PATH || paths.sqlitePath;
+  // paths.sqlitePath 会把相对 SQLITE_PATH 解析到仓库根（与设置页展示一致），
+  // 绝对路径或未设置时返回原值/默认值，避免相对路径下展示与实际打开位置分叉。
+  return paths.sqlitePath;
 }
 
 export function openDb() {

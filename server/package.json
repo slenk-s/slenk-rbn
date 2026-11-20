@@ -8,7 +8,7 @@
     "dev": "node --watch --watch-path=src src/index.js",
     "queue": "node --watch --watch-path=src src/worker.js",
     "test:db": "node scripts/test-db-up.mjs",
-    "test": "node --test",
+    "test": "node --test \"test/*.test.mjs\"",
     "test:mysql": "node scripts/test-mysql.mjs"
   },
   "dependencies": {

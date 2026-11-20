@@ -15,6 +15,12 @@ function toJson(value) {
   return JSON.stringify(value);
 }
 
+// mysql2 的 DATETIME/TIMESTAMP 列返回 JS Date；导出行若直接喂 SQLite 的 isoFromLegacy，
+// Date 会解析成 null 触发 NOT NULL 失败，这里统一转成 ISO-8601 字符串。
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
 // 唯一约束冲突：MySQL 用 errno 1062 / code 'ER_DUP_ENTRY'（PG 是 '23505'）。
 function isDuplicateError(err) {
   return err?.errno === 1062 || err?.code === 'ER_DUP_ENTRY';
@@ -625,14 +631,14 @@ async function exportSyncRows() {
   return {
     users: users.map(r => ({
       id: r.id, username: r.username, password_hash: r.password_hash,
-      is_admin: Boolean(r.is_admin), created_at: r.created_at
+      is_admin: Boolean(r.is_admin), created_at: toIso(r.created_at)
     })),
     providers: providers.map(r => ({
       id: r.id, name: r.name, provider_type: r.provider_type, app_type: r.app_type,
       base_url: r.base_url, api_key: r.api_key, mode: r.mode,
       text_model: r.text_model, image_model: r.image_model, image_api: r.image_api,
       notes: r.notes, is_active: Boolean(r.is_active),
-      created_at: r.created_at, updated_at: r.updated_at
+      created_at: toIso(r.created_at), updated_at: toIso(r.updated_at)
     })),
     userSettings: userSettings.map(r => ({
       user_id: r.user_id, active_provider_id: r.active_provider_id,
