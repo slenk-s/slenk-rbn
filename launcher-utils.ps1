@@ -111,6 +111,9 @@ function Test-SlenkProcessCommandLine {
   $normalized = $CommandLine.Replace('/', '\')
   $serverScript = Join-Path $RootPath 'server\src\index.js'
   $workerScript = Join-Path $RootPath 'server\src\worker.js'
-  return $normalized.IndexOf($serverScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-         $normalized.IndexOf($workerScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  $viteScript = Join-Path $RootPath 'web\node_modules\vite\bin\vite.js'
+  $isServer = $normalized.IndexOf($serverScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  $isWorker = $normalized.IndexOf($workerScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  $isVite = $normalized.IndexOf($viteScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  return ($isServer -or $isWorker -or $isVite)
 }
