@@ -4,12 +4,12 @@
 - 前端：React + Vite
 - 后端：Express
 - 功能页：仪表盘 + 5 个任务页（AI 生图 / 替换生图 / 实况视频 / 笔记改写 / 商品下载），均支持多图输入，见下文「功能页与多图任务」
-- 账号：本地 JSON 或 MySQL 中的用户账号（默认本地模式；首次初始化会创建 `admin / 123456`，登录后建议修改）
+- 账号：SQLite 或 MySQL 中的用户账号（默认 SQLite；首次初始化会创建 `admin / 123456`，登录后建议修改）
 - AI：类似 `cc-switch` 的可切换供应商管理，不写死 SenseNova
 - 队列：Redis + BullMQ（失败自动重试，`server/src/worker.js` 的 `isRetryableError` 区分网络/超时可重试与输入/配置类不可重试）
-- 文件存储：上传/视频/笔记图缓存存本地 `STORAGE_PATH`；生成媒体在 MySQL 模式入 `slenk_notes_media` BLOB（`/api/media/:id` 读回），本地模式存 `storage/local/media/` 文件
+- 文件存储：上传/视频/笔记图缓存存本地 `STORAGE_PATH`；生成媒体字节统一存 `<MEDIA_DIR>/<id>` 文件，`/api/media/:id` 读回
 - 视频：本地 FFmpeg 算法运镜
-- 数据层：默认本地 JSON（`storage/local/`，不用 MySQL）；设 `SLENK_DATA_BACKEND=mysql` 切回 MySQL。见下文「数据层」两节；本地模式下供应商/用户数据镜像到 TiDB Cloud
+- 数据层：默认 SQLite（`storage/slenk.sqlite`，Node 内置 `node:sqlite`，不用 MySQL）；设 `SLENK_DATA_BACKEND=mysql` 切 MySQL。见下文「数据层」两节；SQLite 模式下供应商/用户数据镜像到 TiDB Cloud
 - HTTP：文本响应 gzip 压缩（compression 中间件）；生产经 cloudflared 隧道（`protocol: http2`，避开本机 QUIC/UDP 7844 断连波动）
 
 ## 本地依赖位置
@@ -82,31 +82,32 @@ FFMPEG_FFPROBE_PATH=E:/FFmpeg/ffprobe.exe
 
 ## 数据层（本机 MySQL，`SLENK_DATA_BACKEND=mysql`）
 
-本机 MySQL 8（服务 `MySQL95`，`127.0.0.1:3306`）是**可选的**数据后端：设 `SLENK_DATA_BACKEND=mysql`（默认未设置时为本地 JSON，见下一节）后启用。业务数据（用户、用户设置、AI 供应商、任务、笔记）全部存放在 MySQL，生成媒体（图/视频）存 `slenk_notes_media` 表（LONGBLOB）。
+本机 MySQL 8（服务 `MySQL95`，`127.0.0.1:3306`）是**可选的**数据后端：设 `SLENK_DATA_BACKEND=mysql`（默认未设置时为 SQLite，见下一节）后启用。业务数据（用户、用户设置、AI 供应商、任务、笔记）全部存放在 MySQL；生成媒体字节存 `<MEDIA_DIR>/<id>` 文件，`slenk_notes_media` 只存元数据。
 
 - **连接**：`.env` 的 `DATABASE_URL=mysql://<user>:<pass>@127.0.0.1:3306/slenk_notes`（mysql2 驱动，`server/src/db.js`）。**运行时连接可被 `storage/db.json` 覆盖**（gitignored，仪表盘「数据库连接」可改，保存后 server/worker 下次查询自动重连）；App 运行时账号为最小权限（仅 SELECT/INSERT/UPDATE/DELETE on `slenk_notes.*`），`slenk`（ALL PRIVILEGES）留给迁移/测试。
 - **首次建表**：`node server/scripts/apply-schema.mjs`（创建 `slenk_notes_*` 表并自检）；`migrate-app-json.mjs` 可把旧 `storage/app.json` 数据按 id 幂等写入。
-- **旧数据迁移**：`mysqldump`（含媒体 BLOB，用 `--single-transaction --quick`）→ 新机 `mysql` 导入。
+- **旧数据迁移**：`mysqldump`（用 `--single-transaction --quick`）→ 新机 `mysql` 导入。既有库升级到文件媒体必跑 `node server/scripts/migrate-media-files.mjs --drop-column`（把 `slenk_notes_media.data` 落盘后删列）。
 - **测试**：`TEST_DATABASE_URL` 指向一次性测试库（未设置回退到 `DATABASE_URL` 并打印警告）；跑测试前 `npm --prefix server run test:db`。
 - **历史**：生产库已从 Supabase（pg）迁到本机 MySQL（2026-11-15），`SUPABASE_*` 仅测试库用；`storage/app.json` + `app.json.bak` 保留作回滚路径。
 
-## 数据层（本地 JSON，默认模式）
+## 数据层（SQLite，默认模式）
 
-业务数据默认完全不依赖 MySQL，直接存本地 JSON 文件。`server/src/store.js` 按 `SLENK_DATA_BACKEND` 选择后端：未设置或 `=local` → `store.local.js`；`=mysql` → `store.mysql.js`（两者导出接口一致，路由/worker/认证零改动）。本地模式无需 MySQL、无需建表。
+业务数据默认完全不依赖 MySQL，存 SQLite 单文件。`server/src/store.js` 按 `SLENK_DATA_BACKEND` 选择后端：未设置或 `=sqlite` → `store.sqlite.js`（Node 内置 `node:sqlite`）；`=mysql` → `store.mysql.js`（两者导出接口一致，路由/worker/认证零改动）。SQLite 模式无需 MySQL、无需建库建表。
 
-- **数据位置**：每张「表」一个文件，`storage/local/<table>.json`（`users.json` / `user_settings.json` / `providers.json` / `tasks.json` / `notes.json` / `xhs_accounts.json`）；媒体不再入 BLOB，而是 `storage/local/media/<id>` 文件 + `storage/local/media.json` 元数据。
-- **一致性**：`store.local.js` 不做内存缓存，每次读写都重读文件（file-as-truth），保证 server 与 worker 跨进程一致。
-- **时间戳**：与 MySQL `UTC_TIMESTAMP(3)` 对齐，格式 `YYYY-MM-DD HH:MM:SS.mmm`（UTC）。
-- **接口降级**：`GET /api/settings/db` 在本地模式返回 `{storage:'local', source:'local'}`，仪表盘「数据库连接」卡显示本地模式说明；`POST /db`、`POST /db/test`、`DELETE /db` 返回 `400 local_storage`（MySQL 连接管理不适用）。
+- **数据位置**：`SQLITE_PATH`（默认 `<dataDir>/slenk.sqlite`，WAL + busy_timeout 5000 + 外键）；媒体字节统一存 `<MEDIA_DIR>/<id>`（默认 `<dataDir>/media`），`slenk_notes_media` 只存元数据。
+- **一致性**：WAL 允许 server 与 worker 跨进程并发读；写冲突靠 `busy_timeout` + 一次重试，仍忙返回 `503 storage_busy`。
+- **时间戳**：`YYYY-MM-DDTHH:MM:SS.mmmZ`（UTC ISO-8601，与 MySQL 后端输出对齐）。
+- **旧数据**：首次启动只从 `storage/local/` 一次性导入 `users` / `providers` / `user_settings`（以 `slenk_notes_meta.local_import_v1` 为标记），其余旧任务/笔记/媒体不迁移；`storage/local/` 保留作备份。
+- **接口降级**：`GET /api/settings/db` 在 SQLite 模式返回 `{storage:'sqlite', path, mediaDir}`，仪表盘「数据库连接」卡显示路径说明；`POST /db`、`POST /db/test`、`DELETE /db` 返回 `400 sqlite_storage`（MySQL 连接管理不适用）。
 - **默认账号**：首次启动自动创建 `admin / 123456`（与 MySQL 模式一致，登录后建议修改）。
 
-## TiDB 云端同步（本地模式）
+## TiDB 云端同步（SQLite 模式）
 
-本地模式下，**供应商与用户数据**会镜像到 TiDB Cloud（PostgreSQL 兼容集群），供仪表盘功能页云端读取；其余业务数据（任务/笔记/媒体）仅本地，不同步。
+SQLite 模式下，**供应商与用户数据**会镜像到 TiDB Cloud（PostgreSQL 兼容集群），供仪表盘功能页云端读取；其余业务数据（任务/笔记/媒体）仅本地，不同步。
 
 - **连接**：`.env` 的 `TIDB_PG_URL=postgresql://<user>:<pass>@<host>.gateway01.us-east-1.prod.aws.pg.tidbcloud.com:5432/postgres`（集群直连串，非管理 API）。
 - **目标表**：`slenk_cloud_sync`（`kind` / `id` / `data JSONB` / `updated_at`，主键 `(kind,id)`），启动时 `CREATE TABLE IF NOT EXISTS` 自建。
-- **机制**：`server/src/syncTiDB.js` —— 供应商/用户每次增删改后防抖 1.5s 触发一次全量镜像（幂等 upsert + 删除本地已删的行，保持镜像一致）；`TIDB_PG_URL` 未配置则静默跳过（离线无云）。
+- **机制**：`server/src/syncTiDB.js` —— 供应商/用户每次增删改后防抖 1.5s 触发一次全量镜像（幂等 upsert + 删除本地已删的行，保持镜像一致）；启动时拉取云端并与本地合并收敛；`TIDB_PG_URL` 未配置则静默跳过（离线无云）。
 - **注意**：TiDB Cloud 管理 API（`TIDB_API_*` 密钥）只能管理集群、不能执行 SQL；写数据必须用 `TIDB_PG_URL` 直连。`TIDB_API_*` 用于列出集群/取连接串，不用于数据读写。
 
 ## 运行
@@ -127,7 +128,7 @@ FFMPEG_FFPROBE_PATH=E:/FFmpeg/ffprobe.exe
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/notes-images`（笔记图缓存）
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/redis`（Redis AOF 持久化目录）
 - `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/auth`（每用户每小红书账号一个凭证子目录，可用 `SLENK_XHS_AUTH_ROOT` 覆盖）
-- `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/local`（`SLENK_DATA_BACKEND=local` 时的 JSON 表文件与媒体文件）
+- `C:/Users/Administrator/Desktop/Pro/Slenk Notes/storage/local`（旧数据备份；SQLite 首启一次性导入 users/providers/user_settings）
 
 视频生成通过本地 FFmpeg 处理，解析顺序见上文「本地依赖位置」。
 

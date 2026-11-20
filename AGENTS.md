@@ -39,6 +39,12 @@ discoverable by both Codex and Claude Code:
 - Do not invent API contracts; read the references under each skill's
   `references/` before acting.
 
+## Data layer
+
+- `SLENK_DATA_BACKEND` 为 `sqlite`（默认）或 `mysql`。SQLite 文件：`SQLITE_PATH`（默认 `storage/slenk.sqlite`）；媒体字节：`MEDIA_DIR`（默认 `storage/media`），元数据在 `slenk_notes_media`。
+- SQLite 首启只从 `storage/local/` 一次性导入 `users` / `providers` / `user_settings`（`slenk_notes_meta.local_import_v1` 标记）；旧任务/笔记/媒体不迁移。
+- MySQL 升级到文件媒体必跑 `node server/scripts/migrate-media-files.mjs --drop-column`。
+
 ## Multi-image tasks (read before touching)
 
 Feature pages submit `image` / `video` / `rewrite` tasks with a `tab`; the

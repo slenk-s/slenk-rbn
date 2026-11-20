@@ -8,7 +8,7 @@
 |---|---|---|
 | **Node.js LTS**（≥ 20，推荐 22/24） | 跑 server / worker / web | 自带 npm，装它一个就够 |
 | **Git** | 拉代码 | https://github.com/slenk-s/slenk-rbn |
-| **MySQL 8** | 可选数据库（`SLENK_DATA_BACKEND=mysql`） | 默认**不用** MySQL（本地 JSON，见下文）；要用 MySQL 时，生产库在本机 MySQL（服务 `MySQL95`，`127.0.0.1:3306`），新机器必须装并迁移数据 |
+| **MySQL 8** | 可选数据库（`SLENK_DATA_BACKEND=mysql`） | 默认**不用** MySQL（SQLite，见下文）；要用 MySQL 时，生产库在本机 MySQL（服务 `MySQL95`，`127.0.0.1:3306`），新机器必须装并迁移数据 |
 | **Redis** | BullMQ 任务队列 | 用 `E:\Redis`（8.10.3，`redis-windows` fork）；跑在默认 6379 即可 |
 
 ## 不用装
@@ -58,9 +58,9 @@ DATABASE_URL="mysql://slenk_app:<pass>@127.0.0.1:3306/slenk_notes" node server/s
 node server/scripts/migrate-app-json.mjs
 ```
 
-**默认用本地 JSON**（`.env` 已设 `SLENK_DATA_BACKEND=local`）：业务数据（用户/供应商/任务/笔记/媒体）直接存 `storage/local/` JSON 文件，无需装 MySQL、无需建库建表；供应商与用户数据会镜像到 TiDB Cloud（需 `.env` 配 `TIDB_PG_URL`，见 README「数据层（本地 JSON）」与「TiDB 云端同步」）。此模式跳过上面所有数据库步骤；要切回 MySQL 才把 `SLENK_DATA_BACKEND` 改为 `mysql`。
+**默认用 SQLite**（`.env` 可设 `SLENK_DATA_BACKEND=sqlite`）：业务数据存 `<SQLITE_PATH>`（默认 `storage/slenk.sqlite`），媒体字节存 `<MEDIA_DIR>`（默认 `storage/media`），无需装 MySQL、无需建库建表；供应商与用户数据会镜像到 TiDB Cloud（需 `.env` 配 `TIDB_PG_URL`，见 README「数据层（SQLite）」与「TiDB 云端同步」）。此模式跳过上面所有数据库步骤；要切 MySQL 才把 `SLENK_DATA_BACKEND` 改为 `mysql`（既有库先跑 `node server/scripts/migrate-media-files.mjs --drop-column`）。
 
-启动（确保 Redis、MySQL 已运行；本地模式只需 Redis）：
+启动（确保 Redis 已运行；SQLite 模式无需 MySQL）：
 
 ```bash
 start-slenk-notes.bat    # 一键启动：自动探测 Node/Redis，构建前端，启动 API+worker，打开浏览器
