@@ -76,5 +76,5 @@ npm run dev:web          # 可选：前端开发模式，http://localhost:5173
 ## 注意
 
 - 一键启动 `start-slenk-notes.bat`（或 `start-slenk-notes.ps1`）会自动探测 Node 与 Redis 的位置（`E:\Redis` 8.10.3 / `F:\Node`，及旧路径 `D:\slenk\YLan\Redis`），无需手动改路径。
-- 首次登录：admin / 123456（本地 JSON 模式首次启动自动创建；MySQL 模式需先建表/迁数据。登录后建议改密）。
+- 首次登录：admin / 123456（SQLite 模式首次启动自动创建；MySQL 模式需先建表/迁数据。登录后建议改密）。
 - 多图任务不需要额外配置：上传接口单次最多 9 张、单文件 ≤ 25MB；行为与自检步骤见 `RUN.md`「多图任务自检」。
