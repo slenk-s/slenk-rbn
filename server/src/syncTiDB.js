@@ -44,11 +44,12 @@ async function mirrorKind(client, kind, rows) {
 
 let syncing = false;
 let queued = false;
+let queuedRows = null;
 
 // 全量镜像同步：providers + users → TiDB。返回统计或 { ok:false }。
 export async function pushProvidersUsers(providers, users) {
   if (!TIDB_PG_URL) return { ok: false, skipped: true, reason: 'TIDB_PG_URL not set' };
-  if (syncing) { queued = true; return { ok: false, queued: true }; }
+  if (syncing) { queued = true; queuedRows = { providers, users }; return { ok: false, queued: true }; }
   syncing = true;
   try {
     const client = new pg.Client({ connectionString: TIDB_PG_URL, connectionTimeoutMillis: 15000 });
@@ -64,7 +65,11 @@ export async function pushProvidersUsers(providers, users) {
     return { ok: false, error: e.message };
   } finally {
     syncing = false;
-    if (queued) { queued = false; setTimeout(() => void pushProvidersUsers(providers, users), 1000); }
+    if (queued) {
+      queued = false;
+      const q = queuedRows; queuedRows = null;
+      setTimeout(() => void pushProvidersUsers(q.providers, q.users), 1000);
+    }
   }
 }
 
