@@ -103,7 +103,10 @@ export async function importLocalOnce() {
         String(p.text_model || ''), String(p.image_model || ''), p.image_api === 'form' ? 'form' : 'json',
         String(p.notes || ''), p.is_active ? 1 : 0, isoFromLegacy(p.created_at), isoFromLegacy(p.updated_at));
     }
+    // 容忍孤立 settings：父行 slenk_notes_users 不存在时该行无意义，跳过以免 FK 失败阻塞启动。
+    const userIds = new Set(users.map(u => u.id));
     for (const s of settings) {
+      if (!userIds.has(s.user_id)) continue;
       db.prepare(
         `insert into slenk_notes_user_settings (user_id, active_provider_id, active_text_provider_id, active_image_provider_id)
          values (?, ?, ?, ?) on conflict (user_id) do update set
