@@ -599,6 +599,8 @@ function DatabaseSettingsCard({ token }) {
   const [source, setSource] = useState('env');
   const [storage, setStorage] = useState('mysql');
   const [passwordSet, setPasswordSet] = useState(false);
+  const [storagePath, setStoragePath] = useState('');
+  const [storageMediaDir, setStorageMediaDir] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [statusErr, setStatusErr] = useState(false);
@@ -607,6 +609,8 @@ function DatabaseSettingsCard({ token }) {
     try {
       const data = await api('/api/settings/db', { token });
       setStorage(data.storage || 'mysql');
+      setStoragePath(data.path || '');
+      setStorageMediaDir(data.mediaDir || '');
       setForm({ host: data.host || '', port: String(data.port ?? 3306), user: data.user || '', password: '', database: data.database || '' });
       setSource(data.source || 'env');
       setPasswordSet(Boolean(data.passwordSet));
@@ -632,14 +636,15 @@ function DatabaseSettingsCard({ token }) {
     } catch (err) { setStatus(DB_ERROR_TEXT[err.message] || '保存失败：' + err.message); setStatusErr(true); }
     finally { setBusy(false); }
   }
-  if (storage === 'local') {
+  if (storage === 'sqlite') {
     return (
       <section className="card provider-manager db-manager">
-        <div className="section-head"><div><h3>数据库连接</h3><p>当前为本地存储模式（SLENK_DATA_BACKEND=local），不使用 MySQL。</p></div><span className="pill">本地</span></div>
+        <div className="section-head"><div><h3>数据库连接</h3><p>当前为 SQLite 存储（默认，SLENK_DATA_BACKEND=sqlite），不使用 MySQL。</p></div><span className="pill">SQLite</span></div>
         <div className="db-local-info">
-          <p><b>数据位置</b>：业务数据（用户/供应商/任务/笔记/媒体）存于本机 <code>storage/local/</code> JSON 文件，媒体为独立文件。</p>
+          <p><b>数据库文件</b>：<code>{storagePath}</code></p>
+          <p><b>媒体目录</b>：<code>{storageMediaDir}</code></p>
           <p><b>云端同步</b>：供应商与用户数据镜像到 TiDB Cloud（<code>slenk_cloud_sync</code>），通过 <code>TIDB_PG_URL</code> 连接。</p>
-          <p className="db-status ok">此模式下 MySQL 连接配置不适用。</p>
+          <p className="db-status ok">切换 MySQL 需修改 <code>SLENK_DATA_BACKEND</code> 并重启。</p>
         </div>
       </section>
     );
@@ -687,7 +692,7 @@ function Dashboard({ token, me, activeProviderId, activeTextProviderId, activeIm
   }
   return (
     <section className="dashboard-settings">
-      <section className="card dashboard-hero"><div className="hero-copy"><h2>仪表盘</h2><p>集中查看运行状态，并管理 AI 供应商、本地存储、队列与视频 worker。</p></div><div className="hero-stats"><div><b>{providers.length}</b><span>供应商</span></div><div><b>{tasks.length}</b><span>任务</span></div><div><b>Local</b><span>存储</span></div></div></section>
+      <section className="card dashboard-hero"><div className="hero-copy"><h2>仪表盘</h2><p>集中查看运行状态，并管理 AI 供应商、本地存储、队列与视频 worker。</p></div><div className="hero-stats"><div><b>{providers.length}</b><span>供应商</span></div><div><b>{tasks.length}</b><span>任务</span></div><div><b>SQLite</b><span>存储</span></div></div></section>
       <div className="dashboard-row">
         <section className="card dashboard-task-list"><div className="section-head"><div><h3>任务列表</h3><p>{tasks.length ? '共 ' + tasks.length + ' 个任务，跨用户共享，自动轮询刷新。' : '提交任务后会在这里显示。'}</p></div><div className="section-head-actions"><button type="button" className={manageMode ? 'btn-secondary manage-active' : 'btn-secondary'} onClick={toggleManage}>{manageMode ? '完成' : '管理'}</button><button type="button" className="btn-secondary" onClick={() => setMessage('正在刷新任务...')}>刷新</button></div></div>{manageMode && <div className="task-batch-bar"><label className="task-select-all"><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />全选</label><span className="task-batch-count">{selectedCount ? '已选 ' + selectedCount + ' 个' : '勾选后可批量删除'}</span><button type="button" className={confirmingDelete ? 'task-view-btn task-delete-btn confirm-armed' : 'task-view-btn task-delete-btn'} disabled={!selectedCount} onClick={deleteSelectedTasks}>{confirmingDelete ? '确认删除 ' + selectedCount + ' 个？' : '删除所选'}</button></div>}<ul className="task-list">{tasks.map(t => { const canDelete = me?.isAdmin || t.userId === me?.id; return <li key={t.id} data-status={t.status}><div className="task-status-row">{manageMode && canDelete ? <input type="checkbox" className="task-select" checked={selectedIds.has(t.id)} onChange={() => toggleTaskSelect(t.id)} aria-label={'选择 ' + (t.label || t.type)} /> : null}<b>{t.label || t.type}</b>{t.username ? <span className="task-owner">{t.username}</span> : null}<span>{t.status}</span>{!manageMode && <button type="button" className="task-view-btn" onClick={() => onViewTask(t.id)}>查看</button>}</div>{t.error && <small>{parseJsonText(t.error).error}</small>}</li>; })}{tasks.length === 0 && <li className="empty-task">暂无任务</li>}</ul></section>
         <ProviderManager token={token} activeProviderId={activeProviderId} activeTextProviderId={activeTextProviderId} activeImageProviderId={activeImageProviderId} providers={providers} onProviderChange={onProviderChange} setMessage={setMessage} />
@@ -1795,7 +1800,7 @@ function Workspace({ token }) {
     const fd = new FormData(); Array.from(list).forEach(file => fd.append('file', file));
     const r = await fetch(`${API}/api/upload/files`, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd });
     const data = await readJsonResponse(r); const uploaded = data.files || [];
-      setFiles(prev => { const seen = new Set(prev.map(f => f.url)); const next = [...prev]; for (const file of uploaded) { if (!seen.has(file.url)) next.push(file); } return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 个素材已保存到本地存储路径。');
+      setFiles(prev => { const seen = new Set(prev.map(f => f.url)); const next = [...prev]; for (const file of uploaded) { if (!seen.has(file.url)) next.push(file); } return next.slice(0, 9); }); setStatus((data.files?.length || 0) + ' 个素材已保存到素材目录。');
   }
   async function submitCurrentTask() {
     // AI 生图 / 替换生图：默认 + 二级 + 用户 三层提示词拼接（空层跳过）；
