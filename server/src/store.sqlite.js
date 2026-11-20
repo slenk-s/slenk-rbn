@@ -1,4 +1,4 @@
-// store.sqlite.js — SQLite 后端（默认）。实现与 store.mysql.js 相同的函数契约。
+// store.sqlite.js — SQLite 后端（默认，唯一后端）。store.js 直接导出本模块接口。
 import bcrypt from 'bcryptjs';
 import fs from 'node:fs';
 import path from 'node:path';

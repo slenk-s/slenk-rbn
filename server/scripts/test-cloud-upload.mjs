@@ -3,20 +3,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { query } from '../src/db.js';
-import { getActiveProvider, getTaskById } from '../src/store.js';
+import { getActiveProvider, getTaskById, listUsers } from '../src/store.js';
 import { enqueueTask, closeQueue } from '../src/routes/tasks.js';
 import { paths } from '../src/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const { rows } = await query('select id, username from slenk_notes_users order by created_at asc limit 5');
-if (!rows.length) throw new Error('no users');
+const users = await listUsers();
+if (!users.length) throw new Error('no users');
 let userId = null;
 let provider = null;
-for (const row of rows) {
-  provider = await getActiveProvider('image', row.id);
-  if (provider) { userId = row.id; break; }
+for (const user of users) {
+  provider = await getActiveProvider('image', user.id);
+  if (provider) { userId = user.id; break; }
 }
 if (!userId) throw new Error('no user with active image provider');
 console.log('user:', userId, 'provider:', provider.name, provider.imageModel);

@@ -1,5 +1,5 @@
 -- Slenk Notes — SQLite 建表脚本（默认后端）。
--- 与 schema.mysql.sql 保持同一套表名/列名；时间统一 UTC ISO-8601 文本。
+-- 表结构即数据层契约；时间统一 UTC ISO-8601 文本。
 
 create table if not exists slenk_notes_users (
   id text not null primary key,

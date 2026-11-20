@@ -1,6 +1,6 @@
--- Supabase-only hardening, applied by apply-schema.mjs when the anon /
--- authenticated Data API roles exist. Not portable to TiDB Cloud or a plain
--- local PostgreSQL, which is why it lives outside schema.sql.
+-- Supabase-only hardening, applied when the anon / authenticated Data API
+-- roles exist. Not portable to TiDB Cloud or a plain local PostgreSQL, which
+-- is why it lives outside schema.sql.
 
 -- Access model: the backend connects as the table owner and is the only client.
 -- RLS with no policies keeps anon/authenticated at zero rows, but Supabase grants

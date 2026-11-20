@@ -9,7 +9,7 @@ import { initStore, closeStore, listMediaIds } from '../src/store.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
 
-test('store.js 默认分派到 sqlite 并提供新增契约函数', async () => {
+test('store.js 使用 sqlite 后端并提供契约函数', async () => {
   await initStore();
   assert.ok(Array.isArray(await listMediaIds()));
   await closeStore();

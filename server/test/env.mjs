@@ -4,11 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const backend = process.env.TEST_DATA_BACKEND || 'sqlite';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slenk-test-'));
 
-process.env.SLENK_DATA_BACKEND = backend;
-process.env.TEST_DATA_BACKEND = backend;
 process.env.STORAGE_PATH = dir;
 process.env.SQLITE_PATH = path.join(dir, 'test.sqlite');
 process.env.MEDIA_DIR = path.join(dir, 'media');

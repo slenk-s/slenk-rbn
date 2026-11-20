@@ -65,9 +65,9 @@ create index if not exists slenk_notes_notes_user_created_idx
 alter table slenk_notes_providers add column if not exists image_api text not null default 'json';
 
 -- Supabase-specific hardening (RLS + revoking the anon/authenticated Data API
--- grants) lives in supabase-hardening.sql; apply-schema.mjs runs it only when
--- those roles exist (Supabase), so this file stays portable to TiDB Cloud or
--- a plain local PostgreSQL.
+-- grants) lives in supabase-hardening.sql; it runs only when those roles exist
+-- (Supabase), so this file stays portable to TiDB Cloud or a plain local
+-- PostgreSQL.
 
 -- 小红书账号绑定：open_id 扫码成功后回填，NULL 表示待绑定。credential_dir 全局唯一，
 -- 一个凭证目录只属于一个账号；unique(user_id, open_id) 中 NULL 互不冲突，允许同用户多个待绑定。

@@ -616,84 +616,25 @@ function UserManager({ token, me, setMessage }) {
     </section>
   );
 }
-const DB_ERROR_TEXT = {
-  host_required: '请填写主机。',
-  user_required: '请填写用户名。',
-  database_required: '请填写数据库名。',
-  invalid_port: '端口必须是 1-65535。',
-  connection_failed: '连接失败，请检查连接信息。',
-  admin_required: '需要管理员权限。',
-  unauthorized: '登录已失效，请重新登录。'
-};
-const DB_EMPTY = { host: '', port: '3306', user: '', password: '', database: '' };
 function DatabaseSettingsCard({ token }) {
-  const [form, setForm] = useState(DB_EMPTY);
-  const [source, setSource] = useState('env');
-  const [storage, setStorage] = useState('mysql');
-  const [passwordSet, setPasswordSet] = useState(false);
   const [storagePath, setStoragePath] = useState('');
   const [storageMediaDir, setStorageMediaDir] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState('');
-  const [statusErr, setStatusErr] = useState(false);
   async function load() {
-    setBusy(true);
     try {
       const data = await api('/api/settings/db', { token });
-      setStorage(data.storage || 'mysql');
       setStoragePath(data.path || '');
       setStorageMediaDir(data.mediaDir || '');
-      setForm({ host: data.host || '', port: String(data.port ?? 3306), user: data.user || '', password: '', database: data.database || '' });
-      setSource(data.source || 'env');
-      setPasswordSet(Boolean(data.passwordSet));
-      setStatus('已加载当前连接。'); setStatusErr(false);
-    } catch (err) { setStatus(err.message); setStatusErr(true); }
-    finally { setBusy(false); }
+    } catch (err) { /* 加载失败时保持空值即可 */ }
   }
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  async function testConnection(e) {
-    e.preventDefault(); setBusy(true);
-    try {
-      await api('/api/settings/db/test', { method: 'POST', token, body: JSON.stringify(form) });
-      setStatus('连接成功。'); setStatusErr(false);
-    } catch (err) { setStatus(DB_ERROR_TEXT[err.message] || '连接失败：' + err.message); setStatusErr(true); }
-    finally { setBusy(false); }
-  }
-  async function save(e) {
-    e.preventDefault(); setBusy(true);
-    try {
-      await api('/api/settings/db', { method: 'POST', token, body: JSON.stringify(form) });
-      await load();
-      setStatus('已保存，server 与 worker 将自动重连。'); setStatusErr(false);
-    } catch (err) { setStatus(DB_ERROR_TEXT[err.message] || '保存失败：' + err.message); setStatusErr(true); }
-    finally { setBusy(false); }
-  }
-  if (storage === 'sqlite') {
-    return (
-      <section className="card provider-manager db-manager">
-        <div className="section-head"><div><h3>数据库连接</h3><p>当前为 SQLite 存储（默认，SLENK_DATA_BACKEND=sqlite），不使用 MySQL。</p></div><span className="pill">SQLite</span></div>
-        <div className="db-local-info">
-          <p><b>数据库文件</b>：<code>{storagePath}</code></p>
-          <p><b>媒体目录</b>：<code>{storageMediaDir}</code></p>
-          <p><b>云端同步</b>：供应商与用户数据镜像到 TiDB Cloud（<code>slenk_cloud_sync</code>），通过 <code>TIDB_PG_URL</code> 连接。</p>
-          <p className="db-status ok">切换 MySQL 需修改 <code>SLENK_DATA_BACKEND</code> 并重启。</p>
-        </div>
-      </section>
-    );
-  }
   return (
     <section className="card provider-manager db-manager">
-      <div className="section-head"><div><h3>数据库连接</h3><p>配置 MySQL 连接；保存后 server 与 worker 自动重连，无需重启。</p></div><span className="pill">{source === 'file' ? '自定义' : '.env'}</span></div>
-      <form className="form-block" onSubmit={save}>
-        <label className="field"><b>主机</b><input type="text" value={form.host} onChange={e => setForm({ ...form, host: e.target.value })} placeholder="slenk 或 127.0.0.1" required /></label>
-        <div className="mode-group"><b>端口</b><input type="number" min="1" max="65535" value={form.port} onChange={e => setForm({ ...form, port: e.target.value })} placeholder="3306" /></div>
-        <label className="field"><b>用户名</b><input type="text" value={form.user} onChange={e => setForm({ ...form, user: e.target.value })} placeholder="slenk" required /></label>
-        <label className="field"><b>密码</b><input type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder={passwordSet ? '留空则保持不变' : '未设置密码'} /></label>
-        <label className="field"><b>数据库</b><input type="text" value={form.database} onChange={e => setForm({ ...form, database: e.target.value })} placeholder="slenk_notes" required /></label>
-        <div className="actions-row"><button type="button" className="btn-secondary" disabled={busy} onClick={load}>加载当前</button><button type="button" className="btn-ghost" disabled={busy} onClick={testConnection}>测试连接</button></div>
-        <div className="actions-row actions-row-bottom"><button type="submit" className="btn-primary" disabled={busy}>{busy ? '处理中...' : '保存'}</button></div>
-        <p className={"db-status" + (statusErr ? ' err' : ' ok')}>{status || '未配置时使用 .env 的 DATABASE_URL；密码留空表示保持不变。'}</p>
-      </form>
+      <div className="section-head"><div><h3>数据库连接</h3><p>当前为 SQLite 存储（默认），不使用 MySQL。</p></div><span className="pill">SQLite</span></div>
+      <div className="db-local-info">
+        <p><b>数据库文件</b>：<code>{storagePath}</code></p>
+        <p><b>媒体目录</b>：<code>{storageMediaDir}</code></p>
+        <p><b>云端同步</b>：供应商与用户数据镜像到 TiDB Cloud（<code>slenk_cloud_sync</code>），通过 <code>TIDB_PG_URL</code> 连接。</p>
+      </div>
     </section>
   );
 }

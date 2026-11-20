@@ -1,19 +1,15 @@
-// store.js — 数据层入口：按 SLENK_DATA_BACKEND 选择后端，导出接口一致。
+// store.js — 数据层入口：SQLite 唯一后端（MySQL 后端已移除）。
 //
-//   sqlite（默认，未设置时）→ store.sqlite.js：Node 内置 SQLite，默认 <dataDir>/slenk.sqlite
-//   mysql                  → store.mysql.js：业务数据存 MySQL
-//
-// routes / worker / auth / lib 等一律 `import { ... } from './store.js'`，切换后端零改动。
-// 非法后端值启动即抛错，避免静默落到错误数据源。
+// routes / worker / auth / lib 等一律 `import { ... } from './store.js'`。
+// SLENK_DATA_BACKEND 仅接受 sqlite（默认，未设置时）；mysql 或任何其他值启动即抛错，
+// 避免误配置静默落到错误数据源。
 import './loadEnv.js';
-import * as sqliteImpl from './store.sqlite.js';
-import * as mysqlImpl from './store.mysql.js';
+import * as impl from './store.sqlite.js';
 
 const backend = process.env.SLENK_DATA_BACKEND || 'sqlite';
-let impl;
-if (backend === 'sqlite') impl = sqliteImpl;
-else if (backend === 'mysql') impl = mysqlImpl;
-else throw new Error(`未知 SLENK_DATA_BACKEND: ${backend}（仅支持 sqlite / mysql）`);
+if (backend !== 'sqlite') {
+  throw new Error(`未知 SLENK_DATA_BACKEND: ${backend}（仅支持 sqlite；MySQL 后端已移除）`);
+}
 
 export const initStore = impl.initStore;
 export const closeStore = impl.closeStore;
