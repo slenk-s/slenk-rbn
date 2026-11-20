@@ -53,3 +53,27 @@ test('同 id 冲突时保留本地版本（密码哈希不被云端旧值覆盖�
   const cloud = [{ id: 'u1', username: 'admin', password_hash: 'old-hash' }];
   assert.equal(mergeUsers(local, cloud)[0].password_hash, 'new-hash');
 });
+
+// ---- mergeUsers：不同 id 撞同名 username（本地表有 UNIQUE(username)）----
+
+test('云端残留的同名用户被丢弃（不同 id 撞 admin，保本地）', () => {
+  const local = [{ id: 'u1', username: 'admin', password_hash: 'h1' }];
+  const cloud = [{ id: 'u1', username: 'admin', password_hash: 'h1' }, { id: 'u2', username: 'admin', password_hash: 'h2' }];
+  const merged = mergeUsers(local, cloud);
+  assert.deepEqual(merged.map(r => r.id), ['u1']); // 云端 u2/admin 不混入
+  assert.equal(merged[0].password_hash, 'h1');
+});
+
+test('云端独有的非冲突用户仍补进本地', () => {
+  const local = [{ id: 'u1', username: 'admin', password_hash: 'h1' }];
+  const cloud = [{ id: 'u1', username: 'admin', password_hash: 'h1' }, { id: 'u2', username: 'second', password_hash: 'h2' }];
+  assert.deepEqual(mergeUsers(local, cloud).map(r => r.id).sort(), ['u1', 'u2']);
+});
+
+test('同 id 改用户名时仍保本地且只保留一行', () => {
+  const local = [{ id: 'u1', username: 'admin', password_hash: 'h1' }];
+  const cloud = [{ id: 'u1', username: 'renamed', password_hash: 'h2' }];
+  const merged = mergeUsers(local, cloud);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].username, 'admin');
+});
