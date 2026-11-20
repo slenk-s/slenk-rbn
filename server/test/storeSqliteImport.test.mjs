@@ -40,6 +40,10 @@ test('exportSyncRows 返回 JSON 兼容行并可经 importSyncRows 幂等合并'
   const rows = await exportSyncRows();
   assert.ok(Array.isArray(rows.users));
   assert.ok(rows.users.some(r => r.id === u.id));
+  // 每账号笔记/任务计数随 user 行镜像到云端（无笔记/任务的新用户应为 0）。
+  const uRow = rows.users.find(r => r.id === u.id);
+  assert.equal(uRow.note_count, 0);
+  assert.equal(uRow.task_count, 0);
   assert.ok(rows.providers.some(r => r.id === p.id));
   assert.ok(Array.isArray(rows.userSettings));
 

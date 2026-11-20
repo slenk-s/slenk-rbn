@@ -126,9 +126,15 @@ export async function importLocalOnce() {
 
 export async function exportSyncRows() {
   return {
-    users: all('select * from slenk_notes_users').map(r => ({
+    users: all(
+      `select u.id, u.username, u.password_hash, u.is_admin, u.created_at,
+         (select count(*) from slenk_notes_notes n where n.user_id = u.id) as note_count,
+         (select count(*) from slenk_notes_tasks t where t.user_id = u.id) as task_count
+       from slenk_notes_users u`
+    ).map(r => ({
       id: r.id, username: r.username, password_hash: r.password_hash,
-      is_admin: Boolean(r.is_admin), created_at: r.created_at
+      is_admin: Boolean(r.is_admin), created_at: r.created_at,
+      note_count: Number(r.note_count), task_count: Number(r.task_count)
     })),
     providers: all('select * from slenk_notes_providers').map(r => ({
       id: r.id, name: r.name, provider_type: r.provider_type, app_type: r.app_type,
@@ -471,6 +477,7 @@ export async function addTask(task) {
     toJson(task.payload), task.providerId ?? null, task.tab ?? null,
     toJson(task.result), task.error ?? null
   );
+  queueSync();
   return getTaskById(task.id);
 }
 
@@ -526,23 +533,31 @@ export async function getTaskById(id) {
 }
 
 export async function deleteTask(userId, id) {
-  return run('delete from slenk_notes_tasks where user_id = ? and id = ?', userId, id).changes > 0;
+  const ok = run('delete from slenk_notes_tasks where user_id = ? and id = ?', userId, id).changes > 0;
+  if (ok) queueSync();
+  return ok;
 }
 
 export async function deleteTaskById(id) {
-  return run('delete from slenk_notes_tasks where id = ?', id).changes > 0;
+  const ok = run('delete from slenk_notes_tasks where id = ?', id).changes > 0;
+  if (ok) queueSync();
+  return ok;
 }
 
 export async function deleteTasksByIds(ids, userId, isAdmin) {
   if (!Array.isArray(ids) || !ids.length) return 0;
   const placeholders = ids.map(() => '?').join(', ');
+  let changed;
   if (isAdmin) {
-    return run(`delete from slenk_notes_tasks where id in (${placeholders})`, ...ids).changes;
+    changed = run(`delete from slenk_notes_tasks where id in (${placeholders})`, ...ids).changes;
+  } else {
+    changed = run(
+      `delete from slenk_notes_tasks where id in (${placeholders}) and user_id = ?`,
+      ...ids, userId
+    ).changes;
   }
-  return run(
-    `delete from slenk_notes_tasks where id in (${placeholders}) and user_id = ?`,
-    ...ids, userId
-  ).changes;
+  if (changed) queueSync();
+  return changed;
 }
 
 export async function updateTask(userId, id, patch, insertMeta) {
@@ -605,6 +620,7 @@ export async function saveNote(userId, note = {}) {
     toJson(Array.isArray(note.tags) ? note.tags : []),
     toJson(Array.isArray(note.images) ? note.images : [])
   );
+  queueSync();
   return getNote(id);
 }
 
