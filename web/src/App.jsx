@@ -304,38 +304,6 @@ async function downloadAsset(url, name) {
 function DownloadLink({ url, label, name }) {
   return <button type="button" onClick={async (e) => { e.stopPropagation(); try { await downloadAsset(url, name); } catch { window.open(String(url || '').startsWith('http') ? url : API + url, '_blank'); } }}>{label}</button>;
 }
-// 实况视频 → Apple 实况照片：调用后端把运镜视频打包成 .livp，再下载返回的媒体。
-function LivePhotoDownloadLink({ taskId, index }) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <button
-      type="button"
-      className="livp-download"
-      aria-label="下载为实况照片 LIVP"
-      title="把这段运镜视频封装成 Apple 实况照片（.livp），可直接在 iPhone 相册识别"
-      disabled={busy}
-      onClick={async (e) => {
-        e.stopPropagation();
-        if (busy) return;
-        setBusy(true);
-        try {
-          const data = await api('/api/tasks/' + taskId + '/livp', {
-            method: 'POST',
-            token: localStorage.getItem('token'),
-            body: JSON.stringify({ index })
-          });
-          await downloadAsset(data.url, data.name || (taskId + '-live.livp'));
-        } catch (err) {
-          alert('LIVP 转换失败：' + (err.message || err));
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      {busy ? '转换中…' : '下载 LIVP'}
-    </button>
-  );
-}
 // 任务结果整体下载：图片/视频直接拉 blob（多图逐张下），文本存成 txt。
 async function downloadTaskResult(task) {
   const result = unwrapTaskResult(parseJsonText(task.result || '')) || {};
@@ -443,8 +411,8 @@ function TaskResultWithDownload({ task, onZoom, hideDownloads }) {
   const localImages = Array.isArray(result.localImages) ? result.localImages : [];
   if (result.images && Array.isArray(result.images)) return <div className="result-gallery">{result.images.map((img, i) => <figure key={i} className="result-media"><SmartImg className="zoomable" sources={/^https?:\/\//.test(String(img)) ? resultImageSources(img, localImages[i]) : [API + img]} alt={'AI图片结果 ' + (i + 1)} onClick={() => onZoom && onZoom(resultMediaSrc(img), (task.label || 'AI图片结果') + ' · 第 ' + (i + 1) + ' 张')} />{(result.images.length > 1 || !hideDownloads) && <figcaption>{result.images.length > 1 ? <span className="result-ref-label">{result.perReference ? '对应参考图 ' + ((result.imageReferences && result.imageReferences[i]) || (i + 1)) : '结果 ' + (i + 1)}</span> : null}{!hideDownloads && <DownloadLink url={img} label="下载图片" name={task.id + '-' + task.type + '-' + (i + 1) + '.png'} />}</figcaption>}</figure>)}</div>;
   if (result.image && typeof result.image === 'string') return <figure className="result-media"><SmartImg className="zoomable" sources={/^https?:\/\//.test(String(result.image)) ? resultImageSources(result.image, result.localImage) : [API + result.image]} alt="AI图片结果" onClick={() => onZoom && onZoom(resultMediaSrc(result.image), task.label || 'AI图片结果')} />{!hideDownloads && <figcaption><DownloadLink url={result.image} label="下载图片" name={task.id + '-' + task.type + '.png'} /></figcaption>}</figure>;
-  if (result.videos && Array.isArray(result.videos) && result.videos.length) return <div className="result-gallery">{result.videos.map((v, i) => <figure key={i} className="result-media"><video controls preload="metadata" src={resultMediaSrc(v)} /><figcaption>{result.videos.length > 1 ? <span className="result-ref-label">视频 {i + 1}</span> : null}{!hideDownloads && <DownloadLink url={v} label="下载视频" name={task.id + '-' + task.type + '-' + (i + 1) + '.mp4'} />}{!hideDownloads && task.type === 'video' && <LivePhotoDownloadLink taskId={task.id} index={i} />}</figcaption></figure>)}</div>;
-  if (result.video) return <figure className="result-media"><video controls preload="metadata" src={resultMediaSrc(result.video)} />{!hideDownloads && <figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} />{task.type === 'video' && <LivePhotoDownloadLink taskId={task.id} index={0} />}</figcaption>}</figure>;
+  if (result.videos && Array.isArray(result.videos) && result.videos.length) return <div className="result-gallery">{result.videos.map((v, i) => <figure key={i} className="result-media"><video controls preload="metadata" src={resultMediaSrc(v)} /><figcaption>{result.videos.length > 1 ? <span className="result-ref-label">视频 {i + 1}</span> : null}{!hideDownloads && <DownloadLink url={v} label="下载视频" name={task.id + '-' + task.type + '-' + (i + 1) + '.mp4'} />}</figcaption></figure>)}</div>;
+  if (result.video) return <figure className="result-media"><video controls preload="metadata" src={resultMediaSrc(result.video)} />{!hideDownloads && <figcaption><DownloadLink url={result.video} label="下载视频" name={task.id + '-' + task.type + '.mp4'} /></figcaption>}</figure>;
   const titleCandidates = Array.isArray(result.titles) ? result.titles.map(String) : [];
   const displayTitle = titleCandidates[0] || result.title || '';
   const displayContent = removeTopicTagMarkup(result.text || result.content || '');
